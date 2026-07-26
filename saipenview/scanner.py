@@ -3,12 +3,12 @@
 import collections
 import concurrent.futures
 import os
+import string
 import sys
 import threading
-import string
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, Iterator
 
 from saipenview.parser import ProjectStatus, load_project
 
@@ -269,9 +269,7 @@ def scan(
     """Scans every root in parallel so one slow/hung drive can't starve the rest."""
     raw_roots = scan_roots if scan_roots is not None else _auto_roots()
     roots = [
-        r + "\\"
-        if r.endswith(":")
-        else (r if r.endswith("\\") or r.endswith("/") else r + "\\")
+        r + "\\" if r.endswith(":") else (r if r.endswith(("\\", "/")) else r + "\\")
         for r in raw_roots
     ]
     # Deduplicate roots before parallel submission -- same path scanned

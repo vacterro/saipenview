@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
-from pathlib import Path
-
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog
 
-from saipenview.config import load_config, save_config, config_path
+from saipenview.config import config_path, load_config, save_config
 from saipenview.parser import (
     OutboxEntry,
     ProjectStatus,
@@ -20,13 +21,12 @@ from saipenview.parser import (
     load_project,
     parse_board,
 )
-import json
 from saipenview.scanner import (
     BackgroundScanner,
     _auto_roots,
     find_linked_worktrees,
-    get_scan_errors,
     get_scan_error_log,
+    get_scan_errors,
     get_scan_progress,
     scan,
 )
@@ -162,7 +162,7 @@ class Api:
         self._cache_file = config_path().parent / "cache.json"
         if self._cache_file.exists():
             try:
-                with open(self._cache_file, "r", encoding="utf-8") as f:
+                with open(self._cache_file, encoding="utf-8") as f:
                     self._projects = json.load(f)
                 self._has_scanned = True
             except Exception as e:
@@ -443,7 +443,9 @@ class Api:
     def open_folder(self, root_str: str) -> bool:
         if os.path.exists(root_str):
             try:
-                os.startfile(root_str)
+                # S606: os.startfile IS the no-shell Windows API (ShellExecute);
+                # the path is an existing dir from our own scan, never user text.
+                os.startfile(root_str)  # noqa: S606
                 return True
             except Exception as e:
                 print(
@@ -466,9 +468,23 @@ class Api:
     def open_editor(self, root_str: str) -> bool:
         if os.path.exists(root_str):
             try:
+                # shell=True used to be needed because `code` is really
+                # code.cmd on Windows and Popen won't resolve it otherwise --
+                # but that also meant the project path was parsed by cmd, so a
+                # directory named e.g. `foo & something.exe` would have EXECUTED
+                # it. shutil.which() resolves the .cmd to a real absolute path,
+                # so the argument list can be passed straight through with no
+                # shell in between (ruff S602).
+                code_exe = shutil.which("code")
+                if not code_exe:
+                    print(
+                        "SAIPENVIEW: open_editor: 'code' not found on PATH",
+                        file=sys.stderr,
+                    )
+                    return False
                 # 0x08000000 = CREATE_NO_WINDOW
-                subprocess.Popen(
-                    ["code", root_str], shell=True, creationflags=0x08000000
+                subprocess.Popen(  # noqa: S603 - resolved absolute path, no shell
+                    [code_exe, root_str], creationflags=0x08000000
                 )
                 return True
             except (OSError, FileNotFoundError) as e:
@@ -480,7 +496,7 @@ class Api:
     def read_file_text(self, file_path: str) -> str | None:
         try:
             if os.path.exists(file_path):
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, encoding="utf-8") as f:
                     return f.read()
         except Exception as e:
             print(
@@ -587,8 +603,14 @@ class Api:
                 self._on_snap_hotkey_changed(
                     previous if isinstance(previous, list) else [previous]
                 )
-            except Exception:
-                pass
+            except Exception as revert_err:
+                # Both the new binding AND the rollback failed -- the user now
+                # has NO working snap hotkey, which is exactly the state that
+                # must not happen quietly.
+                print(
+                    f"SAIPENVIEW: snap hotkey rollback to {previous!r} also failed: {revert_err}",
+                    file=sys.stderr,
+                )
             return self.get_config()
         self._config["snap_hotkey"] = hotkeys
         save_config(self._config)

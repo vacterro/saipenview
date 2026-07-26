@@ -47,3 +47,42 @@ include = ["saipenview*"]
 
 [tool.setuptools.package-data]
 saipenview = ["ui/static/*", "assets/*"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# EXPLICIT select, deliberately not ruff's defaults. Without this the rule set
+# is whatever the ruff release installed that day happens to enable, so a new
+# ruff version turns CI red with zero code changes -- which is exactly what
+# happened here (46 findings appeared on an untouched codebase).
+# CI pins the ruff version too; both halves are needed.
+select = [
+    "E4", "E7", "E9",  # pycodestyle: real errors only, not line-length noise
+    "F",               # pyflakes: undefined names, unused imports
+    "I",               # import sorting
+    "UP",              # pyupgrade: keep syntax current with target-version
+    "B",               # bugbear: genuine footguns
+    "PIE",             # misc correctness
+    "S",               # bandit security checks
+]
+ignore = [
+    # Blind `except Exception` is a DELIBERATE design choice here, not an
+    # oversight. This is a desktop tray app: a failure in one project's parse,
+    # one geometry call or one OS integration must degrade that one thing and
+    # never kill the scan thread or the UI. Every such handler logs to stderr
+    # (see T-027) rather than swallowing. Narrowing them would mean guessing
+    # the full exception surface of ctypes/WinForms/pywebview/keyboard, and
+    # guessing wrong there is how the silent-death bugs T-038/T-060 happened.
+    "BLE001",
+    # `dir_count` drives the scan I/O throttle (T-001). enumerate() would work
+    # but shifts the counter's base and touches carefully tuned pacing for a
+    # pure style win -- not worth the regression risk.
+    "SIM113",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# subprocess calls here are list-form with no shell=True; the paths come from
+# the user's own config/picker, not from network input.
+"saipenview/api.py" = ["S603", "S607"]
+"saipenview/parser.py" = ["S603", "S607"]

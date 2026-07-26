@@ -21,8 +21,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Version PINNED on purpose: an unpinned linter makes CI
+      # nondeterministic -- a new ruff release changes the default rule set
+      # and turns the build red with no code change at all. Bump deliberately,
+      # together with [tool.ruff] in pyproject.toml.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.16.0
 
       - name: ruff check
         run: ruff check saipenview/
@@ -33,7 +37,8 @@ jobs:
   smoke:
     name: Syntax & Import Smoke Test
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # No continue-on-error: a gate that cannot fail is not a gate. This job
+    # previously could not report a problem no matter what broke.
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -58,25 +63,35 @@ jobs:
 
       - name: Check core modules import
         run: |
-          python -c "
-          import sys
+          python - <<'PY'
+          import sys, traceback
           sys.path.insert(0, '.')
-          modules = [
-              'saipenview.config',
-              'saipenview.parser',
-              'saipenview.scanner',
-              'saipenview.autostart',
-              'saipenview.tray',
-              'saipenview.hotkey',
-          ]
-          for m in modules:
+          # Modules that must import on a bare Linux runner. pywebview/tray are
+          # excluded on purpose -- they need Windows/GTK backends.
+          REQUIRED = ['saipenview.config', 'saipenview.parser',
+                      'saipenview.scanner', 'saipenview.autostart']
+          # autostart imports winreg (Windows-only) -- tolerated, but ONLY that.
+          TOLERATED = {'saipenview.autostart': ('winreg',)}
+          failed = []
+          for m in REQUIRED:
               try:
                   __import__(m)
                   print(f'  OK: {m}')
-              except Exception as e:
-                  print(f'  SKIP: {m} -> {e}')
+              except ImportError as e:
+                  missing = getattr(e, 'name', '') or str(e)
+                  if any(t in str(missing) for t in TOLERATED.get(m, ())):
+                      print(f'  SKIP (platform-only dep {missing}): {m}')
+                      continue
+                  failed.append((m, traceback.format_exc()))
+              except Exception:
+                  failed.append((m, traceback.format_exc()))
+          if failed:
+              for m, tb in failed:
+                  print(f'  FAIL: {m}', file=sys.stderr)
+                  print(tb, file=sys.stderr)
+              sys.exit(1)
           print('Module import check complete.')
-          "
+          PY
 
       - name: Check HTML & JS syntax
         run: |

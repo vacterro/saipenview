@@ -583,8 +583,7 @@ def _highest_ticket_number(text: str) -> int:
     max_n = 0
     for match in _TICKET_ID_RE.finditer(text):
         n = int(match.group(1))
-        if n > max_n:
-            max_n = n
+        max_n = max(max_n, n)
     return max_n
 
 

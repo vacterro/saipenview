@@ -24,7 +24,7 @@ from ctypes import wintypes
 PICKER_SIZE = 200
 ZONE_PAD = 4
 
-_request_q: "queue.Queue" = queue.Queue()
+_request_q: queue.Queue = queue.Queue()
 _tk_thread: threading.Thread | None = None
 _tk_thread_lock = threading.Lock()
 

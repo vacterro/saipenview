@@ -10,7 +10,7 @@ from pathlib import Path
 
 import webview
 
-import saipenview.zone_picker as zone_picker
+from saipenview import zone_picker
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -401,5 +401,10 @@ class MainWindow:
             print(f"SAIPENVIEW: cycle_snap_corner failed: {e}", file=sys.stderr)
             try:
                 self._window.evaluate_js('showToast("Snap failed", "error", 3000)')
-            except Exception:
-                pass
+            except Exception as toast_err:
+                # Best-effort UI notice about an error already printed above;
+                # still say so rather than vanish, per T-027's policy.
+                print(
+                    f"SAIPENVIEW: could not show snap-failure toast: {toast_err}",
+                    file=sys.stderr,
+                )

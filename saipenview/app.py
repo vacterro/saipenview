@@ -51,7 +51,7 @@ class SingleInstanceGuard:
                         conn.close()
                         if b"SHOW" in data:
                             on_show_request()
-                    except socket.timeout:
+                    except TimeoutError:
                         continue
                     except OSError:
                         break
