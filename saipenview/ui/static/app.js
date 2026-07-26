@@ -28,6 +28,81 @@ let flashState = {};      // {root: flashTime} epoch ms when change was detected
 
 // Hover transition: hexBlend fade for project rows (no CSS transitions allowed)
 
+// ===== i18n runtime =====
+let currentLocale = "en";
+
+// Locale string tables — loaded from locale-*.js, fallback to LOCALE_EN
+const _localeTables = {
+  en: typeof LOCALE_EN !== "undefined" ? LOCALE_EN : {},
+  "zh-CN": typeof LOCALE_ZH_CN !== "undefined" ? LOCALE_ZH_CN : {},
+};
+
+function t(key, vars) {
+  // Look up key in current locale; fallback to English, then raw key.
+  const table = _localeTables[currentLocale] || {};
+  let val = table[key];
+  if (val === undefined) {
+    val = _localeTables["en"][key];
+  }
+  if (val === undefined) return key;
+  // Replace ${var} placeholders
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      val = val.replace("${" + k + "}", String(v));
+    }
+  }
+  return val;
+}
+
+function hydrateDOM(locale) {
+  currentLocale = locale || currentLocale;
+  // Walk all elements with data-i18n attribute (textContent)
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const key = el.getAttribute("data-i18n");
+    const translated = t(key);
+    // Only replace if the translation is different from the key and non-empty
+    if (translated !== key && translated) {
+      el.textContent = translated;
+    }
+  });
+  // Walk all elements with data-i18n-title attribute
+  document.querySelectorAll("[data-i18n-title]").forEach(el => {
+    const key = el.getAttribute("data-i18n-title");
+    const translated = t(key);
+    if (translated !== key && translated) {
+      el.setAttribute("title", translated);
+    }
+  });
+  // Walk all elements with data-i18n-placeholder attribute
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
+    const key = el.getAttribute("data-i18n-placeholder");
+    const translated = t(key);
+    if (translated !== key && translated) {
+      el.setAttribute("placeholder", translated);
+    }
+  });
+  // Walk all elements with data-i18n-value attribute (button textContent)
+  document.querySelectorAll("[data-i18n-value]").forEach(el => {
+    const key = el.getAttribute("data-i18n-value");
+    const translated = t(key);
+    if (translated !== key && translated) {
+      el.textContent = translated;
+    }
+  });
+  // Translate sort select options
+  document.querySelectorAll("#sortSelect option[data-i18n]").forEach(el => {
+    const key = el.getAttribute("data-i18n");
+    const translated = t(key);
+    if (translated !== key && translated) el.textContent = translated;
+  });
+  // Translate filter select options
+  document.querySelectorAll("#filterSelect option[data-i18n]").forEach(el => {
+    const key = el.getAttribute("data-i18n");
+    const translated = t(key);
+    if (translated !== key && translated) el.textContent = translated;
+  });
+}
+// ===== end i18n =====
 
 function persistCollapseState() {
   if (!currentDetailRoot) return;
@@ -113,10 +188,10 @@ function showContextMenu(e, root, phase) {
   const menu = document.createElement("div");
   menu.className = "context-menu raised";
   menu.innerHTML =
-    `<div class="context-menu-item" data-action="show-phase">Show all ${escapeHtml(phase)} projects</div>` +
-    `<div class="context-menu-item" data-action="copy-root">Copy project root</div>` +
+    `<div class="context-menu-item" data-action="show-phase">${t("context.showPhase", { phase: escapeHtml(phase) })}</div>` +
+    `<div class="context-menu-item" data-action="copy-root">${t("context.copyRoot")}</div>` +
     `<div class="context-menu-sep"></div>` +
-    `<div class="context-menu-item" data-action="open-folder">Open folder</div>`;
+    `<div class="context-menu-item" data-action="open-folder">${t("context.openFolder")}</div>`;
 
   // Position: clamp to viewport
   const mx = Math.min(e.clientX, window.innerWidth - 200);
@@ -198,11 +273,11 @@ function showSectionContextMenu(e, root, section) {
   menu.className = "context-menu raised";
   let items = [];
   if (fileName && filePath) {
-    items.push(`<div class="context-menu-item" data-action="open-section-file" data-path="${escapeHtml(filePath)}" data-filename="${escapeHtml(fileName)}">Open ${escapeHtml(fileName)}</div>`);
-    items.push(`<div class="context-menu-item" data-action="copy-section-path" data-path="${escapeHtml(filePath)}">Copy path</div>`);
+    items.push(`<div class="context-menu-item" data-action="open-section-file" data-path="${escapeHtml(filePath)}" data-filename="${escapeHtml(fileName)}">${t("sectionContext.openFile", { file: escapeHtml(fileName) })}</div>`);
+    items.push(`<div class="context-menu-item" data-action="copy-section-path" data-path="${escapeHtml(filePath)}">${t("sectionContext.copyPath")}</div>`);
     items.push(`<div class="context-menu-sep"></div>`);
   }
-  items.push(`<div class="context-menu-item" data-action="open-project-folder" data-root="${escapeHtml(root)}">Open project folder</div>`);
+  items.push(`<div class="context-menu-item" data-action="open-project-folder" data-root="${escapeHtml(root)}">${t("sectionContext.openProject")}</div>`);
   menu.innerHTML = items.join("");
 
   const mx = Math.min(e.clientX, window.innerWidth - 200);
@@ -271,20 +346,20 @@ function highlightMatch(text, query) {
 
 // --- Floating search overlay ---
 const PHASE_DESCRIPTIONS = {
-  INIT: "Initial scouting — discovery and high-level assessment",
-  PLAN: "Planning — roadmap, backlog, and milestone definition",
-  SCOUT: "Scouting — targeted exploration of unknown territory",
-  BUILD: "Building — active implementation and feature work",
-  REVIEW: "Review — code review, QA, and validation",
-  HUNT: "Hunting — bug chasing and root-cause analysis",
-  ADD: "Adding — extending existing features with new capability",
-  CLEAN: "Cleaning — refactoring, debt reduction, and polish",
-  TRANSLATE: "Translation — porting and cross-language migration",
-  VALIDATE: "Validation — integration testing and release readiness",
-  BLOCKED: "Blocked — waiting on external dependency or decision",
-  DONE: "Done — completed and delivered",
-  VERIFY: "Verify — post-deployment confirmation checks",
-  SHIP: "Ship — released to production"
+  INIT: "phase.INIT",
+  PLAN: "phase.PLAN",
+  SCOUT: "phase.SCOUT",
+  BUILD: "phase.BUILD",
+  REVIEW: "phase.REVIEW",
+  HUNT: "phase.HUNT",
+  ADD: "phase.ADD",
+  CLEAN: "phase.CLEAN",
+  TRANSLATE: "phase.TRANSLATE",
+  VALIDATE: "phase.VALIDATE",
+  BLOCKED: "phase.BLOCKED",
+  DONE: "phase.DONE",
+  VERIFY: "phase.VERIFY",
+  SHIP: "phase.SHIP"
 };
 
 const SEARCH_PAGE_SIZE = 5;
@@ -432,24 +507,24 @@ function applyFontFamily(fam) {
 
 function relativeTime(isoStr) {
   if (!isoStr) return "";
-  const t = new Date(_ensureTz(isoStr)).getTime();
-  if (isNaN(t)) return "";
+  const ts = new Date(_ensureTz(isoStr)).getTime();
+  if (isNaN(ts)) return "";
   // FLOOR, not round: "2h ago" must mean at least 2 hours have passed. Rounding
   // claimed MORE elapsed time than actually had (90min showed as "2h ago"),
   // which is part of what read as "the timing is wrong" (T-072).
-  let diff = Math.max(0, (Date.now() - t) / 1000);
-  if (diff < 5) return "just now";
-  if (diff < 60) return `${Math.floor(diff)}s ago`;
+  let diff = Math.max(0, (Date.now() - ts) / 1000);
+  if (diff < 5) return t("time.justNow");
+  if (diff < 60) return t("time.secondsAgo", { n: Math.floor(diff) });
   diff /= 60;
-  if (diff < 60) return `${Math.floor(diff)}m ago`;
+  if (diff < 60) return t("time.minutesAgo", { n: Math.floor(diff) });
   diff /= 60;
-  if (diff < 24) return `${Math.floor(diff)}h ago`;
+  if (diff < 24) return t("time.hoursAgo", { n: Math.floor(diff) });
   diff /= 24;
-  if (diff < 30) return `${Math.floor(diff)}d ago`;
+  if (diff < 30) return t("time.daysAgo", { n: Math.floor(diff) });
   diff /= 30;
-  if (diff < 12) return `${Math.floor(diff)}mo ago`;
+  if (diff < 12) return t("time.monthsAgo", { n: Math.floor(diff) });
   diff /= 12;
-  return `${Math.floor(diff)}y ago`;
+  return t("time.yearsAgo", { n: Math.floor(diff) });
 }
 
 function hexBlend(hexA, hexB, t) {
@@ -734,7 +809,7 @@ function renderDetailPane(detail) {
             ${detail.git_branch ? `<span class="git-badge ${detail.git_dirty ? 'dirty' : ''}" style="font-size:10px; font-weight:normal;">⎇ ${escapeHtml(detail.git_branch)}${detail.git_dirty ? '*' : ''}</span>` : ""}
           </span>
           <span style="display:flex; align-items:center; gap:4px;">
-            <span class="phase-indicator phase-${escapeHtml(detail.phase)}" title="${escapeHtml(detail.phase)} — ${escapeHtml(PHASE_DESCRIPTIONS[detail.phase] || '')}"></span>
+            <span class="phase-indicator phase-${escapeHtml(detail.phase)}" title="${escapeHtml(detail.phase)} — ${escapeHtml(t(PHASE_DESCRIPTIONS[detail.phase] || ''))}"></span>
             <span class="phase phase-${escapeHtml(detail.phase)}">${escapeHtml(detail.phase)}</span>
           </span>
         </div>
@@ -2021,14 +2096,182 @@ if (togglePanelBtn) {
 
 // Settings panel
 const settingsModal = document.getElementById("settingsModal");
-const settingsBtn = document.getElementById("settingsBtn");
+// ===== Wiki / Help system =====
+let _wikiPages = [];
+let _currentWikiPage = null;
 
-function openHelp() {
-  document.getElementById("helpModal").style.display = "flex";
+function openWiki() {
+  const modal = document.getElementById("wikiModal");
+  if (!modal) return;
+  modal.style.display = "flex";
+  loadWikiPages();
 }
-function closeHelp() {
-  document.getElementById("helpModal").style.display = "none";
+
+function closeWiki() {
+  document.getElementById("wikiModal").style.display = "none";
 }
+
+function loadWikiPages() {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api) return;
+  document.getElementById("wikiLoading").style.display = "block";
+  document.getElementById("wikiMarkdown").innerHTML = "";
+  api.get_wiki_pages().then((pages) => {
+    _wikiPages = pages || [];
+    const list = document.getElementById("wikiTocList");
+    if (!list) return;
+    list.innerHTML = _wikiPages.map((p) =>
+      `<div class="wiki-toc-item" data-wiki-id="${escapeHtml(p.id)}">${escapeHtml(p.title)}</div>`
+    ).join("");
+    // Wire TOC click handlers
+    list.querySelectorAll(".wiki-toc-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        const id = item.getAttribute("data-wiki-id");
+        if (id) navigateToWikiPage(id);
+      });
+    });
+    // Load first page if none loaded yet
+    if (!_currentWikiPage && _wikiPages.length) {
+      navigateToWikiPage(_wikiPages[0].id);
+    }
+  }).catch((e) => {
+    console.error("loadWikiPages failed:", e);
+    document.getElementById("wikiLoading").style.display = "none";
+    document.getElementById("wikiMarkdown").innerHTML = "<p style='color:var(--danger)'>Failed to load wiki.</p>";
+  });
+}
+
+function navigateToWikiPage(pageId) {
+  _currentWikiPage = pageId;
+  const api = window.pywebview && window.pywebview.api;
+  if (!api) return;
+  document.getElementById("wikiLoading").style.display = "block";
+  document.getElementById("wikiMarkdown").innerHTML = "";
+  // Highlight active TOC item
+  document.querySelectorAll(".wiki-toc-item").forEach((el) => {
+    el.classList.toggle("active", el.getAttribute("data-wiki-id") === pageId);
+  });
+  api.get_wiki_page(pageId).then((page) => {
+    document.getElementById("wikiLoading").style.display = "none";
+    if (!page || !page.content) {
+      document.getElementById("wikiMarkdown").innerHTML = "<p style='color:var(--textMuted)'>Page not found.</p>";
+      return;
+    }
+    document.getElementById("wikiMarkdown").innerHTML = renderWikiMarkdown(page.content);
+    document.getElementById("wikiTitle").textContent = page.title || "Wiki";
+  }).catch((e) => {
+    console.error("navigateToWikiPage failed:", e);
+    document.getElementById("wikiLoading").style.display = "none";
+    document.getElementById("wikiMarkdown").innerHTML = "<p style='color:var(--danger)'>Failed to load page.</p>";
+  });
+}
+
+function renderWikiMarkdown(md) {
+  if (!md) return "";
+  let html = md;
+  // ---- Extract fenced code blocks BEFORE escapeHtml ----
+  const codeBlocks = [];
+  let cbIdx = 0;
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+    const idx = cbIdx++;
+    codeBlocks[idx] = { lang, code: code.replace(/^\n|\n$/g, "") };
+    return `%%CODEBLOCK_${idx}%%`;
+  });
+  // ---- Extract inline code BEFORE escapeHtml ----
+  const inlineCodes = [];
+  let icIdx = 0;
+  html = html.replace(/`([^`]+)`/g, (m, code) => {
+    const idx = icIdx++;
+    inlineCodes[idx] = code;
+    return `%%INLINECODE_${idx}%%`;
+  });
+  // ---- Escape HTML to prevent XSS ----
+  html = escapeHtml(html);
+  // ---- Restore code blocks ----
+  codeBlocks.forEach((cb, i) => {
+    const escaped = escapeHtml(cb.code);
+    html = html.replace(`%%CODEBLOCK_${i}%%`, `<pre><code${cb.lang ? ' class="lang-' + escapeHtml(cb.lang) + '"' : ''}>${escaped}</code></pre>`);
+  });
+  // ---- Restore inline code ----
+  inlineCodes.forEach((code, i) => {
+    const escaped = escapeHtml(code);
+    html = html.replace(`%%INLINECODE_${i}%%`, `<code>${escaped}</code>`);
+  });
+  // ---- Markdown syntax conversion (safe on escaped text) ----
+  // Headers
+  html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+  html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  // HR
+  html = html.replace(/^---$/gm, "<hr>");
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Italic
+  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  // Links (text is already escaped, so this is safe)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  // Tables: collect rows, rebuild as HTML
+  const lines = html.split("\n");
+  let inTable = false;
+  let tableRows = [];
+  let tableIsHeader = false;
+  const resultLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\|/.test(line) && /\|$/.test(line)) {
+      const cells = line.split("|").filter((c, j) => j > 0 && j < line.split("|").length - 1).map(c => c.trim());
+      if (!inTable) {
+        inTable = true;
+        tableRows = [];
+        tableIsHeader = false;
+      }
+      if (cells.length && /^[-\s:]+$/.test(cells[0])) {
+        tableIsHeader = true;
+        continue;
+      }
+      const tag = tableIsHeader ? "th" : "td";
+      tableRows.push("<tr>" + cells.map(c => `<${tag}>${c}</${tag}>`).join("") + "</tr>");
+      tableIsHeader = false; // only first post-separator row is header
+      // Emit at end of table
+      if (i + 1 >= lines.length || !/^\|/.test(lines[i + 1])) {
+        resultLines.push("<table>" + tableRows.join("") + "</table>");
+        inTable = false;
+      }
+    } else {
+      if (inTable) {
+        inTable = false;
+      }
+      resultLines.push(line);
+    }
+  }
+  html = resultLines.join("\n");
+  // Unordered lists
+  html = html.replace(/^\* (.+)$/gm, "<li>$1</li>");
+  html = html.replace(/^\- (.+)$/gm, "<li>$1</li>");
+  // Ordered lists
+  html = html.replace(/^\d+\.\s+(.+)$/gm, "<li>$1</li>");
+  // Wrap consecutive <li> in <ul>
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, "<ul>$1</ul>");
+  // Blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, "<blockquote>$1</blockquote>");
+  // Paragraphs (any line not already a block element)
+  html = html.replace(/^(?!<(?:\/?[hupolbtd]|table|thead|tbody|tr|th|td|pre|code)|%%|\s*$)(.+)$/gm, "<p>$1</p>");
+  // Deduplicate empty paragraphs
+  html = html.replace(/<p>\s*<\/p>/g, "");
+  // Clean nested <p> inside block elements
+  html = html.replace(/<(li|th|td|h[1-3])><p>/g, "<$1>");
+  html = html.replace(/<\/p><\/(li|th|td|h[1-3])>/g, "</$1>");
+  return html;
+}
+
+function openQuickHelp() {
+  document.getElementById("helpOverlay").style.display = "flex";
+}
+function closeQuickHelp() {
+  document.getElementById("helpOverlay").style.display = "none";
+}
+
+const settingsBtn = document.getElementById("settingsBtn");
 
 function openSettings() {
   Promise.all([window.pywebview.api.get_config(), window.pywebview.api.get_autostart_enabled()]).then(([cfg, autostart]) => {
@@ -2045,6 +2288,7 @@ function openSettings() {
     document.getElementById("setFlashChanges").checked = cfg.flash_changes !== false;
     document.getElementById("setFileViewerDefault").value = cfg.file_viewer_default || "source";
     document.getElementById("setLocale").value = cfg.locale || "en";
+    hydrateDOM(cfg.locale || "en");
     // Render custom commands
     const cmdList = document.getElementById("customCommandsList");
     if (cmdList) {
@@ -2095,9 +2339,13 @@ function closeSettings() {
 
 if (settingsBtn) settingsBtn.addEventListener("click", openSettings);
 
-document.getElementById("closeSettingsBtn")?.addEventListener("click", closeSettings);
+document.getElementById("closeSettingsBtn")?.addEventListener("click", closeSettings);    // --- Locale change handler ---
+    document.getElementById("setLocale")?.addEventListener("change", (e) => {
+      // Preview translation without saving
+      hydrateDOM(e.target.value);
+    });
 
-document.getElementById("swapBtn")?.addEventListener("click", () => {
+    document.getElementById("swapBtn")?.addEventListener("click", () => {
   const isSwapped = document.body.classList.toggle("swapped");
   const btn = document.getElementById("swapBtn");
   if (btn) {
@@ -2109,13 +2357,22 @@ document.getElementById("swapBtn")?.addEventListener("click", () => {
   }
 });
 
-document.getElementById("helpBtn")?.addEventListener("click", openHelp);
-document.getElementById("closeHelpBtn")?.addEventListener("click", closeHelp);
+document.getElementById("helpBtn")?.addEventListener("click", openWiki);
+document.getElementById("closeWikiBtn")?.addEventListener("click", closeWiki);
+document.getElementById("wikiOverviewBtn")?.addEventListener("click", openQuickHelp);
+document.getElementById("closeHelpOverlayBtn")?.addEventListener("click", closeQuickHelp);
 
-const helpModal = document.getElementById("helpModal");
-if (helpModal) {
-  helpModal.addEventListener("mousedown", (e) => {
-    if (e.target === helpModal) closeHelp();
+const wikiModal = document.getElementById("wikiModal");
+if (wikiModal) {
+  wikiModal.addEventListener("mousedown", (e) => {
+    if (e.target === wikiModal) closeWiki();
+  });
+}
+
+const helpOverlay = document.getElementById("helpOverlay");
+if (helpOverlay) {
+  helpOverlay.addEventListener("mousedown", (e) => {
+    if (e.target === helpOverlay) closeQuickHelp();
   });
 }
 
@@ -2642,9 +2899,15 @@ setInterval(() => {
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    const helpModal = document.getElementById("helpModal");
-    if (helpModal && helpModal.style.display !== "none") {
-      closeHelp();
+    const wikiModal = document.getElementById("wikiModal");
+    if (wikiModal && wikiModal.style.display !== "none") {
+      closeWiki();
+      e.preventDefault();
+      return;
+    }
+    const helpOverlay = document.getElementById("helpOverlay");
+    if (helpOverlay && helpOverlay.style.display !== "none") {
+      closeQuickHelp();
       e.preventDefault();
       return;
     }

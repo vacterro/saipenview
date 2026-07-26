@@ -350,6 +350,35 @@ class Api:
         self._set_cache(projects, force=True)
         return self.get_projects()
 
+    def get_wiki_pages(self) -> list[dict]:
+        """Return available wiki pages as [{id, title, filename}, ...]."""
+        return [
+            {"id": "WIKI-001", "title": "Project Overview", "file": "WIKI-001-project-overview.md"},
+            {"id": "WIKI-002", "title": "Architecture & Module Layout", "file": "WIKI-002-architecture.md"},
+            {"id": "WIKI-003", "title": "Commands, Hotkeys & API", "file": "WIKI-003-commands-api.md"},
+            {"id": "WIKI-004", "title": "Configuration Reference", "file": "WIKI-004-configuration.md"},
+            {"id": "WIKI-005", "title": "UI & Theme", "file": "WIKI-005-ui-theme.md"},
+        ]
+
+    def get_wiki_page(self, page_id: str) -> dict | None:
+        """Return wiki page content as {id, title, content} or None."""
+        pages = self.get_wiki_pages()
+        for p in pages:
+            if p["id"] == page_id:
+                # Resolve path: project root is 1 level up from saipenview/api.py
+                base = Path(__file__).resolve().parent.parent
+                candidate = base / ".saipen" / "extensions" / "subs" / "saiwiki" / "kitchen" / p["file"]
+                if candidate.exists():
+                    try:
+                        content = candidate.read_text(encoding="utf-8")
+                        return {"id": p["id"], "title": p["title"], "content": content}
+                    except Exception as e:
+                        print(f"SAIPENVIEW: get_wiki_page read failed: {e}", file=sys.stderr)
+                        return None
+                print(f"SAIPENVIEW: get_wiki_page: {candidate} not found", file=sys.stderr)
+                return None
+        return None
+
     def get_locales(self) -> list[dict]:
         """Return available UI locales as [{code, name}, ...]."""
         return [
