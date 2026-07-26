@@ -1,209 +1,314 @@
-# SAIPENVIEW
+<div align="center">
+  <img src="screenshots/saipen_icon.png" alt="SAIPENVIEW" width="120" height="120">
+  <h1 align="center">SAIPENVIEW</h1>
+  <p align="center">
+    <strong>Desktop tray viewer for every SAIPEN project on your machine</strong>
+    <br>
+    Autodiscovers <code>.saipen/</code> projects across local drives — live phase, task, blocker, git status, tickets, and sub-agents.
+    <br>
+    One vintage dark-golden Win95-themed dashboard.
+  </p>
+  <p>
+    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
+    <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
+    <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
+    <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
+  </p>
+</div>
 
-**Desktop tray viewer for every SAIPEN project on your machine.**  
-Autodiscovers `.saipen/` projects across local drives and shows live phase, task, blocker, git status, tickets, and sub-agents — all in one vintage dark-golden Win95-themed dashboard.
-
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Platform](https://img.shields.io/badge/platform-Windows-orange)
-[![PyPI](https://img.shields.io/badge/pypi-v0.1.0-blue)]()
-
+<br>
 
 ---
 
-## Features
+<br>
 
-- **Auto-discovery** — walks local drives (user-configurable roots) for directories containing `.saipen/STATE.md`, excludes system dirs, `node_modules`, `.git`, etc.
-- **Live dashboard** — see every project's current SAIPEN phase, task, next action, blocker, and git status at a glance
-- **Sub-agent rollup** — `saiwiki`, `saihunt`, `saitranslate` and any other subSaipen show indented under their parent with phase/task/outbox counts
-- **Git integration** — branch name and dirty-state indicator per project
-- **Built-in file viewer** — read/SAVE STATE.md, BOARD.md, and LOG.md right in the app with a smart reader mode (rendered fields, grouped tickets, parsed events)
-- **Quick actions** — contextual one-click commands (`npm run dev`, `pytest`, `cargo build`, `make`) auto-detected from project type
-- **Interactive tickets** — Start / Done buttons next to tickets move them between TODO/DOING/DONE on the BOARD.md
-- **Linked worktree detection** — finds `.git`-as-file worktrees without `.saipen/` for easy setup
-- **Flash highlight** — recently-changed projects glow and fade over 20 seconds
-- **Edit-temperature heat** — stale projects show cooler color, hot projects glow warm (24h window)
-- **Collapsible sections** — per-project collapse state persisted across sessions
-- **Resizable sidebar** — drag to resize the project list / detail pane split
-- **Window snap** — `Ctrl+Q` cycles through four corners (TL/TR/BL/BR)
-- **System tray** — minimize to tray, toggle with hotkeys, start hidden
-- **Global hotkeys** — two configurable bindings for show/hide, two for snap corner
-- **CSS zoom** — `Ctrl+MouseWheel` or `Ctrl+/-` for instant UI scaling (75%–200%)
+## ✨ At a Glance
+
+<p align="center">
+  <img src="screenshots/dashboard.png" alt="SAIPENVIEW Dashboard Screenshot" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
+  <br>
+  <em>Every SAIPEN project, sub-agent, ticket, and git status — all in one view.</em>
+</p>
+
+<br>
+
+---
+
+## 🚀 Features
+
+<table>
+<tr>
+<td width="50%">
+
+### 🔍 Discovery
+- **Auto-scan** local drives for `.saipen/` projects
+- **Custom roots** — pick folders or entire drives
+- **Smart excludes** — `node_modules`, `.git`, system dirs
+- **Background rescan** — configurable interval (default 300s)
+- **Linked worktrees** — detects git worktrees for easy setup
+
+### 📊 Dashboard
+- Live **phase**, **task**, **next action**, **blocker**
+- **Git branch** + dirty-state indicator per project
+- **Filter** by phase (All / Active / Done / Stuck / custom)
+- **Sort** — Smart, Recent, Oldest, A–Z, Z–A
+- **Search** — name/root filter + deep ticket search
+- **Pin** projects to top, **hide** irrelevant ones
+- **Flash highlight** — changed projects glow & fade over 20s
+- **Heat coloring** — stale projects cool, fresh projects warm
+
+</td>
+<td width="50%">
+
+### 🧩 Sub-Agents
+- **Nested display** — `saiwiki`, `saihunt`, `saitranslate` indented under parent
+- **Outbox counts** — ready/blocked/draft/reviewed at a glance
+- **One-click collect** — fold ready entries into main project
+- **Stale warning** — detects out-of-date protocol files
+
+### 🎮 Interaction
+- **File viewer** — read & edit STATE.md, BOARD.md, LOG.md
+  - Source mode (editable) + Reader mode (rendered)
+- **Interactive tickets** — Start / Done buttons update BOARD.md live
+- **Quick actions** — contextual `npm run dev`, `cargo test`, etc.
+- **Custom commands** — user-defined action buttons
+- **Collapsible sections** — per-project, persisted
+- **Resizable sidebar** — drag to resize
+
+### ⌨️ Hotkeys & Window
+- **Show/Hide** — `Ctrl+Alt+X` (configurable)
+- **Snap corners** — `Ctrl+Q` cycles TL → TR → BL → BR
+- **Zoom** — `Ctrl+MouseWheel`, `Ctrl+`+`/`-`
+- **System tray** — minimize to tray, start hidden
 - **Always-on-top** toggle
-- **Autostart** — optional Windows startup via `HKCU\...\Run`
+- **Autostart** — optional Windows startup
+- **Frameless mode** — toggle titlebar off for ultra-minimal view
 
-## Screenshots
+</td>
+</tr>
+</table>
 
-> *Screenshots coming soon. The UI uses a custom vintage theme with dark brown surfaces, golden accents, 3D bevels, and zero anti-aliasing.*
+<br>
 
 ---
 
-## Quick Start
+<br>
 
-### Option 1: Run from source
+## 🎯 Quick Start
+
+<table>
+<tr>
+<th width="33%">🐍 Run from source</th>
+<th width="33%">📜 Launch scripts</th>
+<th width="33%">📦 Install (future)</th>
+</tr>
+<tr>
+<td>
 
 ```bash
 git clone https://github.com/vacterro/saipenview.git
 cd saipenview
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m saipenview
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m saipenview
 ```
 
-### Option 2: Launch scripts
+</td>
+<td>
 
 | Script | Behavior |
 |---|---|
-| `run.vbs` | Launches **hidden** (no console window, tray-only) |
-| `run.bat` | Launches **visible** (console window stays open) |
+| `run.vbs` | Hidden (tray-only) |
+| `run.bat` | Visible (console open) |
+Both auto-create `.venv` & install deps.
 
-Both scripts auto-detect or create a `.venv`, install dependencies if missing, then start the app.
-
-### Option 3: Install via pip (future)
+</td>
+<td>
 
 ```bash
 pip install saipenview
 saipenview
 ```
+Coming soon ✨
+
+</td>
+</tr>
+</table>
+
+<br>
 
 ---
 
-## Usage
+## ⌨️ Usage
 
 | Action | How |
 |---|---|
-| **Show/hide window** | `Ctrl+Alt+X` or `Alt+F15` (both configurable) |
-| **Snap to corner** | `Ctrl+Q` cycles TL → TR → BL → BR |
-| **Force quit** | `Ctrl+Shift+Alt+Q` kills the process entirely |
-| **Zoom** | `Ctrl+MouseWheel`, `Ctrl+`+`/`-`, `Ctrl+0` resets |
-| **Toggle collapse** | `Alt+D` collapses/expands the toolbar |
-| **Search** | Type in the search box; tick `D` for deep ticket search |
+| **Show / Hide** | `Ctrl+Alt+X` or `Alt+F15` (both configurable) |
+| **Snap corner** | `Ctrl+Q` — cycles Top-Left → Top-Right → Bottom-Left → Bottom-Right |
+| **Kill switch** | `Ctrl+Shift+Alt+Q` — force-quit the process |
+| **Zoom in / out** | `Ctrl+MouseWheel` or `Ctrl` + `+` / `-` |
+| **Zoom reset** | `Ctrl+0` |
+| **Toggle toolbar** | `Alt+D` — collapse/expand the toolbar panel |
+| **Search projects** | Type in search box; tick `D` for deep ticket search |
 | **Filter** | Dropdown: All / Live / Done / Stuck, or click a phase pill |
 | **Sort** | Smart / Recent / Oldest / A–Z / Z–A |
-| **Rescan** | Click `Rescan` or wait for the background timer (default 300s) |
-| **Browse** | Click `Browse` to add a specific folder to the scan set |
-| **Settings** | Gear button ⚙ opens the settings modal |
-| **Help** | `?` button opens a built-in wiki modal |
-| **Right-click** project | Copy root path, filter by phase, open folder |
-| **Double-click** section | Opens the connected file (STATE.md, BOARD.md, etc.) |
+| **Rescan** | Click `Rescan` or wait for background timer (default 300s) |
+| **Browse folder** | Click `Browse` to add a folder to the scan set |
+| **Settings** | ⚙ button opens the settings modal |
+| **Help wiki** | `?` button opens the built-in mini-wiki |
+| **Right-click project** | Copy root path, filter by phase, open folder |
+| **Double-click section** | Opens the connected file (STATE.md, BOARD.md, LOG.md) |
+| **Drag window** | Drag the title bar (or anywhere in frameless mode) |
 
 ### Modals
 
-- **Settings** — zoom, hotkeys, scan tuning, autostart, always-on-top, font family, flash toggle, file viewer default, custom commands, locale, root drives/folders
-- **File Viewer** — Source (editable) / Reader (rendered) mode for STATE.md, BOARD.md, LOG.md
-- **Help** — comprehensive mini-wiki covering every feature, shortcut, and concept
-- **Confirm** — vintage-styled DOM confirmation dialog (replaces `confirm()`)
+| Modal | What it does |
+|---|---|
+| **Settings** | Zoom, hotkeys, scan tuning, autostart, always-on-top, font, flash toggle, file viewer default, custom commands, locale, scan roots |
+| **File Viewer** | Read & edit STATE.md, BOARD.md, LOG.md — Source (raw) or Reader (rendered) mode |
+| **Help** | Comprehensive mini-wiki covering every feature, shortcut, and concept |
+| **Confirm** | Vintage-styled DOM dialog (replaces native `confirm()`) |
+
+<br>
 
 ---
 
-## SAIPEN Protocol
+## 🧬 SAIPEN Protocol
 
-SAIPENVIEW is a companion app for projects using the **SAIPEN protocol** (Self-Adaptive Iterative Protocol for Enhanced Navigation) — a state-machine protocol that guides AI agents through project work in phases:
+SAIPENVIEW is a companion for projects using the **SAIPEN Protocol** — a state-machine framework that guides AI agents through project work in defined phases:
 
-`INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE`
-plus `HUNT` (bug chasing) and `CLEAN` (debt reduction).
+```
+INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
+                         ↓
+                    HUNT / CLEAN
+```
 
-Each SAIPEN project carries its state in `.saipen/STATE.md`, its work-in-progress in `.saipen/BOARD.md`, and its history in `.saipen/LOG.md`. SubSaipen agents live in `.saipen/extensions/subs/<name>/` and communicate via `kitchen/OUTBOX.md`.
+Each SAIPEN project stores its state in three canonical files:
 
-SAIPENVIEW discovers all these files and renders them in a single, cohesive dashboard.
+| File | Purpose |
+|---|---|
+| `.saipen/STATE.md` | Machine-readable frontmatter — phase, task, next action, blocker |
+| `.saipen/BOARD.md` | Ticket board — DOING / TODO / DONE / BLOCKED sections |
+| `.saipen/LOG.md` | Chronological event log — every command and its outcome |
+
+**SubSaipen agents** (`saiwiki`, `saihunt`, `saitranslate`) live in `.saipen/extensions/subs/` and communicate via `kitchen/OUTBOX.md` — the protocol's built-in cross-agent message bus. SAIPENVIEW discovers all of them and renders a unified dashboard.
+
+> 💡 *The name "SAIPENVIEW" says it all — it provides a **view** into every **SAIPEN** project on your machine.*
+
+<br>
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
-Portable — config lives next to the app, not `%APPDATA%`:
+Config is portable — stored next to the app, not `%APPDATA%`:
 
 ```
 saipenview/_data/config.json
 ```
 
-Key settings (defaults shown):
+Key defaults:
 
 ```json
 {
-  "hotkeys": ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey": ["ctrl+q", "alt+f14"],
-  "zoom_level": 1.0,
-  "font_family": "Verdana_m1",
-  "scan_roots": null,
-  "rescan_interval": 300,
-  "scan_depth": 6,
-  "scan_delay_ms": 10,
-  "auto_scan": true,
-  "show_on_launch": true,
-  "always_on_top": true,
-  "flash_changes": true,
-  "locale": "en"
+  "hotkeys":          ["ctrl+alt+x", "alt+f15"],
+  "snap_hotkey":      ["ctrl+q", "alt+f14"],
+  "zoom_level":       1.0,
+  "font_family":      "Verdana_m1",
+  "scan_roots":       null,
+  "rescan_interval":  300,
+  "scan_depth":       6,
+  "scan_delay_ms":    10,
+  "auto_scan":        true,
+  "show_on_launch":   true,
+  "always_on_top":    true,
+  "flash_changes":    true,
+  "locale":           "en"
 }
 ```
 
-Set `scan_roots: null` to autodetect all local drives. Set to a list of paths
-(e.g. `["V:\\", "D:\\projects"]`) to limit scanning. You can also configure
-everything through the Settings modal in the app.
+Set `scan_roots: null` to autodetect all local drives.  
+Set to a list of paths (e.g. `["V:\\", "D:\\projects"]`) to limit scanning.  
+All settings are also configurable through the **Settings** modal in the app.
+
+<br>
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 saipenview/
-├── app.py          — Entry wiring: tray + hotkey + window + api
-├── scanner.py      — Drive walk + background rescan loop
-├── parser.py       — STATE.md/BOARD.md/LOG.md parsing, sub/translate rollup
-├── api.py          — JS-facing pywebview bridge (30+ methods)
-├── config.py       — Settings load/save (atomic writes)
-├── tray.py         — pystray system-tray icon + context menu
-├── hotkey.py       — Global hotkey registration (keyboard lib)
-├── autostart.py    — Windows Registry autostart management
-├── zone_picker.py  — Ctrl+Q corner-snap zone picker (tkinter)
+├── app.py              Entry wiring — tray, hotkey, window, api
+├── api.py              JS-facing pywebview bridge (30+ methods)
+├── scanner.py          Drive walk + background rescan loop
+├── parser.py           STATE.md / BOARD.md / LOG.md parsing
+├── config.py           Settings load/save (atomic writes)
+├── tray.py             pystray system-tray icon + menu
+├── hotkey.py           Global hotkey registration (keyboard lib)
+├── autostart.py        Windows Registry autostart management
+├── zone_picker.py      Ctrl+Q corner-snap overlay (tkinter)
 ├── ui/
-│   ├── window.py   — pywebview window show/hide/toggle/drag/snap
-│   └── static/     — Frontend assets
+│   ├── window.py       pywebview window — show/hide/toggle/snap
+│   └── static/
 │       ├── index.html
-│       ├── style.css  (vintage dark-golden theme)
-│       └── app.js
+│       ├── style.css   Vintage dark-golden Win95 theme
+│       └── app.js      Frontend logic (~2600 lines)
 ├── assets/
 │   └── tray_icon.png
-└── _data/          — Runtime config + cache (gitignored)
+├── screenshots/        README screenshots
+└── _data/              Runtime config + cache (gitignored)
 ```
 
-### Key design decisions
+### Design principles
 
-- **Single process** — no background IPC, no separate server; the Python process hosts both the WebView2 window and the scan loop in one ThreadPoolExecutor
-- **Atomic writes** — config and cache both use temp-file + `os.replace` so a crash can never truncate them
-- **Stale-read safe** — the 5s UI poll calls `refresh_known()` (re-reads only `.saipen/` files, no directory walk), so edits to STATE.md appear within seconds without triggering a full drive scan
-- **No CSS transitions** — all visual effects (flash, heat, hover) are JavaScript-driven hexBlend recomputations every tick, strictly following the vintage theme's no-animation constraint
+- **Single process** — no background IPC, no separate server; one Python process hosts both the WebView2 window and the scan loop in a `ThreadPoolExecutor`
+- **Atomic writes** — every file write uses temp-file + `os.replace`; a crash can never truncate config or cache
+- **Stale-read safe** — the 5s UI poll calls `refresh_known()` (re-reads only `.saipen/` files, no directory walk). Edits to STATE.md appear within seconds without triggering a full drive scan
+- **No CSS transitions** — all visual effects (flash, heat, hover) are JavaScript-driven `hexBlend` recomputations, strictly following the vintage theme's zero-animation constraint
+- **Vintage theme** — dark brown surfaces, golden text/accents, 3D beveled borders, zero anti-aliasing, Verdana_m1 font
+
+<br>
 
 ---
 
-## Development
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup, conventions, and PR workflow.
+## 🧪 Development
 
 ```bash
-# Quick start
+# Clone & enter
+git clone https://github.com/vacterro/saipenview.git
+cd saipenview
+
+# Create venv & install
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+
+# Run
 python -m saipenview
 ```
 
----
+For detailed setup, coding conventions, and PR workflow, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Requirements
+### Requirements
 
-- **Windows** (10 / 11) — WebView2 runtime (installed by default on Win11, auto-installs on Win10)
-- **Python** 3.10+
+- **Windows 10 / 11** — WebView2 runtime (pre-installed on Win11, auto-installs on Win10)
+- **Python 3.10+**
 - Dependencies: `pystray`, `keyboard`, `pywebview`, `Pillow`
 
+<br>
+
 ---
 
-## License
+## 📄 License
 
 MIT — see [LICENSE](LICENSE).
 
+<br>
+
 ---
 
-## Why "SAIPENVIEW"?
-
-It provides a **view** into every **SAIPEN** project on your machine. SAIPEN's state-machine phases, sub-agents, and outbox protocol are all designed to make AI-assisted project work transparent — and SAIPENVIEW makes that transparency visible at a glance.
+<div align="center">
+  <sub>Built with 🐍 Python • 🖼️ pywebview • 🎨 Vintage Win95 aesthetic</sub>
+</div>

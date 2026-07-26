@@ -398,8 +398,9 @@ class MainWindow:
             # queues execution on the webview's main thread.
             self._window.evaluate_js(f'showToast("Snapped {nxtLabel}", "info", 1500)')
         except Exception as e:
-            err_msg = f"SAIPENVIEW: cycle_snap_corner failed: {e}"
-            print(err_msg, file=sys.stderr)
+            print(
+                f"SAIPENVIEW: cycle_snap_corner failed: {e}", file=sys.stderr
+            )
             try:
                 self._window.evaluate_js('showToast("Snap failed", "error", 3000)')
             except Exception:
