@@ -388,6 +388,7 @@ class Api:
             "custom_commands",
             "file_viewer_default",
             "locale",
+            "layout_swap",
         ):
             if k in settings:
                 self._config[k] = settings[k]

@@ -311,4 +311,19 @@ MIT — see [LICENSE](LICENSE).
 
 <div align="center">
   <sub>Built with 🐍 Python • 🖼️ pywebview • 🎨 Vintage Win95 aesthetic</sub>
+
+<br>
+
+---
+
+## 📸 More Screenshots
+
+<p align="center">
+  <img src="screenshots/detail-pane.png" alt="SAIPENVIEW Detail Pane" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
+  <br>
+  <em>Detail pane with tickets, sub-agents, and file viewer.</em>
+</p>
+
+<br>
+
 </div>

@@ -2097,6 +2097,18 @@ if (settingsBtn) settingsBtn.addEventListener("click", openSettings);
 
 document.getElementById("closeSettingsBtn")?.addEventListener("click", closeSettings);
 
+document.getElementById("swapBtn")?.addEventListener("click", () => {
+  const isSwapped = document.body.classList.toggle("swapped");
+  const btn = document.getElementById("swapBtn");
+  if (btn) {
+    btn.textContent = isSwapped ? "⇆" : "⇄";
+    btn.title = isSwapped ? "Restore default layout" : "Swap sidebar/detail pane position";
+  }
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
+    window.pywebview.api.save_view_config({ layout_swap: isSwapped });
+  }
+});
+
 document.getElementById("helpBtn")?.addEventListener("click", openHelp);
 document.getElementById("closeHelpBtn")?.addEventListener("click", closeHelp);
 
@@ -2398,6 +2410,9 @@ window.addEventListener("pywebviewready", () => {
       }
       if (cfg.collapsed_sections) {
         collapsedConfig = cfg.collapsed_sections;
+      }
+      if (cfg.layout_swap) {
+        document.body.classList.add("swapped");
       }
       renderDrives(drives, cfg.scan_roots);
       showCollapseHint();

@@ -81,6 +81,7 @@ body { display: flex; flex-direction: column; }
 .custom-root { color: var(--accentTeal); font-size: 9px; display: inline-flex; align-items: center; }
 
 .main-container { flex: 1 1 auto; display: flex; min-height: 0; overflow: hidden; }
+body.swapped .main-container { flex-direction: row-reverse; }
 body.collapsed .toolbar { display: none !important; }
 body.collapsed .toggle-btn { position:fixed !important; top:2px !important; right:2px !important; display:block !important; z-index:300; }
 
