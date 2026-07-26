@@ -392,10 +392,22 @@ function restoreCollapseState(root) {
   });
 }
 
+// If an ISO timestamp has no timezone info (no Z, no +HH:MM), treat it as UTC.
+// The Python backend writes UTC with Z, but STATE.md files created before this
+// app or edited manually may lack the Z suffix. Without this, JS interprets
+// timezone-naive strings as LOCAL time, making relativeTime() and heatColor()
+// off by the timezone offset (user report: "updated time 1-2 hours ahead").
+function _ensureTz(s) {
+  if (!s) return s;
+  const t = s.trim();
+  if (t.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(t)) return t;
+  return t + 'Z';
+}
+
 function formatLocalTime(isoStr) {
   if (!isoStr) return "";
   try {
-    const d = new Date(isoStr);
+    const d = new Date(_ensureTz(isoStr));
     if (isNaN(d.getTime())) return isoStr;
     const pad = (n) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -420,7 +432,7 @@ function applyFontFamily(fam) {
 
 function relativeTime(isoStr) {
   if (!isoStr) return "";
-  const t = new Date(isoStr).getTime();
+  const t = new Date(_ensureTz(isoStr)).getTime();
   if (isNaN(t)) return "";
   // FLOOR, not round: "2h ago" must mean at least 2 hours have passed. Rounding
   // claimed MORE elapsed time than actually had (90min showed as "2h ago"),
@@ -472,7 +484,7 @@ const HEAT_HOT = "#C0A060";  // --borderHighlight
 const HEAT_COLD = "#7A6838"; // --textMuted
 
 function heatColorFor(isoStr) {
-  const t = isoStr ? new Date(isoStr).getTime() : NaN;
+  const t = isoStr ? new Date(_ensureTz(isoStr)).getTime() : NaN;
   if (isNaN(t)) return HEAT_COLD;
   const ageSec = Math.max(0, (Date.now() - t) / 1000);
   return hexBlend(HEAT_HOT, HEAT_COLD, Math.min(1, ageSec / HEAT_WINDOW_SECONDS));
@@ -764,8 +776,8 @@ function renderDetailPane(detail) {
               ${detail.subs && detail.subs.length ? `<div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--borderMuted);">
                 <div class="detail-field" style="margin-bottom:1px;"><span class="label">Sub-agents:</span> ${detail.subs.length}</div>
                 ${detail.subs.slice().sort(function(a, b) {
-                  const ta = a.updated ? new Date(a.updated).getTime() : 0;
-                  const tb = b.updated ? new Date(b.updated).getTime() : 0;
+                  const ta = a.updated ? new Date(_ensureTz(a.updated)).getTime() : 0;
+                  const tb = b.updated ? new Date(_ensureTz(b.updated)).getTime() : 0;
                   return tb - ta;
                 }).map(function(s) {
                   const bc = s.board_counts || {};
@@ -1311,8 +1323,8 @@ function render(projects, scanned) {
           const pa = PHASE_ORDER[a.phase] || 0;
           const pb = PHASE_ORDER[b.phase] || 0;
           if (pa !== pb) return pa - pb;
-          const ta = a.updated ? new Date(a.updated).getTime() : 0;
-          const tb = b.updated ? new Date(b.updated).getTime() : 0;
+          const ta = a.updated ? new Date(_ensureTz(a.updated)).getTime() : 0;
+          const tb = b.updated ? new Date(_ensureTz(b.updated)).getTime() : 0;
           return tb - ta; // newest first
         });
         list.innerHTML = hidden.map(hiddenRowHtml).join("");
@@ -1779,8 +1791,8 @@ function showPhaseOverlay(phase) {
 
   // Sort by updated descending (newest first)
   phaseProjects.sort((a, b) => {
-    const ta = a.updated ? new Date(a.updated).getTime() : 0;
-    const tb = b.updated ? new Date(b.updated).getTime() : 0;
+    const ta = a.updated ? new Date(_ensureTz(a.updated)).getTime() : 0;
+    const tb = b.updated ? new Date(_ensureTz(b.updated)).getTime() : 0;
     return tb - ta;
   });
 
