@@ -35,9 +35,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/vac345/saipenview"
-Repository = "https://github.com/vac345/saipenview"
-Issues = "https://github.com/vac345/saipenview/issues"
+Homepage = "https://github.com/vacterro/saipenview"
+Repository = "https://github.com/vacterro/saipenview"
+Issues = "https://github.com/vacterro/saipenview/issues"
 
 [project.scripts]
 saipenview = "saipenview.__main__:main"

@@ -43,7 +43,7 @@ Autodiscovers `.saipen/` projects across local drives and shows live phase, task
 ### Option 1: Run from source
 
 ```bash
-git clone https://github.com/vac345/saipenview.git
+git clone https://github.com/vacterro/saipenview.git
 cd saipenview
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -178,20 +178,14 @@ saipenview/
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup, conventions, and PR workflow.
+
 ```bash
-# Setup
+# Quick start
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-
-# Run from source
 python -m saipenview
-
-# Build wheel
-python -m build --wheel
-
-# Install from wheel
-pip install dist/saipenview-*.whl
 ```
 
 ---

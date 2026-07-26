@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: ruff check
+        run: ruff check saipenview/
+
+      - name: ruff format check
+        run: ruff format --check saipenview/
+
+  smoke:
+    name: Syntax & Import Smoke Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install portable dependencies
+        run: |
+          pip install --upgrade pip
+          # Install only the dependencies that work on Linux.
+          # pywebview is Windows-only (WebView2/Gtk backend);
+          # keyboard also has Linux support so it's included.
+          pip install keyboard pystray Pillow
+
+      - name: Compile all Python files (syntax check)
+        run: python -m compileall saipenview/
+
+      - name: Check core modules import
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          modules = [
+              'saipenview.config',
+              'saipenview.parser',
+              'saipenview.scanner',
+              'saipenview.autostart',
+              'saipenview.tray',
+              'saipenview.hotkey',
+          ]
+          for m in modules:
+              try:
+                  __import__(m)
+                  print(f'  OK: {m}')
+              except ImportError as e:
+                  print(f'  SKIP: {m} -> {e}')
+          print('Module import check complete.')
+          "
+
+      - name: Check HTML & JS syntax
+        run: |
+          node --check saipenview/ui/static/app.js
+          python -c "import html.parser; html.parser.HTMLParser().feed(open('saipenview/ui/static/index.html').read()); print('HTML parse: OK')"
+
+  typecheck:
+    name: Type Check (mypy)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install keyboard pystray Pillow
+          pip install mypy
+
+      - name: Run mypy
+        run: mypy --ignore-missing-imports --python-version 3.11 saipenview/
+
+  build:
+    name: Build Wheel
+    runs-on: ubuntu-latest
+    needs: [lint, smoke]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build wheel
+        run: python -m build --wheel
+
+      - name: Verify wheel exists
+        run: |
+          ls -la dist/
+          echo "Wheel built: $(ls dist/*.whl | head -1)"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ github.sha }}
+          path: dist/*.whl
+          retention-days: 7
