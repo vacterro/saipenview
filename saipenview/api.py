@@ -1,0 +1,769 @@
+"""JS-facing API exposed to the pywebview window as `pywebview.api`."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import tkinter as tk
+from tkinter import filedialog
+
+from saipenview.config import load_config, save_config, config_path
+from saipenview.parser import OutboxEntry, ProjectStatus, SubStatus, load_log_tail, load_project, parse_board
+import json
+from saipenview.scanner import BackgroundScanner, _auto_roots, find_linked_worktrees, get_scan_errors, get_scan_error_log, get_scan_progress, scan
+
+_OUTBOX_STATUS_ORDER = {"ready": 0, "blocked": 1, "draft": 2, "stale": 3, "reviewed": 4}
+
+
+def _outbox_entry_to_dict(e: OutboxEntry) -> dict:
+    return {
+        "id": e.entry_id,
+        "title": e.title,
+        "status": e.status,
+        "summary": e.summary,
+        "critical": e.critical,
+        "severity": e.severity,
+    }
+
+
+def _sub_to_dict(sub: SubStatus) -> dict:
+    outbox_sorted = sorted(
+        sub.outbox,
+        key=lambda e: (_OUTBOX_STATUS_ORDER.get(e.status, 5), not e.critical),
+    )
+    return {
+        "name": sub.name,
+        "phase": sub.phase,
+        "task": sub.task,
+        "blocker": sub.blocker,
+        "updated": sub.updated,
+        "path": str(sub.path),
+        "outbox": [_outbox_entry_to_dict(e) for e in outbox_sorted],
+        "outbox_counts": sub.outbox_counts,
+        "outbox_critical_ready": sub.outbox_critical_ready,
+        "outbox_path": str(sub.path / "kitchen" / "OUTBOX.md"),
+        "next_action": sub.next_action,
+        "board_counts": dict(sub.board_counts),
+        "log_tail": list(sub.log_tail),
+    }
+
+
+def _phase_rank(phase: str) -> int:
+    return {"ACTIVE": 0, "BLOCKED": 1, "INIT": 2, "HUNT": 2, "BUILD": 2, "REVIEW": 2, "PLAN": 2, "SCOUT": 2, "ADD": 2, "CLEAN": 2, "TRANSLATE": 2, "VALIDATE": 2, "VERIFY": 3, "SHIP": 3, "DONE": 4}.get(phase, 5)
+
+
+class _Reversed:
+    """Wraps a value so it sorts descending inside an otherwise-ascending
+    tuple key -- list.sort() takes one direction per call, this is the
+    standard way to mix directions per tuple field without a second pass."""
+    __slots__ = ("obj",)
+
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __lt__(self, other):
+        return other.obj < self.obj
+
+def _project_sort_key(x: dict, order: str = "smart") -> tuple:
+    if order == "name_asc":
+        return (not x["is_pinned"], x["name"].lower())
+    if order == "name_desc":
+        return (not x["is_pinned"], _Reversed(x["name"].lower()))
+    if order == "recent":
+        return (not x["is_pinned"], -x.get("mtime", 0))
+    if order == "oldest":
+        return (not x["is_pinned"], x.get("mtime", 0))
+    return (not x["is_pinned"], _phase_rank(x["phase"]), not x.get("git_dirty", False), -x.get("mtime", 0), x["name"].lower())
+
+def _project_to_dict(project: ProjectStatus, pinned_roots: set[str] | None = None) -> dict:
+    root_str = str(project.root)
+    is_pinned = bool(pinned_roots and root_str in pinned_roots)
+    return {
+        "name": project.name,
+        "root": root_str,
+        "phase": project.phase,
+        "task": project.task,
+        "next_action": project.next_action,
+        "blocker": project.blocker,
+        "updated": project.updated,
+        "mtime": project.mtime,
+        "board": project.board.counts(),
+        "subs": [_sub_to_dict(s) for s in project.subs],
+        "translate": _sub_to_dict(project.translate) if project.translate else None,
+        "is_pinned": is_pinned,
+        "quick_actions": project.quick_actions,
+        "subs_stale": project.subs_stale,
+        "subs_stale_details": project.subs_stale_details,
+        "git_branch": project.git_branch,
+        "git_dirty": project.git_dirty,
+    }
+
+
+class Api:
+    """Owns the cached scan result + user config; BackgroundScanner refreshes off-thread."""
+
+    def __init__(self, on_hotkeys_changed=None, window=None):
+        self._window = window
+        self._lock = threading.Lock()
+        self._projects: list[dict] = []
+        self._has_scanned = False
+        self._scanning = False
+        self._config = load_config()
+        self._auto_scan = self._config.get("auto_scan", True)
+        self._on_hotkeys_changed = on_hotkeys_changed
+        self._on_snap_hotkey_changed = None
+        self._on_quit = None
+        self._cache_file = config_path().parent / "cache.json"
+        if self._cache_file.exists():
+            try:
+                with open(self._cache_file, "r", encoding="utf-8") as f:
+                    self._projects = json.load(f)
+                self._has_scanned = True
+            except Exception as e:
+                print(f"SAIPENVIEW: cache at {self._cache_file} unreadable ({e}), starting fresh", file=sys.stderr)
+
+        self._linked_worktrees: list[dict] = []
+        self.background_scanner = BackgroundScanner(
+            on_result=self._set_cache,
+            scan_roots=self._config["scan_roots"],
+            interval_seconds=self._config["rescan_interval"],
+            max_depth=self._config.get("scan_depth", 6),
+            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
+            extra_excludes=set(self._config.get("exclude_dirs", [])),
+            on_scan_start=lambda: self._set_scanning(True),
+        )
+
+    def _set_scanning(self, val: bool) -> None:
+        with self._lock:
+            self._scanning = val
+
+    def _sort_order(self) -> str:
+        return self._config.get("sort_order", "smart")
+
+    def _set_cache(self, projects: list[ProjectStatus], force: bool = False) -> None:
+        pinned_set = set(self._config.get("pinned_roots") or [])
+        hidden_set = set(self._config.get("hidden_roots") or [])
+        with self._lock:
+            if not force and not projects and self._has_scanned and self._projects:
+                self._scanning = False
+                return
+            items = [_project_to_dict(p, pinned_set) for p in projects if str(p.root) not in hidden_set]
+            items.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+            self._projects = items
+            self._has_scanned = True
+            self._scanning = False
+        # Refresh linked worktrees after every scan result — catches all
+        # three paths: manual rescan, BackgroundScanner._loop, and browse.
+        self._scan_linked_worktrees()
+        # Atomic write (temp + replace) via the shared helper -- a crash mid
+        # plain write left truncated JSON that __init__'s json.load choked on.
+        self._write_cache()
+
+    def get_projects(self) -> list[dict]:
+        hidden_set = set(self._config.get("hidden_roots") or [])
+        with self._lock:
+            return [p for p in self._projects if p["root"] not in hidden_set]
+
+    def refresh_known(self) -> list[dict]:
+        """Re-read the .saipen/ files of roots we ALREADY know about.
+
+        This is the cheap half of scanning: no directory walk, no drive sweep,
+        just a re-parse of each known project's own small files. The expensive
+        discovery sweep stays on its slow timer (rescan_interval) and is what
+        finds NEW projects; this runs on the UI poll so an edit to a STATE.md
+        shows up within seconds instead of up to rescan_interval later.
+
+        Fixes both T-071 (list wasn't live) and T-072 (the sidebar served this
+        stale cache while the detail pane did a live read, so the same project
+        could show two different `updated` values at once).
+        """
+        with self._lock:
+            roots = [p["root"] for p in self._projects]
+        if not roots:
+            return self.get_projects()
+
+        pinned_set = set(self._config.get("pinned_roots") or [])
+        hidden_set = set(self._config.get("hidden_roots") or [])
+        fresh: list[dict] = []
+        for root in roots:
+            if root in hidden_set:
+                continue
+            with self._lock:
+                prev = next((p for p in self._projects if p["root"] == root), None)
+            try:
+                # with_git=False: the git lookup is ~97% of load_project's cost
+                # (two subprocesses). Git state can't change from a STATE.md
+                # edit, so carry the previous values and let the slow full scan
+                # refresh them.
+                proj = load_project(Path(root), with_git=False)
+            except Exception as e:
+                # One unreadable project must not stop the refresh (same rule
+                # _scan_one_root follows). Keep the last-known row instead.
+                print(f"SAIPENVIEW: refresh_known({root}) failed: {e}", file=sys.stderr)
+                proj = None
+            if proj is None:
+                if prev:
+                    fresh.append(prev)
+                continue
+            row = _project_to_dict(proj, pinned_set)
+            if prev:
+                row["git_branch"] = prev.get("git_branch", "")
+                row["git_dirty"] = prev.get("git_dirty", False)
+            fresh.append(row)
+
+        fresh.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+        with self._lock:
+            changed = fresh != self._projects
+            self._projects = fresh
+        # Persist so the next cold start doesn't fast-boot into stale rows.
+        # _set_cache writes cache.json but only the slow full scan calls it, so
+        # without this an edit made between scans was visible live yet lost on
+        # restart. Written only when something ACTUALLY changed -- this runs on
+        # the 5s poll and must not turn into a disk write every 5 seconds.
+        if changed:
+            self._write_cache()
+        return self.get_projects()
+
+    def _write_cache(self) -> None:
+        try:
+            tmp_path = self._cache_file.with_name(self._cache_file.name + ".tmp")
+            with self._lock:
+                snapshot = list(self._projects)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f)
+            os.replace(tmp_path, self._cache_file)
+        except Exception as e:
+            print(f"SAIPENVIEW: failed to write cache at {self._cache_file}: {e}", file=sys.stderr)
+
+    def get_local_drives(self) -> list[str]:
+        from saipenview.scanner import local_drives
+        return local_drives()
+
+    def get_status(self) -> dict:
+        with self._lock:
+            return {"scanned": self._has_scanned, "scanning": self._scanning, "count": len(self._projects)}
+
+    def get_scan_errors(self) -> list[str]:
+        return get_scan_errors()
+
+    def get_scan_error_log(self) -> list[dict]:
+        return get_scan_error_log()
+
+    def get_scan_progress(self) -> dict:
+        return get_scan_progress()
+
+    def get_linked_worktrees(self) -> list[dict]:
+        """Returns cached list of linked worktrees found during the last scan.
+        Never mixed into normal project rows -- these are .git-as-file dirs
+        without .saipen/ that need manual setup before they appear in the
+        main project list."""
+        with self._lock:
+            return list(self._linked_worktrees)
+
+    def _scan_linked_worktrees(self) -> None:
+        """Run linked worktree detection and cache results."""
+        roots = self._config.get("scan_roots")
+        if not roots:
+            self._linked_worktrees = []
+            return
+        try:
+            self._linked_worktrees = find_linked_worktrees(
+                roots,
+                max_depth=self._config.get("scan_depth", 6),
+                delay=self._config.get("scan_delay_ms", 10) / 1000.0,
+                extra_excludes=set(self._config.get("exclude_dirs", [])),
+            )
+        except Exception as e:
+            print(f"SAIPENVIEW: linked worktree scan failed: {e}", file=sys.stderr)
+            self._linked_worktrees = []
+
+    def rescan(self) -> list[dict]:
+        self._set_scanning(True)
+        self._scan_linked_worktrees()
+        projects = scan(
+            self._config["scan_roots"],
+            max_depth=self._config.get("scan_depth", 6),
+            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
+            extra_excludes=set(self._config.get("exclude_dirs", [])),
+        )
+        self._set_cache(projects, force=True)
+        return self.get_projects()
+
+    def get_locales(self) -> list[dict]:
+        """Return available UI locales as [{code, name}, ...]."""
+        return [
+            {"code": "en", "name": "English"},
+            {"code": "zh-CN", "name": "简体中文 (Simplified Chinese)"},
+        ]
+
+    def set_locale(self, code: str) -> dict:
+        """Set the UI locale. Returns updated config."""
+        self._config["locale"] = code
+        save_config(self._config)
+        return self.get_config()
+
+    def get_config(self) -> dict:
+        return dict(self._config)
+
+    def save_view_config(self, settings: dict) -> dict:
+        for k in ("filter_phase", "compact_mode", "zoom_level", "window_width", "window_height", "window_x", "window_y", "selected_root", "search_query", "sidebar_width", "show_hidden", "top_panel_collapsed", "collapse_hint_acknowledged", "collapsed_sections", "show_on_launch", "flash_changes", "font_family", "custom_commands", "file_viewer_default", "locale"):
+            if k in settings:
+                self._config[k] = settings[k]
+        save_config(self._config)
+        return self.get_config()
+
+    def toggle_pin(self, root_str: str) -> list[dict]:
+        pinned = list(self._config.get("pinned_roots") or [])
+        if root_str in pinned:
+            pinned.remove(root_str)
+        else:
+            pinned.append(root_str)
+        self._config["pinned_roots"] = pinned
+        save_config(self._config)
+        with self._lock:
+            for p in self._projects:
+                p["is_pinned"] = p["root"] in pinned
+            self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+            return list(self._projects)
+
+    def hide_project(self, root_str: str) -> list[dict]:
+        hidden = list(self._config.get("hidden_roots") or [])
+        if root_str not in hidden:
+            hidden.append(root_str)
+        self._config["hidden_roots"] = hidden
+        save_config(self._config)
+        with self._lock:
+            self._projects = [p for p in self._projects if p["root"] != root_str]
+            return list(self._projects)
+
+    def unhide_project(self, root_str: str) -> list[dict]:
+        hidden = list(self._config.get("hidden_roots") or [])
+        if root_str in hidden:
+            hidden.remove(root_str)
+        self._config["hidden_roots"] = hidden
+        save_config(self._config)
+        return self.get_projects()
+
+    def get_hidden_projects(self) -> list[dict]:
+        hidden_set = set(self._config.get("hidden_roots") or [])
+        if not hidden_set:
+            return []
+        pinned_set = set(self._config.get("pinned_roots") or [])
+        raw = scan(
+            list(hidden_set),
+            max_depth=self._config.get("scan_depth", 6),
+            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
+            extra_excludes=set(self._config.get("exclude_dirs", [])),
+        )
+        return [_project_to_dict(p, pinned_set) for p in raw]
+
+    def open_folder(self, root_str: str) -> bool:
+        if os.path.exists(root_str):
+            try:
+                os.startfile(root_str)
+                return True
+            except Exception as e:
+                print(f"SAIPENVIEW: open_folder({root_str}) failed: {e}", file=sys.stderr)
+        return False
+    def open_terminal(self, root_str: str) -> bool:
+        if os.path.exists(root_str):
+            try:
+                subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root_str}"'])
+                return True
+            except Exception as e:
+                print(f"SAIPENVIEW: open_terminal({root_str}) failed: {e}", file=sys.stderr)
+        return False
+
+    def open_editor(self, root_str: str) -> bool:
+        if os.path.exists(root_str):
+            try:
+                # 0x08000000 = CREATE_NO_WINDOW
+                subprocess.Popen(["code", root_str], shell=True, creationflags=0x08000000)
+                return True
+            except (OSError, FileNotFoundError) as e:
+                print(f"SAIPENVIEW: open_editor({root_str}) failed: {e}", file=sys.stderr)
+        return False
+
+
+    def read_file_text(self, file_path: str) -> str | None:
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return f.read()
+        except Exception as e:
+            print(f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr)
+        return None
+
+    def write_file_text(self, file_path: str, content: str) -> bool:
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return True
+        except Exception as e:
+            print(f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr)
+        return False
+
+    def get_project_detail(self, root_str: str) -> dict | None:
+        p = Path(root_str)
+        proj = load_project(p)
+        if not proj:
+            return None
+        pinned_set = set(self._config.get("pinned_roots") or [])
+        d = _project_to_dict(proj, pinned_set)
+        d["custom_commands"] = list(self._config.get("custom_commands") or [])
+        d["log_tail"] = load_log_tail(p)
+        d["todo_tickets"] = [{"id": t.ticket_id, "desc": t.description} for t in proj.board.todo]
+        d["blocked_tickets"] = [{"id": t.ticket_id, "desc": t.description} for t in proj.board.blocked]
+        d["done_tickets"] = [{"id": t.ticket_id, "desc": t.description} for t in proj.board.done[-5:]]
+        return d
+
+    def update_project_state(self, root_str: str, updates: dict) -> dict | None:
+        from saipenview.parser import update_state
+        p = Path(root_str)
+        if update_state(p, updates):
+            # force cache update
+            self.rescan()
+            return self.get_project_detail(root_str)
+        return None
+
+    def set_hotkey_callback(self, callback) -> None:
+        self._on_hotkeys_changed = callback
+
+    def set_snap_hotkey_callback(self, callback) -> None:
+        self._on_snap_hotkey_changed = callback
+
+    def set_quit_callback(self, callback) -> None:
+        self._on_quit = callback
+
+    def quit(self) -> None:
+        if self._on_quit:
+            self._on_quit()
+
+    def set_zoom_level(self, zoom: float) -> dict:
+        self._config["zoom_level"] = float(zoom)
+        save_config(self._config)
+        return self.get_config()
+
+    def move_by(self, dx: int, dy: int) -> None:
+        if self._window:
+            self._window.move_by(dx, dy)
+
+    def set_sort_order(self, order: str) -> dict:
+        self._config["sort_order"] = order
+        save_config(self._config)
+        with self._lock:
+            self._projects.sort(key=lambda x: _project_sort_key(x, order))
+        return self.get_config()
+
+    def set_hotkeys(self, hotkeys: list[str]) -> dict:
+        hotkeys = [h.strip() for h in hotkeys if h.strip()]
+        if not hotkeys or not self._on_hotkeys_changed:
+            return self.get_config()
+        previous = self._config["hotkeys"]
+        try:
+            self._on_hotkeys_changed(hotkeys)
+        except (ValueError, KeyError):
+            self._on_hotkeys_changed(previous)  # revert to last-known-good
+            return self.get_config()
+        self._config["hotkeys"] = hotkeys
+        save_config(self._config)
+        return self.get_config()
+
+    def set_snap_hotkey(self, hotkeys: str | list[str]) -> dict:
+        if isinstance(hotkeys, str):
+            hotkeys = [h.strip() for h in hotkeys.split(",") if h.strip()]
+        if not hotkeys or not self._on_snap_hotkey_changed:
+            return self.get_config()
+        previous = self._config["snap_hotkey"]
+        try:
+            self._on_snap_hotkey_changed(hotkeys)
+        except Exception:
+            # Hotkey registration failed (invalid combo, keyboard lib error, etc.)
+            # Try to restore previous hotkeys silently
+            try:
+                self._on_snap_hotkey_changed(previous if isinstance(previous, list) else [previous])
+            except Exception:
+                pass
+            return self.get_config()
+        self._config["snap_hotkey"] = hotkeys
+        save_config(self._config)
+        return self.get_config()
+
+    def set_scan_tuning(self, scan_depth: int, scan_delay_ms: int, rescan_interval: int) -> dict:
+        """Rebuilds the background scanner with new tuning; does NOT force an immediate
+        full scan -- unlike set_scan_roots, these are background-timing knobs, not a
+        visible change the user expects reflected instantly. Applies from the next
+        scheduled rescan or manual 'Rescan now'."""
+        self._config["scan_depth"] = max(1, min(8, int(scan_depth)))
+        self._config["scan_delay_ms"] = max(0, int(scan_delay_ms))
+        self._config["rescan_interval"] = max(10, int(rescan_interval))
+        save_config(self._config)
+        self.background_scanner.stop()
+        self.background_scanner = BackgroundScanner(
+            on_result=self._set_cache,
+            scan_roots=self._config["scan_roots"],
+            interval_seconds=self._config["rescan_interval"],
+            max_depth=self._config["scan_depth"],
+            delay=self._config["scan_delay_ms"] / 1000.0,
+            extra_excludes=set(self._config.get("exclude_dirs", [])),
+            on_scan_start=lambda: self._set_scanning(True),
+        )
+        if self._auto_scan:
+            self.background_scanner.start()
+        return self.get_config()
+
+    def set_scan_roots(self, roots: list[str] | None) -> list[dict]:
+        self._config["scan_roots"] = roots
+        save_config(self._config)
+        self.background_scanner.stop()
+        self._set_scanning(True)
+        projects = scan(roots)
+        self._set_cache(projects, force=True)
+        self.background_scanner = BackgroundScanner(
+            on_result=self._set_cache,
+            scan_roots=roots,
+            interval_seconds=self._config["rescan_interval"],
+            max_depth=self._config.get("scan_depth", 6),
+            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
+            extra_excludes=set(self._config.get("exclude_dirs", [])),
+            on_scan_start=lambda: self._set_scanning(True),
+        )
+        self.background_scanner.start()
+        return self.get_projects()
+
+    def set_exclude_dirs(self, dirs: list[str]) -> list[dict]:
+        self._config["exclude_dirs"] = list(dirs)
+        save_config(self._config)
+        return self.rescan()
+
+    def clipboard_copy(self, text: str) -> bool:
+        """Copy text to system clipboard via PowerShell (works in pywebview
+        where navigator.clipboard is unavailable due to WebView2 secure-context
+        requirement). PowerShell escapes double-quotes inside double-quoted
+        strings by doubling them: "" -> literal "."""
+        try:
+            cmd = f'Set-Clipboard -Value "{text.replace(chr(34), chr(34)+chr(34))}"'
+            subprocess.run(["powershell", "-NoProfile", "-Command", cmd], check=True)
+            return True
+        except Exception as e:
+            print(f"SAIPENVIEW: clipboard_copy failed: {e}", file=sys.stderr)
+            return False
+
+    def browse_folder(self) -> list[dict]:
+        """Open native folder picker, add selected folder to scan roots (keeping every
+        source already selected -- drives and previously browsed folders alike), then
+        rescan the full merged set so the list shows all sources together, not just
+        the one just picked."""
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        folder = filedialog.askdirectory(title="Select folder to scan for SAIPEN projects")
+        root.destroy()
+        if not folder:
+            self._set_scanning(False)
+            return self.get_projects()
+
+        folder_str = str(Path(folder).resolve())
+
+        existing = self._config.get("scan_roots")
+        if existing is None:
+            # was "auto all local drives" -- make that explicit so adding a folder
+            # expands the source set instead of silently replacing it
+            existing = _auto_roots()
+        else:
+            existing = [str(Path(r).resolve()) for r in existing if os.path.exists(r)]
+        if folder_str not in existing:
+            existing.append(folder_str)
+        self._config["scan_roots"] = existing
+        save_config(self._config)
+
+        self._set_scanning(True)
+        projects = scan(
+            existing,
+            max_depth=self._config.get("scan_depth", 6),
+            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
+            extra_excludes=set(self._config.get("exclude_dirs", [])),
+        )
+        self._set_cache(projects, force=True)
+        self._scan_linked_worktrees()
+
+        self.background_scanner.stop()
+        self.background_scanner = BackgroundScanner(
+            on_result=self._set_cache,
+            scan_roots=existing,
+            interval_seconds=self._config["rescan_interval"],
+            max_depth=self._config.get("scan_depth", 6),
+            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
+            extra_excludes=set(self._config.get("exclude_dirs", [])),
+            on_scan_start=lambda: self._set_scanning(True),
+        )
+        self.background_scanner.start()
+
+        return self.get_projects()
+
+    def start(self) -> None:
+        self._auto_scan = self._config.get("auto_scan", True)
+        if self._auto_scan:
+            self._set_scanning(True)
+            self._scan_linked_worktrees()
+            self.background_scanner.start()
+
+    def stop(self) -> None:
+        self.background_scanner.stop()
+
+    def set_auto_scan(self, enabled: bool) -> dict:
+        self._auto_scan = enabled
+        self._config["auto_scan"] = enabled
+        save_config(self._config)
+        if enabled:
+            self._set_scanning(True)
+            self.background_scanner.start()
+        else:
+            self.background_scanner.stop()
+            self._set_scanning(False)
+        return self.get_config()
+
+    def get_autostart_enabled(self) -> bool:
+        """Registry is the source of truth, not a mirrored config flag --
+        sidesteps config/registry drift entirely (e.g. after a manual
+        uninstall of the Run key, or the project folder getting moved)."""
+        from saipenview import autostart
+        return autostart.is_enabled()
+
+    def set_autostart_enabled(self, enabled: bool) -> bool:
+        from saipenview import autostart
+        return autostart.set_enabled(enabled)
+
+    def set_always_on_top(self, enabled: bool) -> dict:
+        self._config["always_on_top"] = enabled
+        save_config(self._config)
+        if self._window:
+            self._window.set_always_on_top(enabled)
+        return self.get_config()
+
+    def toggle_frameless(self) -> bool:
+        """Toggle the window titlebar on/off via Windows API."""
+        if self._window:
+            return self._window.toggle_frameless()
+        return False
+
+
+    def collect_outbox(self, root_str: str, sub_name: str, entry_id: str) -> dict:
+        """Collect one ready OUTBOX entry from a subSaipen into the main
+        project. Returns the result dict from collect_outbox_entry()."""
+        from saipenview.parser import collect_outbox_entry
+        p = Path(root_str)
+        result = collect_outbox_entry(p, sub_name, entry_id)
+        if result.get("ok"):
+            # Refresh cache so the UI shows updated state
+            self.rescan()
+            result["updated_detail"] = self.get_project_detail(root_str)
+        return result
+
+    def run_command(self, root_str: str, command: str) -> bool:
+        """Open a new cmd.exe window in the project root and run a command.
+        The window stays open (/k) so the user can see output."""
+        try:
+            subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root_str}" && {command}'])
+            return True
+        except Exception as e:
+            print(f"SAIPENVIEW: run_command({root_str}, {command}) failed: {e}", file=sys.stderr)
+            return False
+
+    def _search_board_for_tickets(self, board_path: Path, q: str) -> list[dict]:
+        """Helper: read and search a BOARD.md, return matching tickets as
+        [{id, desc, section}] or empty list on any error."""
+        if not board_path.is_file():
+            return []
+        try:
+            board_text = board_path.read_text(encoding="utf-8")
+            board = parse_board(board_text)
+            found = []
+            for ticket in board.doing:
+                if q in ticket.ticket_id.lower() or q in ticket.description.lower():
+                    found.append({"id": ticket.ticket_id, "desc": ticket.description, "section": "DOING"})
+            for ticket in board.todo:
+                if q in ticket.ticket_id.lower() or q in ticket.description.lower():
+                    found.append({"id": ticket.ticket_id, "desc": ticket.description, "section": "TODO"})
+            for ticket in board.blocked:
+                if q in ticket.ticket_id.lower() or q in ticket.description.lower():
+                    found.append({"id": ticket.ticket_id, "desc": ticket.description, "section": "BLOCKED"})
+            for ticket in board.done:
+                if q in ticket.ticket_id.lower() or q in ticket.description.lower():
+                    found.append({"id": ticket.ticket_id, "desc": ticket.description, "section": "DONE"})
+            return found
+        except Exception:
+            return []
+
+    def quick_search(self, query: str) -> list[dict]:
+        """Search all cached projects by name AND read their BOARD.md
+        (and sub-agent BOARD.md files) to find matching tickets.
+
+        Returns list of {root, name, phase, matched_field,
+        matched_tickets: [{id, desc, section}],
+        sub_matched_tickets: [{sub_name, id, desc, section}].}"""
+        q = query.strip().lower()
+        if not q:
+            return []
+        results = []
+        with self._lock:
+            projects = list(self._projects)
+        for p in projects:
+            root = p["root"]
+            name = p["name"]
+            phase = p["phase"]
+            matched_tickets = []
+            sub_matched_tickets = []
+            matched_field = None
+
+            # Check project name
+            if name.lower().find(q) != -1:
+                matched_field = "name"
+
+            # Search main BOARD.md for matching tickets
+            board_path = Path(root) / ".saipen" / "BOARD.md"
+            matched_tickets = self._search_board_for_tickets(board_path, q)
+
+            # Search each sub-agent's BOARD.md
+            for sub in p.get("subs") or []:
+                sub_path = sub.get("path", "")
+                if sub_path:
+                    sub_board = Path(sub_path) / "BOARD.md"
+                    sub_matches = self._search_board_for_tickets(sub_board, q)
+                    for mt in sub_matches:
+                        mt["sub_name"] = sub.get("name", "?")
+                        sub_matched_tickets.append(mt)
+
+            # Also search translate sub if present
+            translate = p.get("translate")
+            if translate and translate.get("path"):
+                t_board = Path(translate["path"]) / "BOARD.md"
+                t_matches = self._search_board_for_tickets(t_board, q)
+                for mt in t_matches:
+                    mt["sub_name"] = translate.get("name", "saitranslate")
+                    sub_matched_tickets.append(mt)
+
+            if matched_field or matched_tickets or sub_matched_tickets:
+                results.append({
+                    "root": root,
+                    "name": name,
+                    "phase": phase,
+                    "matched_tickets": matched_tickets,
+                    "sub_matched_tickets": sub_matched_tickets,
+                    "matched_field": matched_field or "ticket",
+                })
+        return results
+
+    def toggle_ticket_status(self, root_str: str, ticket_id: str, action: str) -> dict | None:
+        """Move a ticket between sections on BOARD.md: start (TODO->DOING),
+        done (DOING->DONE), reopen (DONE->TODO). Returns updated project detail
+        or None on failure."""
+        from saipenview.parser import move_ticket
+        p = Path(root_str)
+        if move_ticket(p, ticket_id, action):
+            self.rescan()
+            return self.get_project_detail(root_str)
+        return None

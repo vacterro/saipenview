@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saipenview"
+version = "0.1.0"
+description = "Desktop tray viewer for SAIPEN projects — live dashboard with vintage Win95 aesthetic"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["saipen", "dashboard", "tray", "project-management", "ai-agents"]
+authors = [
+  {name = "SAIPENVIEW Contributors"},
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: English",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Desktop Environment :: Window Managers",
+  "Topic :: Software Development :: Version Control",
+]
+dependencies = [
+    "pystray>=0.19",
+    "keyboard>=0.13",
+    "pywebview>=5.0",
+    "Pillow>=10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/vac345/saipenview"
+Repository = "https://github.com/vac345/saipenview"
+Issues = "https://github.com/vac345/saipenview/issues"
+
+[project.scripts]
+saipenview = "saipenview.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["saipenview*"]
+
+[tool.setuptools.package-data]
+saipenview = ["ui/static/*", "assets/*"]

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Project runtime data
+saipenview/_data/
+
+# Session / agent data — contains machine-local paths, session state
+.saipen/
+.freebuff/
+
+# Test artifacts
+.pytest_cache/
+snap_test_log.txt
+run_console_test*.log
+
+# Package manager locks (optional, user-generated)
+uv.lock
+
+# Temp / swap
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+
+# Windows special devices
+nul
+NUL
+NUL.*
+
