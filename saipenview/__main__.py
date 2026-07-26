@@ -1,4 +1,5 @@
 """SAIPENVIEW entry point."""
+
 import sys
 
 from saipenview.app import run

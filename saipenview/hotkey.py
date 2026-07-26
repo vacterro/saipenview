@@ -1,4 +1,5 @@
 """Global hotkey registration for show/hide toggle."""
+
 from __future__ import annotations
 
 from typing import Callable, Iterable
@@ -13,7 +14,9 @@ DEFAULT_HOTKEYS = DEFAULTS["hotkeys"]
 class HotkeyListener:
     """Registers one or more global hotkeys that all call the same callback."""
 
-    def __init__(self, on_toggle: Callable[[], None], hotkeys: Iterable[str] = DEFAULT_HOTKEYS):
+    def __init__(
+        self, on_toggle: Callable[[], None], hotkeys: Iterable[str] = DEFAULT_HOTKEYS
+    ):
         self._on_toggle = on_toggle
         self._hotkeys = list(hotkeys)
         self._registered: list[str] = []

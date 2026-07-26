@@ -3,6 +3,7 @@
 import collections
 import concurrent.futures
 import os
+import sys
 import threading
 import string
 import time
@@ -36,15 +37,52 @@ def _set_scan_progress(**kw) -> None:
 
 def _push_error(msg: str) -> None:
     import datetime
-    _scan_errors.append({"time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "message": msg})
+
+    _scan_errors.append(
+        {
+            "time": datetime.datetime.now(datetime.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "message": msg,
+        }
+    )
+
 
 EXCLUDE_DIRS = {
-    "node_modules", ".git", "Windows", "Program Files", "Program Files (x86)",
-    "$Recycle.Bin", "ProgramData", "AppData", ".venv", "venv", "env",
-    "site-packages", "__pycache__", "$RECYCLE.BIN", "System Volume Information",
-    "Local", "Roaming", "Microsoft", "Packages", "vendor", ".cache", ".cargo",
-    ".rustup", ".nuget", ".gradle", ".m2", ".electron", ".vs", "obj", "bin",
-    "target", "out", "dist", "build",
+    "node_modules",
+    ".git",
+    "Windows",
+    "Program Files",
+    "Program Files (x86)",
+    "$Recycle.Bin",
+    "ProgramData",
+    "AppData",
+    ".venv",
+    "venv",
+    "env",
+    "site-packages",
+    "__pycache__",
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    "Local",
+    "Roaming",
+    "Microsoft",
+    "Packages",
+    "vendor",
+    ".cache",
+    ".cargo",
+    ".rustup",
+    ".nuget",
+    ".gradle",
+    ".m2",
+    ".electron",
+    ".vs",
+    "obj",
+    "bin",
+    "target",
+    "out",
+    "dist",
+    "build",
 }
 
 MAX_SCAN_DEPTH = 8
@@ -56,6 +94,7 @@ SYSTEM_DRIVE = "C:\\"
 # --- Linked worktree detection ---
 # A git-linked worktree has .git as a FILE (containing the path to the main
 # repo's .git directory). Never mixed into the normal .saipen/ project list.
+
 
 def find_linked_worktrees(
     scan_roots: list[str],
@@ -74,16 +113,17 @@ def find_linked_worktrees(
         if not root_path.exists() or not root_path.is_dir():
             continue
         dir_count = 0
-        for dirpath, dirnames, _filenames in os.walk(root_path, topdown=True, onerror=lambda e: None):
+        for dirpath, dirnames, _filenames in os.walk(
+            root_path, topdown=True, onerror=lambda e: None
+        ):
             rel = Path(dirpath).relative_to(root_path)
             depth = len(rel.parts) if str(rel) != "." else 0
             if depth >= max_depth:
                 dirnames.clear()
             dirnames[:] = [
-                d for d in dirnames
-                if d not in combined
-                and not d.startswith("$")
-                and not d.startswith(".")
+                d
+                for d in dirnames
+                if d not in combined and not d.startswith("$") and not d.startswith(".")
             ]
             dir_count += 1
             if delay and dir_count % SCAN_DELAY_EVERY_N == 0:
@@ -93,22 +133,26 @@ def find_linked_worktrees(
             if git_path.is_file() and not saipen_path.is_dir():
                 try:
                     git_dir_content = git_path.read_text(encoding="utf-8").strip()
-                    results.append({
-                        "root": str(Path(dirpath).resolve()),
-                        "name": Path(dirpath).name,
-                        "git_dir": git_dir_content,
-                    })
+                    results.append(
+                        {
+                            "root": str(Path(dirpath).resolve()),
+                            "name": Path(dirpath).name,
+                            "git_dir": git_dir_content,
+                        }
+                    )
                 except Exception as e:
                     # Don't drop the worktree just because its marker file
                     # wouldn't read -- that would silently hide the very thing
                     # this function exists to surface. Report it and still list
                     # the worktree, with git_dir left unknown (T-063).
                     _push_error(f"linked worktree at {dirpath}: .git unreadable: {e}")
-                    results.append({
-                        "root": str(Path(dirpath).resolve()),
-                        "name": Path(dirpath).name,
-                        "git_dir": "",
-                    })
+                    results.append(
+                        {
+                            "root": str(Path(dirpath).resolve()),
+                            "name": Path(dirpath).name,
+                            "git_dir": "",
+                        }
+                    )
                 # Don't recurse into a worktree's own subdirs
                 dirnames.clear()
     results.sort(key=lambda x: x["name"].lower())
@@ -124,16 +168,24 @@ def local_drives() -> list[str]:
     return drives
 
 
-def _walk_with_depth_limit(root_path: Path, max_depth: int, delay: float, extra_excludes: set[str] | None = None):
+def _walk_with_depth_limit(
+    root_path: Path,
+    max_depth: int,
+    delay: float,
+    extra_excludes: set[str] | None = None,
+):
     combined = EXCLUDE_DIRS | (extra_excludes or set())
     dir_count = 0
-    for dirpath, dirnames, _filenames in os.walk(root_path, topdown=True, onerror=lambda e: None):
+    for dirpath, dirnames, _filenames in os.walk(
+        root_path, topdown=True, onerror=lambda e: None
+    ):
         rel = Path(dirpath).relative_to(root_path)
         depth = len(rel.parts) if str(rel) != "." else 0
         if depth >= max_depth:
             dirnames.clear()
         dirnames[:] = [
-            d for d in dirnames
+            d
+            for d in dirnames
             if d not in combined
             and not d.startswith("$")
             and not (d.startswith(".") and d != ".saipen")
@@ -168,9 +220,16 @@ def find_saipen_roots(
 PER_ROOT_TIMEOUT_SECONDS = 120
 
 
-def _scan_one_root(root: str, max_depth: int = MAX_SCAN_DEPTH, delay: float = SCAN_INTER_DIR_DELAY, extra_excludes: set[str] | None = None) -> list[ProjectStatus]:
+def _scan_one_root(
+    root: str,
+    max_depth: int = MAX_SCAN_DEPTH,
+    delay: float = SCAN_INTER_DIR_DELAY,
+    extra_excludes: set[str] | None = None,
+) -> list[ProjectStatus]:
     projects = []
-    for project_root in find_saipen_roots([root], max_depth=max_depth, delay=delay, extra_excludes=extra_excludes):
+    for project_root in find_saipen_roots(
+        [root], max_depth=max_depth, delay=delay, extra_excludes=extra_excludes
+    ):
         try:
             status = load_project(project_root)
         except Exception as e:
@@ -209,7 +268,12 @@ def scan(
 ) -> list[ProjectStatus]:
     """Scans every root in parallel so one slow/hung drive can't starve the rest."""
     raw_roots = scan_roots if scan_roots is not None else _auto_roots()
-    roots = [r + "\\" if r.endswith(":") else (r if r.endswith("\\") or r.endswith("/") else r + "\\") for r in raw_roots]
+    roots = [
+        r + "\\"
+        if r.endswith(":")
+        else (r if r.endswith("\\") or r.endswith("/") else r + "\\")
+        for r in raw_roots
+    ]
     # Deduplicate roots before parallel submission -- same path scanned
     # twice wastes a thread and can race on _scan_progress counters.
     seen_roots = set()
@@ -225,8 +289,13 @@ def scan(
     _set_scan_progress(pct=0, root="", roots_done=0, roots_total=len(roots))
     projects: list[ProjectStatus] = []
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(roots))
-    futures = {pool.submit(_scan_worker, root, max_depth, delay, extra_excludes): root for root in roots}
-    for future in concurrent.futures.as_completed(futures, timeout=PER_ROOT_TIMEOUT_SECONDS + 5):
+    futures = {
+        pool.submit(_scan_worker, root, max_depth, delay, extra_excludes): root
+        for root in roots
+    }
+    for future in concurrent.futures.as_completed(
+        futures, timeout=PER_ROOT_TIMEOUT_SECONDS + 5
+    ):
         root = futures[future]
         try:
             projects.extend(future.result(timeout=0))
@@ -234,7 +303,9 @@ def scan(
             _push_error(f"scan of {root} exceeded {PER_ROOT_TIMEOUT_SECONDS}s, skipped")
         except OSError as e:
             _push_error(f"scan of {root} failed: {e}")
-    _set_scan_progress(pct=100, root="", roots_done=_scan_progress.get("roots_total", 0))
+    _set_scan_progress(
+        pct=100, root="", roots_done=_scan_progress.get("roots_total", 0)
+    )
     pool.shutdown(wait=False)
     seen = set()
     deduped = []
@@ -297,14 +368,23 @@ class BackgroundScanner:
                     break
                 if self._on_scan_start:
                     self._on_scan_start()
-                self._on_result(scan(self._scan_roots, max_depth=self._max_depth, delay=self._delay, extra_excludes=self._extra_excludes))
+                self._on_result(
+                    scan(
+                        self._scan_roots,
+                        max_depth=self._max_depth,
+                        delay=self._delay,
+                        extra_excludes=self._extra_excludes,
+                    )
+                )
             except Exception as e:
                 # An uncaught exception in scan() (e.g. all roots timeout
                 # and as_completed raises) would kill the daemon thread
                 # silently under pythonw.exe (no console). Log, push an
                 # error, and let the loop sleep normally before retrying.
                 _push_error(f"background scan failed: {e}")
-                print(f"SAIPENVIEW: BackgroundScanner._loop error: {e}", file=sys.stderr)
+                print(
+                    f"SAIPENVIEW: BackgroundScanner._loop error: {e}", file=sys.stderr
+                )
             self._stop_event.wait(self._interval)
 
     def start(self) -> None:
@@ -319,7 +399,14 @@ class BackgroundScanner:
             return
         if self._on_scan_start:
             self._on_scan_start()
-        self._on_result(scan(self._scan_roots, max_depth=self._max_depth, delay=self._delay, extra_excludes=self._extra_excludes))
+        self._on_result(
+            scan(
+                self._scan_roots,
+                max_depth=self._max_depth,
+                delay=self._delay,
+                extra_excludes=self._extra_excludes,
+            )
+        )
 
     def stop(self) -> None:
         _next_gen()

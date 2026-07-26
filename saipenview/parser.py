@@ -4,6 +4,7 @@ Not a full YAML parser -- SAIPEN's own STATE.md frontmatter is flat
 key: value pairs (RFC.md 1.2), so a line-based parser is enough and
 sidesteps YAML's backslash-escape traps on Windows paths.
 """
+
 from __future__ import annotations
 
 import re
@@ -40,15 +41,16 @@ def parse_frontmatter(text: str) -> dict[str, str]:
 def update_state(root: Path, updates: dict[str, str]) -> bool:
     import datetime
     import os as _os
+
     state_path = root / ".saipen" / "STATE.md"
     if not state_path.is_file():
         return False
-    
+
     text = state_path.read_text(encoding="utf-8")
     match = FRONTMATTER_RE.match(text)
     if not match:
         return False
-    
+
     lines = match.group(1).splitlines()
     new_lines = []
     updated_keys = set()
@@ -60,17 +62,19 @@ def update_state(root: Path, updates: dict[str, str]) -> bool:
         key, _, _ = line.partition(":")
         k = key.strip()
         if k in updates:
-            new_lines.append(f'{k}: {updates[k]}')
+            new_lines.append(f"{k}: {updates[k]}")
             updated_keys.add(k)
         else:
             new_lines.append(line)
-            
+
     for k, v in updates.items():
         if k not in updated_keys:
-            new_lines.append(f'{k}: {v}')
-            
+            new_lines.append(f"{k}: {v}")
+
     if "updated" not in updates:
-        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         found = False
         for i, line in enumerate(new_lines):
             if line.startswith("updated:"):
@@ -79,9 +83,9 @@ def update_state(root: Path, updates: dict[str, str]) -> bool:
                 break
         if not found:
             new_lines.append(f"updated: {now_str}")
-            
+
     new_frontmatter = "---\n" + "\n".join(new_lines) + "\n---\n"
-    new_text = new_frontmatter + text[match.end():]
+    new_text = new_frontmatter + text[match.end() :]
     # Atomic write: .tmp -> replace -> no .bak accumulation.
     # Previous versions created STATE.md.bak on every call without
     # cleanup, letting N .bak files accumulate per project.
@@ -114,12 +118,17 @@ class Board:
         }
 
 
-_SECTION_LISTS = {"DOING": "doing", "TODO": "todo", "DONE": "done", "BLOCKED": "blocked"}
+_SECTION_LISTS = {
+    "DOING": "doing",
+    "TODO": "todo",
+    "DONE": "done",
+    "BLOCKED": "blocked",
+}
 
 _TICKET_ACTIONS = {
-    "start": (" ", "/"),      # TODO -> DOING: [ ] -> [/]
-    "done": ("/", "x"),        # DOING -> DONE: [/] -> [x]
-    "reopen": ("x", " "),       # DONE -> TODO: [x] -> [ ]
+    "start": (" ", "/"),  # TODO -> DOING: [ ] -> [/]
+    "done": ("/", "x"),  # DOING -> DONE: [/] -> [x]
+    "reopen": ("x", " "),  # DONE -> TODO: [x] -> [ ]
 }
 
 _TICKET_SECTION_FOR_STATUS = {
@@ -133,7 +142,6 @@ def move_ticket(root: Path, ticket_id: str, action: str) -> bool:
     """Changes a ticket's status on BOARD.md and moves it to the correct section.
     Action is one of: start (TODO->DOING), done (DOING->DONE), reopen (DONE->TODO).
     Returns True on success."""
-    import datetime
     import os as _os
 
     if action not in _TICKET_ACTIONS:
@@ -213,7 +221,9 @@ def parse_board(text: str) -> Board:
         ticket = TICKET_RE.match(line.strip())
         if ticket and current:
             status, ticket_id, description = ticket.groups()
-            getattr(board, _SECTION_LISTS[current]).append(Ticket(ticket_id, status, description))
+            getattr(board, _SECTION_LISTS[current]).append(
+                Ticket(ticket_id, status, description)
+            )
     return board
 
 
@@ -297,7 +307,11 @@ def load_sub_log_tail(sub_path: Path, max_lines: int = 3) -> list[str]:
     if not log_path.is_file():
         return []
     try:
-        lines = [line.strip() for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip().startswith("-")]
+        lines = [
+            line.strip()
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("-")
+        ]
         return lines[-max_lines:]
     except Exception:
         return []
@@ -336,7 +350,9 @@ class SubStatus:
     state: dict[str, str]
     outbox: list[OutboxEntry] = field(default_factory=list)
     log_tail: list[str] = field(default_factory=list)
-    board_counts: dict[str, int] = field(default_factory=lambda: {"doing": 0, "todo": 0, "done": 0, "blocked": 0})
+    board_counts: dict[str, int] = field(
+        default_factory=lambda: {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
+    )
 
     @property
     def phase(self) -> str:
@@ -371,7 +387,10 @@ class SubStatus:
 
 
 def _find_subs_dir(root: Path) -> Path | None:
-    for candidate in (root / ".saipen" / "extensions" / "subs", root / "extensions" / "subs"):
+    for candidate in (
+        root / ".saipen" / "extensions" / "subs",
+        root / "extensions" / "subs",
+    ):
         if candidate.is_dir():
             return candidate
     return None
@@ -418,7 +437,8 @@ def load_subs(root: Path) -> list[SubStatus]:
         # copy-me starting point, _shared/ is the cross-sub inbox; neither
         # is a running subSaipen even though TEMPLATE/ ships its own STATE.md).
         candidates = [
-            p for p in sorted(subs_dir.iterdir())
+            p
+            for p in sorted(subs_dir.iterdir())
             if p.is_dir() and p.name not in _RESERVED_SUB_DIRS
         ]
     subs = []
@@ -429,10 +449,16 @@ def load_subs(root: Path) -> list[SubStatus]:
             outbox = load_outbox(entry / "kitchen")
             log_tail = load_sub_log_tail(entry)
             board_counts = load_sub_board(entry)
-            subs.append(SubStatus(
-                name=entry.name, path=entry, state=state, outbox=outbox,
-                log_tail=log_tail, board_counts=board_counts,
-            ))
+            subs.append(
+                SubStatus(
+                    name=entry.name,
+                    path=entry,
+                    state=state,
+                    outbox=outbox,
+                    log_tail=log_tail,
+                    board_counts=board_counts,
+                )
+            )
     return subs
 
 
@@ -444,8 +470,11 @@ def load_translate(root: Path) -> SubStatus | None:
             log_tail = load_sub_log_tail(candidate)
             board_counts = load_sub_board(candidate)
             return SubStatus(
-                name="saitranslate", path=candidate, state=state,
-                log_tail=log_tail, board_counts=board_counts,
+                name="saitranslate",
+                path=candidate,
+                state=state,
+                log_tail=log_tail,
+                board_counts=board_counts,
             )
     return None
 
@@ -538,7 +567,7 @@ def check_subs_staleness(root: Path, state: dict) -> tuple[bool, str]:
             elif canon_key is None:
                 diff += " (missing from canonical)"
             else:
-                diff += f" (mtime/size differ)"
+                diff += " (mtime/size differ)"
             return True, diff
     return False, ""
 
@@ -579,7 +608,6 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
     import os as _os
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     date_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
     # --- Locate the sub's OUTBOX.md ---
@@ -588,7 +616,11 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
         return {"ok": False, "message": "no subs/ directory found", "ticket_id": None}
     outbox_path = subs_dir / sub_name / "kitchen" / "OUTBOX.md"
     if not outbox_path.is_file():
-        return {"ok": False, "message": f"{sub_name} has no OUTBOX.md", "ticket_id": None}
+        return {
+            "ok": False,
+            "message": f"{sub_name} has no OUTBOX.md",
+            "ticket_id": None,
+        }
 
     # --- Read and find the entry ---
     outbox_text = outbox_path.read_text(encoding="utf-8")
@@ -621,23 +653,37 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
                         status_line_idx = j
                     if "ready" not in line_stripped:
                         # Entry exists but not in 'ready' status
-                        return {"ok": False, "message": f"entry '{entry_id}' is not ready (already reviewed or blocked)", "ticket_id": None}
+                        return {
+                            "ok": False,
+                            "message": f"entry '{entry_id}' is not ready (already reviewed or blocked)",
+                            "ticket_id": None,
+                        }
                 elif line_stripped.startswith("- **critical:"):
                     val = line_stripped.split("**critical:**", 1)[-1].strip().lower()
                     entry_critical = val == "true"
                 elif line_stripped.startswith("- **summary:"):
                     entry_summary = line_stripped.split("**summary:**", 1)[-1].strip()
                 elif line_stripped.startswith("- **main_project_refs:"):
-                    entry_refs = line_stripped.split("**main_project_refs:**", 1)[-1].strip()
+                    entry_refs = line_stripped.split("**main_project_refs:**", 1)[
+                        -1
+                    ].strip()
                 j += 1
             break
         i += 1
 
     if entry_heading_idx < 0:
-        return {"ok": False, "message": f"entry '{entry_id}' not found in {sub_name}'s OUTBOX", "ticket_id": None}
+        return {
+            "ok": False,
+            "message": f"entry '{entry_id}' not found in {sub_name}'s OUTBOX",
+            "ticket_id": None,
+        }
 
     if status_line_idx < 0:
-        return {"ok": False, "message": f"entry '{entry_id}' has no status field", "ticket_id": None}
+        return {
+            "ok": False,
+            "message": f"entry '{entry_id}' has no status field",
+            "ticket_id": None,
+        }
 
     # --- Route the entry ---
     created_ticket_id = None
@@ -660,7 +706,9 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
             board_lines = board_text.splitlines(True)
             insert_pos = len(board_lines)
             for idx, line in enumerate(board_lines):
-                if SECTION_HEADING_RE.match(line.strip()) and line.strip().endswith("TODO"):
+                if SECTION_HEADING_RE.match(line.strip()) and line.strip().endswith(
+                    "TODO"
+                ):
                     insert_pos = idx + 1
                     break
             board_lines.insert(insert_pos, ticket_line)
@@ -672,7 +720,11 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
             _os.replace(tmp, board_path)
             message = f"created {created_ticket_id} for critical entry '{entry_id}' from {sub_name}"
         else:
-            return {"ok": False, "message": "main BOARD.md not found", "ticket_id": None}
+            return {
+                "ok": False,
+                "message": "main BOARD.md not found",
+                "ticket_id": None,
+            }
     else:
         # Non-critical: append to _shared/inbox.md
         inbox_path = subs_dir / "_shared" / "inbox.md"
@@ -720,7 +772,11 @@ def load_log_tail(root: Path, max_lines: int = 5) -> list[str]:
     if not log_path.is_file():
         return []
     try:
-        lines = [line.strip() for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip().startswith("-")]
+        lines = [
+            line.strip()
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("-")
+        ]
         return lines[-max_lines:]
     except Exception:
         return []
@@ -729,20 +785,29 @@ def load_log_tail(root: Path, max_lines: int = 5) -> list[str]:
 # --- Quick action detection ---
 # Map file presence to contextual run-commands the action bar can offer.
 _QUICK_ACTION_RULES = [
-    ("package.json", [
-        ("npm run dev", "npm run dev"),
-        ("npm start", "npm start"),
-        ("npm test", "npm test"),
-        ("npm run build", "npm run build"),
-    ]),
-    ("Cargo.toml", [
-        ("cargo build", "cargo build"),
-        ("cargo test", "cargo test"),
-    ]),
-    ("go.mod", [
-        ("go build", "go build"),
-        ("go test", "go test"),
-    ]),
+    (
+        "package.json",
+        [
+            ("npm run dev", "npm run dev"),
+            ("npm start", "npm start"),
+            ("npm test", "npm test"),
+            ("npm run build", "npm run build"),
+        ],
+    ),
+    (
+        "Cargo.toml",
+        [
+            ("cargo build", "cargo build"),
+            ("cargo test", "cargo test"),
+        ],
+    ),
+    (
+        "go.mod",
+        [
+            ("go build", "go build"),
+            ("go test", "go test"),
+        ],
+    ),
     ("Makefile", [("make", "make")]),
     ("makefile", [("make", "make")]),
     ("Gemfile", [("bundle exec", "bundle exec")]),
@@ -767,14 +832,20 @@ def get_git_status(root: Path) -> tuple[str, bool]:
         CREATE_NO_WINDOW = 0x08000000
         bp = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, check=False, creationflags=CREATE_NO_WINDOW
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=CREATE_NO_WINDOW,
         )
         if bp.returncode != 0:
             return "", False
         branch = bp.stdout.strip()
         sp = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain"],
-            capture_output=True, text=True, check=False, creationflags=CREATE_NO_WINDOW
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=CREATE_NO_WINDOW,
         )
         dirty = bool(sp.stdout.strip())
         return branch, dirty
@@ -798,7 +869,11 @@ def load_project(root: Path, with_git: bool = True) -> ProjectStatus | None:
     if not state_path.is_file():
         return None
     state = parse_frontmatter(state_path.read_text(encoding="utf-8"))
-    board = parse_board(board_path.read_text(encoding="utf-8")) if board_path.is_file() else Board()
+    board = (
+        parse_board(board_path.read_text(encoding="utf-8"))
+        if board_path.is_file()
+        else Board()
+    )
     subs_stale, subs_stale_details = check_subs_staleness(root, state)
     quick_actions = detect_quick_actions(root)
     branch, dirty = get_git_status(root) if with_git else ("", False)

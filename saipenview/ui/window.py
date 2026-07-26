@@ -1,4 +1,5 @@
 """Main window: single toggleable pywebview window, vintage-themed shell."""
+
 from __future__ import annotations
 
 import ctypes
@@ -24,13 +25,21 @@ _GEOMETRY_COOLDOWN = 2.0
 
 
 class _RECT(ctypes.Structure):
-    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
 
 
 class _MONITORINFO(ctypes.Structure):
-    _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _RECT),
-                ("rcWork", _RECT), ("dwFlags", ctypes.c_ulong)]
+    _fields_ = [
+        ("cbSize", ctypes.c_ulong),
+        ("rcMonitor", _RECT),
+        ("rcWork", _RECT),
+        ("dwFlags", ctypes.c_ulong),
+    ]
 
 
 def _work_area() -> tuple[int, int, int, int]:
@@ -49,15 +58,24 @@ def _work_area() -> tuple[int, int, int, int]:
         mi = _MONITORINFO()
         mi.cbSize = ctypes.sizeof(_MONITORINFO)
         if not ctypes.windll.user32.GetMonitorInfoW(mon, ctypes.byref(mi)):
-            print("SAIPENVIEW: GetMonitorInfoW failed, using 1920x1080 fallback", file=sys.stderr)
+            print(
+                "SAIPENVIEW: GetMonitorInfoW failed, using 1920x1080 fallback",
+                file=sys.stderr,
+            )
             return fallback
         r = mi.rcWork
         if r.right - r.left <= 0 or r.bottom - r.top <= 0:
-            print(f"SAIPENVIEW: degenerate work area {(r.left, r.top, r.right, r.bottom)}, using fallback", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: degenerate work area {(r.left, r.top, r.right, r.bottom)}, using fallback",
+                file=sys.stderr,
+            )
             return fallback
         return (r.left, r.top, r.right, r.bottom)
     except Exception as e:
-        print(f"SAIPENVIEW: work-area query failed, using 1920x1080 fallback: {e}", file=sys.stderr)
+        print(
+            f"SAIPENVIEW: work-area query failed, using 1920x1080 fallback: {e}",
+            file=sys.stderr,
+        )
         return fallback
 
 
@@ -119,12 +137,14 @@ class MainWindow:
             x = self._window.x
             y = self._window.y
             if w and h:
-                self._api.save_view_config({
-                    "window_width": w,
-                    "window_height": h,
-                    "window_x": x,
-                    "window_y": y,
-                })
+                self._api.save_view_config(
+                    {
+                        "window_width": w,
+                        "window_height": h,
+                        "window_x": x,
+                        "window_y": y,
+                    }
+                )
         except Exception as e:
             print(f"SAIPENVIEW: window geometry save failed: {e}", file=sys.stderr)
 
@@ -136,10 +156,16 @@ class MainWindow:
             if not hwnd:
                 return
             ico = str(self._icon_path)
-            hSmall = ctypes.windll.user32.LoadImageW(None, ico, _IMAGE_ICON, 16, 16, _LR_LOADFROMFILE)
-            hBig = ctypes.windll.user32.LoadImageW(None, ico, _IMAGE_ICON, 32, 32, _LR_LOADFROMFILE)
+            hSmall = ctypes.windll.user32.LoadImageW(
+                None, ico, _IMAGE_ICON, 16, 16, _LR_LOADFROMFILE
+            )
+            hBig = ctypes.windll.user32.LoadImageW(
+                None, ico, _IMAGE_ICON, 32, 32, _LR_LOADFROMFILE
+            )
             if hSmall:
-                ctypes.windll.user32.SendMessageW(hwnd, _WM_SETICON, _ICON_SMALL, hSmall)
+                ctypes.windll.user32.SendMessageW(
+                    hwnd, _WM_SETICON, _ICON_SMALL, hSmall
+                )
             if hBig:
                 ctypes.windll.user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, hBig)
         except Exception as e:
@@ -166,7 +192,9 @@ class MainWindow:
     def _start_geometry_thread(self) -> None:
         if self._geometry_thread is None:
             self._geometry_stop.clear()
-            self._geometry_thread = threading.Thread(target=self._geometry_periodic, daemon=True)
+            self._geometry_thread = threading.Thread(
+                target=self._geometry_periodic, daemon=True
+            )
             self._geometry_thread.start()
 
     def _force_foreground(self) -> None:
@@ -185,9 +213,9 @@ class MainWindow:
             if not hwnd:
                 return
             if u.IsIconic(hwnd):
-                u.ShowWindow(hwnd, 9)      # SW_RESTORE
+                u.ShowWindow(hwnd, 9)  # SW_RESTORE
             else:
-                u.ShowWindow(hwnd, 5)      # SW_SHOW
+                u.ShowWindow(hwnd, 5)  # SW_SHOW
 
             fg = u.GetForegroundWindow()
             cur_tid = ctypes.windll.kernel32.GetCurrentThreadId()
@@ -234,17 +262,25 @@ class MainWindow:
                 style &= ~(WS_CAPTION | WS_SYSMENU)
                 ex |= WS_EX_TOOLWINDOW
             else:
-                style |= (WS_CAPTION | WS_SYSMENU)
+                style |= WS_CAPTION | WS_SYSMENU
                 ex &= ~WS_EX_TOOLWINDOW
 
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style)
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
             ctypes.windll.user32.SetWindowPos(
-                hwnd, 0, 0, 0, 0, 0,
-                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
             )
         except Exception as e:
-            print(f"SAIPENVIEW: toggle_frameless({frameless}) failed: {e}", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: toggle_frameless({frameless}) failed: {e}",
+                file=sys.stderr,
+            )
 
     def toggle_frameless(self) -> bool:
         self._frameless = not self._frameless
@@ -276,7 +312,9 @@ class MainWindow:
         try:
             self._window.on_top = enabled
         except Exception as e:
-            print(f"SAIPENVIEW: set_always_on_top({enabled}) failed: {e}", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: set_always_on_top({enabled}) failed: {e}", file=sys.stderr
+            )
 
     def destroy(self) -> None:
         self._geometry_stop.set()
@@ -288,6 +326,7 @@ class MainWindow:
     def force_destroy(self) -> None:
         self._save_geometry()
         import os
+
         os._exit(0)
 
     def move_by(self, dx: int, dy: int) -> None:
@@ -302,7 +341,12 @@ class MainWindow:
             print(f"SAIPENVIEW: move_by({dx},{dy}) failed: {e}", file=sys.stderr)
 
     def _is_in_quarter(self, x, y, w, h, qx, qy, qw, qh, tol=20) -> bool:
-        return abs(x - qx) <= tol and abs(y - qy) <= tol and abs(w - qw) <= tol and abs(h - qh) <= tol
+        return (
+            abs(x - qx) <= tol
+            and abs(y - qy) <= tol
+            and abs(w - qw) <= tol
+            and abs(h - qh) <= tol
+        )
 
     def show_zone_picker(self) -> None:
         zone_picker.show(self, self._api)
@@ -322,9 +366,9 @@ class MainWindow:
         # named the wrong corner on all four presses (T-073).
         rects = [
             (left + aw // 2, top + ah // 2, qw, qh, "Bottom-Right"),
-            (left,           top + ah // 2, qw, qh, "Bottom-Left"),
-            (left,           top,           qw, qh, "Top-Left"),
-            (left + aw // 2, top,           qw, qh, "Top-Right"),
+            (left, top + ah // 2, qw, qh, "Bottom-Left"),
+            (left, top, qw, qh, "Top-Left"),
+            (left + aw // 2, top, qw, qh, "Top-Right"),
         ]
 
         try:
@@ -357,6 +401,6 @@ class MainWindow:
             err_msg = f"SAIPENVIEW: cycle_snap_corner failed: {e}"
             print(err_msg, file=sys.stderr)
             try:
-                self._window.evaluate_js(f'showToast("Snap failed", "error", 3000)')
+                self._window.evaluate_js('showToast("Snap failed", "error", 3000)')
             except Exception:
                 pass

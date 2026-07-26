@@ -1,4 +1,5 @@
 """Wires tray icon, global hotkey, and main window together with single-instance guard."""
+
 from __future__ import annotations
 
 import socket
@@ -40,6 +41,7 @@ class SingleInstanceGuard:
             return False
 
         if on_show_request:
+
             def listen_loop():
                 while not self._stop_event.is_set():
                     try:
@@ -82,16 +84,22 @@ def run() -> int:
     tray_thread = threading.Thread(target=tray.run, daemon=True)
     tray_thread.start()
 
-    hotkeys = HotkeyListener(on_toggle=window.toggle, hotkeys=api.get_config()["hotkeys"])
+    hotkeys = HotkeyListener(
+        on_toggle=window.toggle, hotkeys=api.get_config()["hotkeys"]
+    )
     hotkeys.start()
     api.set_hotkey_callback(hotkeys.set_hotkeys)
     api.set_quit_callback(lambda: window.destroy())
 
-    snap_hotkey = HotkeyListener(on_toggle=window.cycle_snap_corner, hotkeys=api.get_config()["snap_hotkey"])
+    snap_hotkey = HotkeyListener(
+        on_toggle=window.cycle_snap_corner, hotkeys=api.get_config()["snap_hotkey"]
+    )
     snap_hotkey.start()
     api.set_snap_hotkey_callback(snap_hotkey.set_hotkeys)
 
-    kill_hotkey = HotkeyListener(on_toggle=window.force_destroy, hotkeys=["ctrl+shift+alt+q"])
+    kill_hotkey = HotkeyListener(
+        on_toggle=window.force_destroy, hotkeys=["ctrl+shift+alt+q"]
+    )
     kill_hotkey.start()
 
     api.start()
@@ -103,4 +111,5 @@ def run() -> int:
     tray.stop()
     guard.stop()
     import sys
+
     sys.exit(0)

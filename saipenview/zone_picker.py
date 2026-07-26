@@ -11,6 +11,7 @@ trap) -- exactly the symptom Ctrl+Q was producing. Fix: one Tk() root, one
 thread, forever; each request opens a `Toplevel` on that same root via a
 thread-safe queue instead of spinning up a new interpreter.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -89,16 +90,38 @@ def _draw_zones(canvas, pw, ph, toplevel, main_window, zones):
     for i, (x1, y1, x2, y2) in enumerate(rects):
         tag = f"z{i}"
         canvas.create_rectangle(
-            x1 + 2, y1 + 2, x2 - 2, y2 - 2,
-            fill=colors[i], outline="#c8a84e", width=1, tags=tag,
+            x1 + 2,
+            y1 + 2,
+            x2 - 2,
+            y2 - 2,
+            fill=colors[i],
+            outline="#c8a84e",
+            width=1,
+            tags=tag,
         )
         canvas.create_text(
-            (x1 + x2) // 2, (y1 + y2) // 2,
-            text=labels[i], fill="#c8a84e", font=("Verdana", 18, "bold"), tags=tag,
+            (x1 + x2) // 2,
+            (y1 + y2) // 2,
+            text=labels[i],
+            fill="#c8a84e",
+            font=("Verdana", 18, "bold"),
+            tags=tag,
         )
-        canvas.tag_bind(tag, "<Button-1>", lambda e, idx=i: _on_pick(idx, toplevel, main_window, zones))
-        canvas.tag_bind(tag, "<Enter>", lambda e, t=tag, idx=i: canvas.itemconfig(t, fill=hover_colors[idx]))
-        canvas.tag_bind(tag, "<Leave>", lambda e, t=tag, idx=i: canvas.itemconfig(t, fill=colors[idx]))
+        canvas.tag_bind(
+            tag,
+            "<Button-1>",
+            lambda e, idx=i: _on_pick(idx, toplevel, main_window, zones),
+        )
+        canvas.tag_bind(
+            tag,
+            "<Enter>",
+            lambda e, t=tag, idx=i: canvas.itemconfig(t, fill=hover_colors[idx]),
+        )
+        canvas.tag_bind(
+            tag,
+            "<Leave>",
+            lambda e, t=tag, idx=i: canvas.itemconfig(t, fill=colors[idx]),
+        )
 
 
 def _on_pick(idx, toplevel, main_window, zones):
@@ -135,7 +158,9 @@ def _open_picker(root, main_window):
     py = max(top, min(cy - ph // 2, bottom - ph))
     toplevel.geometry(f"{pw}x{ph}+{px}+{py}")
 
-    canvas = tk.Canvas(toplevel, width=pw, height=ph, bg="#1a1a1a", highlightthickness=0)
+    canvas = tk.Canvas(
+        toplevel, width=pw, height=ph, bg="#1a1a1a", highlightthickness=0
+    )
     canvas.pack(fill="both", expand=True)
 
     _draw_zones(canvas, pw, ph, toplevel, main_window, zones)

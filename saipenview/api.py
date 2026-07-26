@@ -1,4 +1,5 @@
 """JS-facing API exposed to the pywebview window as `pywebview.api`."""
+
 from __future__ import annotations
 
 import os
@@ -11,9 +12,24 @@ import tkinter as tk
 from tkinter import filedialog
 
 from saipenview.config import load_config, save_config, config_path
-from saipenview.parser import OutboxEntry, ProjectStatus, SubStatus, load_log_tail, load_project, parse_board
+from saipenview.parser import (
+    OutboxEntry,
+    ProjectStatus,
+    SubStatus,
+    load_log_tail,
+    load_project,
+    parse_board,
+)
 import json
-from saipenview.scanner import BackgroundScanner, _auto_roots, find_linked_worktrees, get_scan_errors, get_scan_error_log, get_scan_progress, scan
+from saipenview.scanner import (
+    BackgroundScanner,
+    _auto_roots,
+    find_linked_worktrees,
+    get_scan_errors,
+    get_scan_error_log,
+    get_scan_progress,
+    scan,
+)
 
 _OUTBOX_STATUS_ORDER = {"ready": 0, "blocked": 1, "draft": 2, "stale": 3, "reviewed": 4}
 
@@ -52,13 +68,30 @@ def _sub_to_dict(sub: SubStatus) -> dict:
 
 
 def _phase_rank(phase: str) -> int:
-    return {"ACTIVE": 0, "BLOCKED": 1, "INIT": 2, "HUNT": 2, "BUILD": 2, "REVIEW": 2, "PLAN": 2, "SCOUT": 2, "ADD": 2, "CLEAN": 2, "TRANSLATE": 2, "VALIDATE": 2, "VERIFY": 3, "SHIP": 3, "DONE": 4}.get(phase, 5)
+    return {
+        "ACTIVE": 0,
+        "BLOCKED": 1,
+        "INIT": 2,
+        "HUNT": 2,
+        "BUILD": 2,
+        "REVIEW": 2,
+        "PLAN": 2,
+        "SCOUT": 2,
+        "ADD": 2,
+        "CLEAN": 2,
+        "TRANSLATE": 2,
+        "VALIDATE": 2,
+        "VERIFY": 3,
+        "SHIP": 3,
+        "DONE": 4,
+    }.get(phase, 5)
 
 
 class _Reversed:
     """Wraps a value so it sorts descending inside an otherwise-ascending
     tuple key -- list.sort() takes one direction per call, this is the
     standard way to mix directions per tuple field without a second pass."""
+
     __slots__ = ("obj",)
 
     def __init__(self, obj):
@@ -66,6 +99,7 @@ class _Reversed:
 
     def __lt__(self, other):
         return other.obj < self.obj
+
 
 def _project_sort_key(x: dict, order: str = "smart") -> tuple:
     if order == "name_asc":
@@ -76,9 +110,18 @@ def _project_sort_key(x: dict, order: str = "smart") -> tuple:
         return (not x["is_pinned"], -x.get("mtime", 0))
     if order == "oldest":
         return (not x["is_pinned"], x.get("mtime", 0))
-    return (not x["is_pinned"], _phase_rank(x["phase"]), not x.get("git_dirty", False), -x.get("mtime", 0), x["name"].lower())
+    return (
+        not x["is_pinned"],
+        _phase_rank(x["phase"]),
+        not x.get("git_dirty", False),
+        -x.get("mtime", 0),
+        x["name"].lower(),
+    )
 
-def _project_to_dict(project: ProjectStatus, pinned_roots: set[str] | None = None) -> dict:
+
+def _project_to_dict(
+    project: ProjectStatus, pinned_roots: set[str] | None = None
+) -> dict:
     root_str = str(project.root)
     is_pinned = bool(pinned_roots and root_str in pinned_roots)
     return {
@@ -123,7 +166,10 @@ class Api:
                     self._projects = json.load(f)
                 self._has_scanned = True
             except Exception as e:
-                print(f"SAIPENVIEW: cache at {self._cache_file} unreadable ({e}), starting fresh", file=sys.stderr)
+                print(
+                    f"SAIPENVIEW: cache at {self._cache_file} unreadable ({e}), starting fresh",
+                    file=sys.stderr,
+                )
 
         self._linked_worktrees: list[dict] = []
         self.background_scanner = BackgroundScanner(
@@ -150,7 +196,11 @@ class Api:
             if not force and not projects and self._has_scanned and self._projects:
                 self._scanning = False
                 return
-            items = [_project_to_dict(p, pinned_set) for p in projects if str(p.root) not in hidden_set]
+            items = [
+                _project_to_dict(p, pinned_set)
+                for p in projects
+                if str(p.root) not in hidden_set
+            ]
             items.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
             self._projects = items
             self._has_scanned = True
@@ -236,15 +286,23 @@ class Api:
                 json.dump(snapshot, f)
             os.replace(tmp_path, self._cache_file)
         except Exception as e:
-            print(f"SAIPENVIEW: failed to write cache at {self._cache_file}: {e}", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: failed to write cache at {self._cache_file}: {e}",
+                file=sys.stderr,
+            )
 
     def get_local_drives(self) -> list[str]:
         from saipenview.scanner import local_drives
+
         return local_drives()
 
     def get_status(self) -> dict:
         with self._lock:
-            return {"scanned": self._has_scanned, "scanning": self._scanning, "count": len(self._projects)}
+            return {
+                "scanned": self._has_scanned,
+                "scanning": self._scanning,
+                "count": len(self._projects),
+            }
 
     def get_scan_errors(self) -> list[str]:
         return get_scan_errors()
@@ -309,7 +367,28 @@ class Api:
         return dict(self._config)
 
     def save_view_config(self, settings: dict) -> dict:
-        for k in ("filter_phase", "compact_mode", "zoom_level", "window_width", "window_height", "window_x", "window_y", "selected_root", "search_query", "sidebar_width", "show_hidden", "top_panel_collapsed", "collapse_hint_acknowledged", "collapsed_sections", "show_on_launch", "flash_changes", "font_family", "custom_commands", "file_viewer_default", "locale"):
+        for k in (
+            "filter_phase",
+            "compact_mode",
+            "zoom_level",
+            "window_width",
+            "window_height",
+            "window_x",
+            "window_y",
+            "selected_root",
+            "search_query",
+            "sidebar_width",
+            "show_hidden",
+            "top_panel_collapsed",
+            "collapse_hint_acknowledged",
+            "collapsed_sections",
+            "show_on_launch",
+            "flash_changes",
+            "font_family",
+            "custom_commands",
+            "file_viewer_default",
+            "locale",
+        ):
             if k in settings:
                 self._config[k] = settings[k]
         save_config(self._config)
@@ -366,27 +445,36 @@ class Api:
                 os.startfile(root_str)
                 return True
             except Exception as e:
-                print(f"SAIPENVIEW: open_folder({root_str}) failed: {e}", file=sys.stderr)
+                print(
+                    f"SAIPENVIEW: open_folder({root_str}) failed: {e}", file=sys.stderr
+                )
         return False
+
     def open_terminal(self, root_str: str) -> bool:
         if os.path.exists(root_str):
             try:
                 subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root_str}"'])
                 return True
             except Exception as e:
-                print(f"SAIPENVIEW: open_terminal({root_str}) failed: {e}", file=sys.stderr)
+                print(
+                    f"SAIPENVIEW: open_terminal({root_str}) failed: {e}",
+                    file=sys.stderr,
+                )
         return False
 
     def open_editor(self, root_str: str) -> bool:
         if os.path.exists(root_str):
             try:
                 # 0x08000000 = CREATE_NO_WINDOW
-                subprocess.Popen(["code", root_str], shell=True, creationflags=0x08000000)
+                subprocess.Popen(
+                    ["code", root_str], shell=True, creationflags=0x08000000
+                )
                 return True
             except (OSError, FileNotFoundError) as e:
-                print(f"SAIPENVIEW: open_editor({root_str}) failed: {e}", file=sys.stderr)
+                print(
+                    f"SAIPENVIEW: open_editor({root_str}) failed: {e}", file=sys.stderr
+                )
         return False
-
 
     def read_file_text(self, file_path: str) -> str | None:
         try:
@@ -394,7 +482,9 @@ class Api:
                 with open(file_path, "r", encoding="utf-8") as f:
                     return f.read()
         except Exception as e:
-            print(f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr
+            )
         return None
 
     def write_file_text(self, file_path: str, content: str) -> bool:
@@ -403,7 +493,9 @@ class Api:
                 f.write(content)
             return True
         except Exception as e:
-            print(f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr
+            )
         return False
 
     def get_project_detail(self, root_str: str) -> dict | None:
@@ -415,13 +507,20 @@ class Api:
         d = _project_to_dict(proj, pinned_set)
         d["custom_commands"] = list(self._config.get("custom_commands") or [])
         d["log_tail"] = load_log_tail(p)
-        d["todo_tickets"] = [{"id": t.ticket_id, "desc": t.description} for t in proj.board.todo]
-        d["blocked_tickets"] = [{"id": t.ticket_id, "desc": t.description} for t in proj.board.blocked]
-        d["done_tickets"] = [{"id": t.ticket_id, "desc": t.description} for t in proj.board.done[-5:]]
+        d["todo_tickets"] = [
+            {"id": t.ticket_id, "desc": t.description} for t in proj.board.todo
+        ]
+        d["blocked_tickets"] = [
+            {"id": t.ticket_id, "desc": t.description} for t in proj.board.blocked
+        ]
+        d["done_tickets"] = [
+            {"id": t.ticket_id, "desc": t.description} for t in proj.board.done[-5:]
+        ]
         return d
 
     def update_project_state(self, root_str: str, updates: dict) -> dict | None:
         from saipenview.parser import update_state
+
         p = Path(root_str)
         if update_state(p, updates):
             # force cache update
@@ -484,7 +583,9 @@ class Api:
             # Hotkey registration failed (invalid combo, keyboard lib error, etc.)
             # Try to restore previous hotkeys silently
             try:
-                self._on_snap_hotkey_changed(previous if isinstance(previous, list) else [previous])
+                self._on_snap_hotkey_changed(
+                    previous if isinstance(previous, list) else [previous]
+                )
             except Exception:
                 pass
             return self.get_config()
@@ -492,7 +593,9 @@ class Api:
         save_config(self._config)
         return self.get_config()
 
-    def set_scan_tuning(self, scan_depth: int, scan_delay_ms: int, rescan_interval: int) -> dict:
+    def set_scan_tuning(
+        self, scan_depth: int, scan_delay_ms: int, rescan_interval: int
+    ) -> dict:
         """Rebuilds the background scanner with new tuning; does NOT force an immediate
         full scan -- unlike set_scan_roots, these are background-timing knobs, not a
         visible change the user expects reflected instantly. Applies from the next
@@ -545,7 +648,7 @@ class Api:
         requirement). PowerShell escapes double-quotes inside double-quoted
         strings by doubling them: "" -> literal "."""
         try:
-            cmd = f'Set-Clipboard -Value "{text.replace(chr(34), chr(34)+chr(34))}"'
+            cmd = f'Set-Clipboard -Value "{text.replace(chr(34), chr(34) + chr(34))}"'
             subprocess.run(["powershell", "-NoProfile", "-Command", cmd], check=True)
             return True
         except Exception as e:
@@ -560,7 +663,9 @@ class Api:
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        folder = filedialog.askdirectory(title="Select folder to scan for SAIPEN projects")
+        folder = filedialog.askdirectory(
+            title="Select folder to scan for SAIPEN projects"
+        )
         root.destroy()
         if not folder:
             self._set_scanning(False)
@@ -631,10 +736,12 @@ class Api:
         sidesteps config/registry drift entirely (e.g. after a manual
         uninstall of the Run key, or the project folder getting moved)."""
         from saipenview import autostart
+
         return autostart.is_enabled()
 
     def set_autostart_enabled(self, enabled: bool) -> bool:
         from saipenview import autostart
+
         return autostart.set_enabled(enabled)
 
     def set_always_on_top(self, enabled: bool) -> dict:
@@ -650,11 +757,11 @@ class Api:
             return self._window.toggle_frameless()
         return False
 
-
     def collect_outbox(self, root_str: str, sub_name: str, entry_id: str) -> dict:
         """Collect one ready OUTBOX entry from a subSaipen into the main
         project. Returns the result dict from collect_outbox_entry()."""
         from saipenview.parser import collect_outbox_entry
+
         p = Path(root_str)
         result = collect_outbox_entry(p, sub_name, entry_id)
         if result.get("ok"):
@@ -670,7 +777,10 @@ class Api:
             subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root_str}" && {command}'])
             return True
         except Exception as e:
-            print(f"SAIPENVIEW: run_command({root_str}, {command}) failed: {e}", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: run_command({root_str}, {command}) failed: {e}",
+                file=sys.stderr,
+            )
             return False
 
     def _search_board_for_tickets(self, board_path: Path, q: str) -> list[dict]:
@@ -684,16 +794,40 @@ class Api:
             found = []
             for ticket in board.doing:
                 if q in ticket.ticket_id.lower() or q in ticket.description.lower():
-                    found.append({"id": ticket.ticket_id, "desc": ticket.description, "section": "DOING"})
+                    found.append(
+                        {
+                            "id": ticket.ticket_id,
+                            "desc": ticket.description,
+                            "section": "DOING",
+                        }
+                    )
             for ticket in board.todo:
                 if q in ticket.ticket_id.lower() or q in ticket.description.lower():
-                    found.append({"id": ticket.ticket_id, "desc": ticket.description, "section": "TODO"})
+                    found.append(
+                        {
+                            "id": ticket.ticket_id,
+                            "desc": ticket.description,
+                            "section": "TODO",
+                        }
+                    )
             for ticket in board.blocked:
                 if q in ticket.ticket_id.lower() or q in ticket.description.lower():
-                    found.append({"id": ticket.ticket_id, "desc": ticket.description, "section": "BLOCKED"})
+                    found.append(
+                        {
+                            "id": ticket.ticket_id,
+                            "desc": ticket.description,
+                            "section": "BLOCKED",
+                        }
+                    )
             for ticket in board.done:
                 if q in ticket.ticket_id.lower() or q in ticket.description.lower():
-                    found.append({"id": ticket.ticket_id, "desc": ticket.description, "section": "DONE"})
+                    found.append(
+                        {
+                            "id": ticket.ticket_id,
+                            "desc": ticket.description,
+                            "section": "DONE",
+                        }
+                    )
             return found
         except Exception:
             return []
@@ -747,21 +881,26 @@ class Api:
                     sub_matched_tickets.append(mt)
 
             if matched_field or matched_tickets or sub_matched_tickets:
-                results.append({
-                    "root": root,
-                    "name": name,
-                    "phase": phase,
-                    "matched_tickets": matched_tickets,
-                    "sub_matched_tickets": sub_matched_tickets,
-                    "matched_field": matched_field or "ticket",
-                })
+                results.append(
+                    {
+                        "root": root,
+                        "name": name,
+                        "phase": phase,
+                        "matched_tickets": matched_tickets,
+                        "sub_matched_tickets": sub_matched_tickets,
+                        "matched_field": matched_field or "ticket",
+                    }
+                )
         return results
 
-    def toggle_ticket_status(self, root_str: str, ticket_id: str, action: str) -> dict | None:
+    def toggle_ticket_status(
+        self, root_str: str, ticket_id: str, action: str
+    ) -> dict | None:
         """Move a ticket between sections on BOARD.md: start (TODO->DOING),
         done (DOING->DONE), reopen (DONE->TODO). Returns updated project detail
         or None on failure."""
         from saipenview.parser import move_ticket
+
         p = Path(root_str)
         if move_ticket(p, ticket_id, action):
             self.rescan()

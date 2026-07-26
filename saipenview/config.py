@@ -1,5 +1,6 @@
 """Persisted user settings: hotkeys, font size, scan roots, rescan interval.
 Portable — config lives next to the app, not in %%APPDATA%%."""
+
 from __future__ import annotations
 
 import json
@@ -44,7 +45,7 @@ DEFAULTS = {
     # without it still renders in the same family.
     "font_family": "Verdana_m1",
     "custom_commands": [],  # [{label: string, command: string}, ...]
-    "locale": "en",         # UI language: en | zh-CN
+    "locale": "en",  # UI language: en | zh-CN
 }
 
 
@@ -59,7 +60,10 @@ def load_config() -> dict:
         try:
             stored = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
-            print(f"SAIPENVIEW: config at {path} unreadable ({e}), using defaults", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: config at {path} unreadable ({e}), using defaults",
+                file=sys.stderr,
+            )
             stored = {}
         cfg.update({k: v for k, v in stored.items() if k in DEFAULTS})
     # Migration: snap_hotkey was a string before v2, now a list

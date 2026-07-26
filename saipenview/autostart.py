@@ -2,6 +2,7 @@
 no separate shortcut file to manage. Reuses run.vbs (already the hidden-launch
 entry point run.bat/manual double-click use), so autostart bootstraps a
 missing .venv exactly the same way a manual launch does."""
+
 from __future__ import annotations
 
 import winreg
@@ -30,7 +31,9 @@ def is_enabled() -> bool:
 
 def set_enabled(enabled: bool) -> bool:
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE
+        ) as key:
             if enabled:
                 winreg.SetValueEx(key, _VALUE_NAME, 0, winreg.REG_SZ, _launch_command())
             else:
