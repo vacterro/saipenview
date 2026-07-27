@@ -1,0 +1,26 @@
+# Windows script hosts are line-ending sensitive. cmd.exe mis-parses a .bat
+# with LF-only endings -- a multi-line `if (...)` block silently stops working,
+# which is exactly how run.bat shipped broken: it launched nothing at all while
+# run.vbs (wscript tolerates LF) kept working, so the breakage looked like
+# "the batch file is just slow".
+# Forcing eol=crlf here means git hands out a WORKING launcher on every clone,
+# regardless of the cloner's core.autocrlf setting.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.vbs   text eol=crlf
+*.ps1   text eol=crlf
+
+# Everything else: normalize in the repo, let git pick the checkout ending.
+*.py    text
+*.js    text
+*.css   text
+*.html  text
+*.md    text
+*.toml  text
+*.yml   text
+*.json  text
+*.txt   text
+
+# Binary -- never touch.
+*.png   binary
+*.ico   binary

@@ -23,6 +23,9 @@ saipenview/_data/
 
 # Test artifacts
 .pytest_cache/
+.coverage
+*.cover
+.coverage.*
 snap_test_log.txt
 run_console_test*.log
 

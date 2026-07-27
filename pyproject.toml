@@ -81,8 +81,16 @@ ignore = [
     "SIM113",
 ]
 
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
 [tool.ruff.lint.per-file-ignores]
 # subprocess calls here are list-form with no shell=True; the paths come from
 # the user's own config/picker, not from network input.
 "saipenview/api.py" = ["S603", "S607"]
 "saipenview/parser.py" = ["S603", "S607"]
+# Test files use `assert` extensively (standard pytest pattern); bandit's
+# S101 warning is noise here.
+"tests/*" = ["S101", "S108", "SIM113"]
