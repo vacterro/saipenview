@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterable
+from typing import cast
 
 import keyboard
 
 from saipenview.config import DEFAULTS
 
-DEFAULT_HOTKEYS = DEFAULTS["hotkeys"]
+DEFAULT_HOTKEYS: list[str] = cast(list[str], DEFAULTS["hotkeys"])
 _DEBOUNCE_SECS = 0.3
 
 

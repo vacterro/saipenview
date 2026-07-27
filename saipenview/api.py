@@ -353,10 +353,26 @@ class Api:
     def get_wiki_pages(self) -> list[dict]:
         """Return available wiki pages as [{id, title, filename}, ...]."""
         return [
-            {"id": "WIKI-001", "title": "Project Overview", "file": "WIKI-001-project-overview.md"},
-            {"id": "WIKI-002", "title": "Architecture & Module Layout", "file": "WIKI-002-architecture.md"},
-            {"id": "WIKI-003", "title": "Commands, Hotkeys & API", "file": "WIKI-003-commands-api.md"},
-            {"id": "WIKI-004", "title": "Configuration Reference", "file": "WIKI-004-configuration.md"},
+            {
+                "id": "WIKI-001",
+                "title": "Project Overview",
+                "file": "WIKI-001-project-overview.md",
+            },
+            {
+                "id": "WIKI-002",
+                "title": "Architecture & Module Layout",
+                "file": "WIKI-002-architecture.md",
+            },
+            {
+                "id": "WIKI-003",
+                "title": "Commands, Hotkeys & API",
+                "file": "WIKI-003-commands-api.md",
+            },
+            {
+                "id": "WIKI-004",
+                "title": "Configuration Reference",
+                "file": "WIKI-004-configuration.md",
+            },
             {"id": "WIKI-005", "title": "UI & Theme", "file": "WIKI-005-ui-theme.md"},
         ]
 
@@ -367,15 +383,28 @@ class Api:
             if p["id"] == page_id:
                 # Resolve path: project root is 1 level up from saipenview/api.py
                 base = Path(__file__).resolve().parent.parent
-                candidate = base / ".saipen" / "extensions" / "subs" / "saiwiki" / "kitchen" / p["file"]
+                candidate = (
+                    base
+                    / ".saipen"
+                    / "extensions"
+                    / "subs"
+                    / "saiwiki"
+                    / "kitchen"
+                    / p["file"]
+                )
                 if candidate.exists():
                     try:
                         content = candidate.read_text(encoding="utf-8")
                         return {"id": p["id"], "title": p["title"], "content": content}
                     except Exception as e:
-                        print(f"SAIPENVIEW: get_wiki_page read failed: {e}", file=sys.stderr)
+                        print(
+                            f"SAIPENVIEW: get_wiki_page read failed: {e}",
+                            file=sys.stderr,
+                        )
                         return None
-                print(f"SAIPENVIEW: get_wiki_page: {candidate} not found", file=sys.stderr)
+                print(
+                    f"SAIPENVIEW: get_wiki_page: {candidate} not found", file=sys.stderr
+                )
                 return None
         return None
 
