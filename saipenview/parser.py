@@ -12,6 +12,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from saipenview.textio import read_doc, read_doc_meta, write_doc
+
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*", re.DOTALL)
 TICKET_RE = re.compile(r"^-\s*\[( |x|/)\]\s*(\S+)\s+(.*)$")
 SECTION_HEADING_RE = re.compile(r"^##\s+(DOING|TODO|DONE|BLOCKED)\s*$")
@@ -40,13 +42,12 @@ def parse_frontmatter(text: str) -> dict[str, str]:
 
 def update_state(root: Path, updates: dict[str, str]) -> bool:
     import datetime
-    import os as _os
 
     state_path = root / ".saipen" / "STATE.md"
     if not state_path.is_file():
         return False
 
-    text = state_path.read_text(encoding="utf-8")
+    text, enc, newline = read_doc_meta(state_path)
     match = FRONTMATTER_RE.match(text)
     if not match:
         return False
@@ -89,9 +90,9 @@ def update_state(root: Path, updates: dict[str, str]) -> bool:
     # Atomic write: .tmp -> replace -> no .bak accumulation.
     # Previous versions created STATE.md.bak on every call without
     # cleanup, letting N .bak files accumulate per project.
-    tmp_path = state_path.with_name(state_path.name + ".tmp")
-    tmp_path.write_text(new_text, encoding="utf-8")
-    _os.replace(tmp_path, state_path)
+    # Encoding and newline come back from read_doc_meta so stamping one field
+    # doesn't silently re-encode a file we didn't author.
+    write_doc(state_path, new_text, enc, newline)
     return True
 
 
@@ -142,8 +143,6 @@ def move_ticket(root: Path, ticket_id: str, action: str) -> bool:
     """Changes a ticket's status on BOARD.md and moves it to the correct section.
     Action is one of: start (TODO->DOING), done (DOING->DONE), reopen (DONE->TODO).
     Returns True on success."""
-    import os as _os
-
     if action not in _TICKET_ACTIONS:
         return False
     old_ch, new_ch = _TICKET_ACTIONS[action]
@@ -154,11 +153,12 @@ def move_ticket(root: Path, ticket_id: str, action: str) -> bool:
     board_path = root / ".saipen" / "BOARD.md"
     if not board_path.is_file():
         return False
-    text = board_path.read_text(encoding="utf-8")
+    text, enc, newline = read_doc_meta(board_path)
 
     lines = text.splitlines(True)  # keep line endings
     section_starts: dict[str, int] = {}
     ticket_line_idx = -1
+    actual_status = old_ch
     current_heading: str | None = None
 
     for i, line in enumerate(lines):
@@ -171,12 +171,15 @@ def move_ticket(root: Path, ticket_id: str, action: str) -> bool:
         if ticket_line_idx < 0:
             ticket = TICKET_RE.match(line.strip())
             if ticket and ticket.group(2) == ticket_id:
-                old_status = ticket.group(1)
-                if old_status != old_ch:
-                    # Status doesn't match expected start state (e.g. trying
-                    # to "start" an already DOING ticket) -- still allow it,
-                    # just move it where the new status dictates.
-                    pass
+                # The ticket's REAL checkbox, which need not be the one the
+                # action expects -- "start" on an already-`[x]` ticket is
+                # allowed, it just moves where the new status dictates. The
+                # replacement below has to target what is actually there:
+                # rewriting `[ ]` on a line that reads `[x]` matched nothing,
+                # so the line moved to ## DOING still carrying `[x]` and the
+                # board came out in exactly the checkbox-vs-section state
+                # RFC 1.2 forbids.
+                actual_status = ticket.group(1)
                 ticket_line_idx = i
 
     if ticket_line_idx < 0:
@@ -186,7 +189,7 @@ def move_ticket(root: Path, ticket_id: str, action: str) -> bool:
     ticket_line = lines.pop(ticket_line_idx)
 
     # Update the status marker
-    ticket_line = ticket_line.replace(f"[{old_ch}]", f"[{new_ch}]", 1)
+    ticket_line = ticket_line.replace(f"[{actual_status}]", f"[{new_ch}]", 1)
 
     # Insert into the target section (after its heading, before next heading or end)
     insert_pos = len(lines)  # default: end of file
@@ -203,10 +206,7 @@ def move_ticket(root: Path, ticket_id: str, action: str) -> bool:
     lines.insert(insert_pos, ticket_line)
     new_text = "".join(lines)
 
-    # Atomic write
-    tmp_path = board_path.with_name(board_path.name + ".tmp")
-    tmp_path.write_text(new_text, encoding="utf-8")
-    _os.replace(tmp_path, board_path)
+    write_doc(board_path, new_text, enc, newline)
     return True
 
 
@@ -309,7 +309,7 @@ def load_sub_log_tail(sub_path: Path, max_lines: int = 3) -> list[str]:
     try:
         lines = [
             line.strip()
-            for line in log_path.read_text(encoding="utf-8").splitlines()
+            for line in read_doc(log_path).splitlines()
             if line.strip().startswith("-")
         ]
         return lines[-max_lines:]
@@ -323,7 +323,7 @@ def load_sub_board(sub_path: Path) -> dict[str, int]:
     if not board_path.is_file():
         return {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
     try:
-        return parse_board(board_path.read_text(encoding="utf-8")).counts()
+        return parse_board(read_doc(board_path)).counts()
     except Exception:
         return {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
 
@@ -333,7 +333,7 @@ def load_outbox(kitchen_dir: Path) -> list[OutboxEntry]:
     if not outbox_path.is_file():
         return []
     try:
-        return parse_outbox(outbox_path.read_text(encoding="utf-8"))
+        return parse_outbox(read_doc(outbox_path))
     except Exception:
         return []
 
@@ -408,7 +408,15 @@ def _manifest_sub_names(subs_dir: Path) -> list[str] | None:
     if not manifest_path.is_file():
         return None
     try:
-        text = manifest_path.read_text(encoding="utf-8")
+        text = read_doc(manifest_path)
+        if not text.strip():
+            # read_doc never raises, so the old `except UnicodeDecodeError`
+            # below stopped firing and an unreadable MANIFEST.md started
+            # returning [] -- an AUTHORITATIVE empty list, which suppressed
+            # every sub in the directory instead of falling back to scanning
+            # it. No text at all is "cannot read this", not "lists nothing";
+            # a manifest with prose and zero entries still returns [].
+            return None
     except (OSError, UnicodeDecodeError):
         # Unreadable/corrupt MANIFEST.md degrades to "no manifest" (dir-scan
         # fallback) rather than raising -- a background scan thread has no
@@ -445,7 +453,7 @@ def load_subs(root: Path) -> list[SubStatus]:
     for entry in candidates:
         state_path = entry / "STATE.md"
         if entry.is_dir() and state_path.is_file():
-            state = parse_frontmatter(state_path.read_text(encoding="utf-8"))
+            state = parse_frontmatter(read_doc(state_path))
             outbox = load_outbox(entry / "kitchen")
             log_tail = load_sub_log_tail(entry)
             board_counts = load_sub_board(entry)
@@ -466,7 +474,7 @@ def load_translate(root: Path) -> SubStatus | None:
     for candidate in (root / ".saipen" / "saitranslate", root / ".saitranslate"):
         state_path = candidate / "STATE.md"
         if state_path.is_file():
-            state = parse_frontmatter(state_path.read_text(encoding="utf-8"))
+            state = parse_frontmatter(read_doc(state_path))
             log_tail = load_sub_log_tail(candidate)
             board_counts = load_sub_board(candidate)
             return SubStatus(
@@ -574,6 +582,7 @@ def check_subs_staleness(root: Path, state: dict) -> tuple[bool, str]:
 
 # --- OUTBOX collect ---
 _TICKET_ID_RE = re.compile(r"T-(\d+)")
+_EVENT_ID_RE = re.compile(r"\[E-(\d+)\]")
 _COLLECT_SUB_FM_RE = re.compile(r"^##\s+(\S+):\s*(.*)$", re.MULTILINE)
 _COLLECT_STATUS_RE = re.compile(r"^- \*\*status:\*\*\s*ready", re.MULTILINE)
 
@@ -585,6 +594,11 @@ def _highest_ticket_number(text: str) -> int:
         n = int(match.group(1))
         max_n = max(max_n, n)
     return max_n
+
+
+def _highest_event_number(text: str) -> int:
+    """Highest E-### in a LOG.md text; 0 when the log carries none."""
+    return max((int(m.group(1)) for m in _EVENT_ID_RE.finditer(text)), default=0)
 
 
 def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
@@ -604,10 +618,12 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
       ticket_id: str | None (if a ticket was created)
     """
     import datetime
-    import os as _os
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    date_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    # RFC § 1.2 LOG stamp: DD.MM.YY HH:MM, UTC. This wrote an ISO-ish
+    # "%Y-%m-%d %H:%M:%S", which no SAIPEN validator recognises as a dated
+    # entry -- so every line this function ever appended counted as undated.
+    date_str = now.strftime("%d.%m.%y %H:%M")
 
     # --- Locate the sub's OUTBOX.md ---
     subs_dir = _find_subs_dir(root)
@@ -622,7 +638,7 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
         }
 
     # --- Read and find the entry ---
-    outbox_text = outbox_path.read_text(encoding="utf-8")
+    outbox_text, outbox_enc, outbox_nl = read_doc_meta(outbox_path)
     lines = outbox_text.splitlines(True)  # keep line endings
 
     # Find the target entry's heading line index and its status line
@@ -691,7 +707,7 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
         # Create a new T-### ticket on main BOARD.md
         board_path = root / ".saipen" / "BOARD.md"
         if board_path.is_file():
-            board_text = board_path.read_text(encoding="utf-8")
+            board_text, board_enc, board_nl = read_doc_meta(board_path)
             next_num = _highest_ticket_number(board_text) + 1
             created_ticket_id = f"T-{next_num:03d}"
 
@@ -714,9 +730,7 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
             new_board = "".join(board_lines)
 
             # Write main BOARD.md FIRST (crash safety)
-            tmp = board_path.with_name(board_path.name + ".tmp")
-            tmp.write_text(new_board, encoding="utf-8")
-            _os.replace(tmp, board_path)
+            write_doc(board_path, new_board, board_enc, board_nl)
             message = f"created {created_ticket_id} for critical entry '{entry_id}' from {sub_name}"
         else:
             return {
@@ -731,27 +745,33 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
         inbox_line = f"- {date_str} | source: {sub_name} {entry_id} | {entry_summary or entry_title}{refs_text}\n"
 
         if inbox_path.is_file():
-            inbox_text = inbox_path.read_text(encoding="utf-8")
+            inbox_text, inbox_enc, inbox_nl = read_doc_meta(inbox_path)
         else:
-            inbox_text = "# Inbox\n\n"
+            inbox_text, inbox_enc, inbox_nl = "# Inbox\n\n", "utf-8", "\n"
         inbox_text += inbox_line
-        tmp = inbox_path.with_name(inbox_path.name + ".tmp")
-        tmp.write_text(inbox_text, encoding="utf-8")
-        _os.replace(tmp, inbox_path)
+        write_doc(inbox_path, inbox_text, inbox_enc, inbox_nl)
         message = f"appended '{entry_id}' from {sub_name} to inbox (non-critical)"
 
     # --- Append LOG RUN line to main LOG.md ---
     log_path = root / ".saipen" / "LOG.md"
-    log_line = f"- {date_str} [E-{now.hour:02d}{now.minute:02d}{now.second:02d}] [agent: {sub_name}] RUN: collect {sub_name} {entry_id}{' -> ' + created_ticket_id if created_ticket_id else ''}\n"
-
     if log_path.is_file():
-        log_text = log_path.read_text(encoding="utf-8")
+        log_text, log_enc, log_nl = read_doc_meta(log_path)
     else:
-        log_text = "# LOG\n\n"
+        log_text, log_enc, log_nl = "# Log\n\n", "utf-8", "\n"
+
+    # E-### continues the project's own sequence. It used to be built from the
+    # wall clock ("E-%H%M%S"), which drops a five- or six-digit id into a
+    # sequence sitting in the hundreds: unique by luck, monotonic by nothing,
+    # and every genuine entry appended afterwards then reads as out-of-order.
+    last_event = _highest_event_number(log_text)
+    parent = f" [parent: E-{last_event}]" if last_event else ""
+    target = f" -> {created_ticket_id}" if created_ticket_id else ""
+    log_line = (
+        f"- {date_str} [E-{last_event + 1}]{parent} [T-none] RUN: collect "
+        f"{sub_name} {entry_id}{target}\n"
+    )
     log_text += log_line
-    tmp = log_path.with_name(log_path.name + ".tmp")
-    tmp.write_text(log_text, encoding="utf-8")
-    _os.replace(tmp, log_path)
+    write_doc(log_path, log_text, log_enc, log_nl)
 
     # --- Mark the OUTBOX entry reviewed LAST (crash safety) ---
     # Replace only the specific entry's status line, not the first match in the whole file
@@ -759,9 +779,7 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
         "- **status:** ready", "- **status:** reviewed", 1
     )
     new_outbox = "".join(lines)
-    tmp = outbox_path.with_name(outbox_path.name + ".tmp")
-    tmp.write_text(new_outbox, encoding="utf-8")
-    _os.replace(tmp, outbox_path)
+    write_doc(outbox_path, new_outbox, outbox_enc, outbox_nl)
 
     return {"ok": True, "message": message, "ticket_id": created_ticket_id}
 
@@ -773,7 +791,7 @@ def load_log_tail(root: Path, max_lines: int = 5) -> list[str]:
     try:
         lines = [
             line.strip()
-            for line in log_path.read_text(encoding="utf-8").splitlines()
+            for line in read_doc(log_path).splitlines()
             if line.strip().startswith("-")
         ]
         return lines[-max_lines:]
@@ -867,9 +885,9 @@ def load_project(root: Path, with_git: bool = True) -> ProjectStatus | None:
     board_path = saipen_dir / "BOARD.md"
     if not state_path.is_file():
         return None
-    state = parse_frontmatter(state_path.read_text(encoding="utf-8"))
+    state = parse_frontmatter(read_doc(state_path))
     board = (
-        parse_board(board_path.read_text(encoding="utf-8"))
+        parse_board(read_doc(board_path))
         if board_path.is_file()
         else Board()
     )

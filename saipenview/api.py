@@ -13,6 +13,7 @@ from pathlib import Path
 from tkinter import filedialog
 
 from saipenview.config import config_path, load_config, save_config
+from saipenview.conformance import check_project
 from saipenview.parser import (
     OutboxEntry,
     ProjectStatus,
@@ -24,12 +25,14 @@ from saipenview.parser import (
 from saipenview.scanner import (
     BackgroundScanner,
     _auto_roots,
+    _is_garbage_root,
     find_linked_worktrees,
     get_scan_error_log,
     get_scan_errors,
     get_scan_progress,
     scan,
 )
+from saipenview.textio import read_doc
 
 _OUTBOX_STATUS_ORDER = {"ready": 0, "blocked": 1, "draft": 2, "stale": 3, "reviewed": 4}
 
@@ -112,6 +115,9 @@ def _project_sort_key(x: dict, order: str = "smart") -> tuple:
         return (not x["is_pinned"], x.get("mtime", 0))
     return (
         not x["is_pinned"],
+        # A project the protocol rejects outranks phase: it is the one thing
+        # here that no amount of waiting fixes by itself.
+        (x.get("conformance") or {}).get("verdict") != "fail",
         _phase_rank(x["phase"]),
         not x.get("git_dirty", False),
         -x.get("mtime", 0),
@@ -124,7 +130,22 @@ def _project_to_dict(
 ) -> dict:
     root_str = str(project.root)
     is_pinned = bool(pinned_roots and root_str in pinned_roots)
+    # Graded on every row, not only on the detail pane. A project that is
+    # illegal is illegal from the list -- if the verdict only appeared once you
+    # clicked in, the one project you never click is the one that stays broken.
+    try:
+        report = check_project(project.root, project.state, project.subs).to_dict()
+    except Exception as e:  # noqa: BLE001 - a grader must never break the row
+        print(f"SAIPENVIEW: conformance({root_str}) failed: {e}", file=sys.stderr)
+        report = {
+            "verdict": "unknown",
+            "fails": 0,
+            "warns": 0,
+            "baseline": "",
+            "findings": [],
+        }
     return {
+        "conformance": report,
         "name": project.name,
         "root": root_str,
         "phase": project.phase,
@@ -164,6 +185,7 @@ class Api:
             try:
                 with open(self._cache_file, encoding="utf-8") as f:
                     self._projects = json.load(f)
+                self._projects = [p for p in self._projects if not _is_garbage_root(Path(p["root"]))]
                 self._has_scanned = True
             except Exception as e:
                 print(
@@ -199,7 +221,7 @@ class Api:
             items = [
                 _project_to_dict(p, pinned_set)
                 for p in projects
-                if str(p.root) not in hidden_set
+                if str(p.root) not in hidden_set and not _is_garbage_root(p.root)
             ]
             items.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
             self._projects = items
@@ -394,7 +416,7 @@ class Api:
                 )
                 if candidate.exists():
                     try:
-                        content = candidate.read_text(encoding="utf-8")
+                        content = read_doc(candidate)
                         return {"id": p["id"], "title": p["title"], "content": content}
                     except Exception as e:
                         print(
@@ -554,8 +576,10 @@ class Api:
     def read_file_text(self, file_path: str) -> str | None:
         try:
             if os.path.exists(file_path):
-                with open(file_path, encoding="utf-8") as f:
-                    return f.read()
+                # read_doc, not open(encoding="utf-8"): the file viewer opened
+                # a UTF-16 STATE.md as an error toast and a BOM-carrying one
+                # with a stray glyph on line 1.
+                return read_doc(file_path)
         except Exception as e:
             print(
                 f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr
@@ -870,8 +894,7 @@ class Api:
         if not board_path.is_file():
             return []
         try:
-            board_text = board_path.read_text(encoding="utf-8")
-            board = parse_board(board_text)
+            board = parse_board(read_doc(board_path))
             found = []
             for ticket in board.doing:
                 if q in ticket.ticket_id.lower() or q in ticket.description.lower():
@@ -987,3 +1010,23 @@ class Api:
             self.rescan()
             return self.get_project_detail(root_str)
         return None
+
+    def minimize_window(self) -> None:
+        """Minimize the main window."""
+        if self._window:
+            self._window.minimize()
+
+    def maximize_window(self) -> None:
+        """Maximize the main window."""
+        if self._window:
+            self._window.maximize()
+
+    def restore_window(self) -> None:
+        """Restore the main window from minimized/maximized."""
+        if self._window:
+            self._window.restore()
+
+    def close_window(self) -> None:
+        """Close the main window (hides to tray)."""
+        if self._window:
+            self._window.hide()

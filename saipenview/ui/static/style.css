@@ -1,11 +1,11 @@
 :root {
-  --background:#1A0F05; --backgroundSoft:#1E1408; --surface:#2A1C0A;
-  --surfaceRaised:#362812; --surfaceAlt:#3A2A15; --surfaceSoft:#2E200E;
-  --borderDark:#0E0803; --borderHighlight:#C0A060; --borderMuted:#4A3820;
-  --textPrimary:#D4B87A; --textSecondary:#B09558; --textMuted:#7A6838;
-  --accentTeal:#008080; --accentTealDeep:#004C4C;
-  --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020;
-  --selection:#362812; --compareBack:#0F0A04;
+  --background:#342012; --backgroundSoft:#3A2616; --surface:#4A341B;
+  --surfaceRaised:#5A4324; --surfaceAlt:#634B2B; --surfaceSoft:#422D18;
+  --borderDark:#1C1208; --borderHighlight:#D3B57A; --borderMuted:#665033;
+  --textPrimary:#E2CA95; --textSecondary:#C5AB6E; --textMuted:#95804C;
+  --accentTeal:#008080; --accentTealDeep:#006060;
+  --success:#5B9630; --warning:#969630; --danger:#963030;
+  --selection:#5A4324; --compareBack:#24170C;
   --goldStar:#FFC107;
   --phase-init:#7A6A4A;  --phase-plan:#4A7A8A;  --phase-scout:#6A8A4A;
   --phase-hunt:#8A4A4A;  --phase-add:#4A8A5A;   --phase-clean:#8A5A4A;
@@ -666,3 +666,30 @@ body.collapsed .detail-header { display: none !important; }
 .confirm-message { font-size: 11px; color: var(--textPrimary); padding: 4px 0 8px 0; line-height: 1.4; white-space: pre-wrap; }
 .confirm-actions { display: flex; gap: 4px; justify-content: flex-end; margin-top: 4px; }
 .confirm-ok-btn { color: var(--accentTeal); font-weight: bold; }
+
+/* --- Conformance verdict (protocol grading) -------------------------------
+   Three states only: pass, warn, fail. Deliberately the same visual weight as
+   the git badge next to it -- an illegal STATE.md is exactly as much a fact
+   about the project as a dirty working tree, and no louder. */
+.conf-badge { font-size: 8px; padding: 0 4px; font-weight: bold; vertical-align: middle;
+  border: 1px solid var(--borderMuted); color: var(--textMuted); cursor: help; }
+.conf-badge.fail { color: var(--danger); border-color: var(--danger); }
+.conf-badge.warn { color: var(--warning); border-color: var(--warning); }
+.conf-badge.pass { color: var(--success); border-color: var(--success); }
+.conf-badge.unknown { color: var(--textMuted); border-color: var(--borderMuted); }
+
+.conf-list { display: flex; flex-direction: column; gap: 2px; }
+.conf-item { display: flex; align-items: baseline; gap: 5px; padding: 2px 0;
+  border-bottom: 1px solid var(--surfaceSoft); font-size: 10px; }
+.conf-item:last-child { border-bottom: none; }
+.conf-sev { flex: 0 0 auto; font-size: 8px; font-weight: bold; padding: 0 3px;
+  border: 1px solid currentColor; }
+.conf-sev.fail { color: var(--danger); }
+.conf-sev.warn { color: var(--warning); }
+.conf-rule { flex: 0 0 auto; color: var(--textMuted); font-size: 9px; }
+.conf-msg { flex: 1 1 auto; color: var(--textSecondary); word-break: break-word; }
+.conf-where { flex: 0 0 auto; color: var(--textMuted); font-size: 9px; }
+.conf-cite { flex: 0 0 auto; color: var(--accentTeal); font-size: 9px; }
+.conf-clean { color: var(--success); font-size: 10px; padding: 2px 0; }
+.conf-baseline { color: var(--textMuted); font-size: 9px; font-style: italic;
+  padding-top: 3px; border-top: 1px solid var(--borderMuted); margin-top: 3px; }

@@ -53,6 +53,8 @@
     <button id="settingsBtn" data-i18n-title="toolbar.settings.title" title="Settings: font, hotkeys, scan tuning">⚙</button>
     <button id="swapBtn" data-i18n-title="toolbar.swap.title" title="Swap sidebar/detail pane position">⇄</button>
     <button id="helpBtn" data-i18n-title="toolbar.help.title" title="SAIPENVIEW help &amp; wiki">?</button>
+    <button id="minimizeBtn" data-i18n-title="toolbar.minimize.title" title="Minimize window">_</button>
+    <button id="maximizeBtn" data-i18n-title="toolbar.maximize.title" title="Maximize window">□</button>
     <button id="quitBtn" class="quit-btn" data-i18n="toolbar.quit.text" data-i18n-title="toolbar.quit.title" title="Exit SAIPENVIEW (stays in tray on close)">Exit</button>
   </div>
 </div>
@@ -80,11 +82,11 @@
       <label data-i18n="settings.fontFamily.label">UI font family (Verdana_m1 = no anti-aliasing)
         <input type="text" id="setFontFamily" data-i18n-placeholder="settings.fontFamily.placeholder" placeholder="Verdana_m1">
       </label>
-      <label data-i18n="settings.hotkeys.label">Show/hide hotkeys &mdash; comma-separated, 2 bindings supported
-        <input type="text" id="setHotkeys" data-i18n-placeholder="settings.hotkeys.placeholder" placeholder="ctrl+alt+x, alt+f15">
+      <label data-i18n="settings.hotkeys.label">Show/hide hotkeys &mdash; comma-separated, 3 bindings supported
+        <input type="text" id="setHotkeys" data-i18n-placeholder="settings.hotkeys.placeholder" placeholder="ctrl+alt+x, alt+f15, ctrl+q">
       </label>
       <label data-i18n="settings.snapHotkey.label">Snap-to-corner hotkeys &mdash; comma-separated, 2 bindings supported
-        <input type="text" id="setSnapHotkey" data-i18n-placeholder="settings.snapHotkey.placeholder" placeholder="ctrl+q, alt+f14">
+        <input type="text" id="setSnapHotkey" data-i18n-placeholder="settings.snapHotkey.placeholder" placeholder="alt+f14">
       </label>
       <label data-i18n="settings.scanDepth.label">Scan depth (1-8 levels)
         <input type="number" id="setScanDepth" min="1" max="8">

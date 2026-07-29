@@ -46,6 +46,8 @@ const LOCALE_EN = {
   "toolbar.swap.title.swapped": "Restore default layout",
   "toolbar.help.title": "SAIPENVIEW help & wiki",
   "toolbar.help.text": "?",
+  "toolbar.minimize.title": "Minimize window",
+  "toolbar.maximize.title": "Maximize window",
   "toolbar.quit.title": "Exit SAIPENVIEW (stays in tray on close)",
   "toolbar.quit.text": "Exit",
 
@@ -241,4 +243,10 @@ const LOCALE_EN = {
   "outbox.outboxBtn.text": "OUTBOX",
   "outbox.critical": "CRIT",
   "outbox.criticalCount": "${n} CRITICAL",
+
+  // ── Conformance (protocol grading) ──
+  "conf.title": "Conformance",
+  "conf.clean": "No findings — this project's own .saipen/ files are legal.",
+  "conf.tooltipPass": "Conformant against SAIPEN",
+  "conf.baseline": "Checked against SAIPEN",
 };

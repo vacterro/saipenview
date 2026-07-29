@@ -62,7 +62,26 @@ function hydrateDOM(locale) {
     const translated = t(key);
     // Only replace if the translation is different from the key and non-empty
     if (translated !== key && translated) {
-      el.textContent = translated;
+      // NEVER use textContent on an element that has element children --
+      // it deletes them. 11 Settings <label>s wrap their own control
+      // (setZoomLevel, setFontFamily, setHotkeys, setSnapHotkey,
+      // setScanDepth, setScanDelay, setRescanInterval, setFileViewerDefault,
+      // setLocale, customCommands*, drivesBar), so a blanket textContent
+      // assignment wiped the entire settings form the moment i18n ran --
+      // which is why Settings "didn't work" and the drives list vanished.
+      if (el.children.length === 0) {
+        el.textContent = translated;
+      } else {
+        // Replace only this element's OWN leading text, leave children alone.
+        const ownText = Array.from(el.childNodes).find(
+          (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim()
+        );
+        if (ownText) {
+          ownText.textContent = translated;
+        } else {
+          el.insertBefore(document.createTextNode(translated), el.firstChild);
+        }
+      }
     }
   });
   // Walk all elements with data-i18n-title attribute
@@ -616,6 +635,57 @@ function subOutboxHtml(sub) {
   </div>`;
 }
 
+// --- Conformance verdict -------------------------------------------------
+// The grade comes from saipenview/conformance.py, which re-checks the rules a
+// project's own .saipen/ files can decide alone. It is a second opinion, not a
+// replacement for `tools/validate.py` -- which is why the baseline version it
+// was read against is printed under every verdict rather than left implied.
+function conformanceBadgeHtml(project) {
+  const c = project && project.conformance;
+  if (!c || !c.verdict) return "";
+  const v = c.verdict;
+  let label;
+  if (v === "fail") label = c.fails + (c.fails === 1 ? " FAIL" : " FAILS");
+  else if (v === "warn") label = c.warns + (c.warns === 1 ? " WARN" : " WARNS");
+  else if (v === "pass") label = "OK";
+  else label = "?";
+  const top = (c.findings || []).slice(0, 6)
+    .map((f) => f.severity.toUpperCase() + ": " + f.message).join("\n");
+  const title = v === "pass"
+    ? t("conf.tooltipPass") + " " + (c.baseline || "")
+    : top;
+  return `<span class="conf-badge ${v}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+}
+
+function conformanceCardHtml(detail) {
+  const c = detail && detail.conformance;
+  if (!c) return "";
+  const rows = (c.findings || []).map((f) => `
+      <div class="conf-item">
+        <span class="conf-sev ${escapeHtml(f.severity)}">${escapeHtml(f.severity.toUpperCase())}</span>
+        <span class="conf-rule">${escapeHtml(f.rule)}</span>
+        <span class="conf-msg">${escapeHtml(f.message)}</span>
+        ${f.file ? `<span class="conf-where">${escapeHtml(f.file)}${f.line ? ":" + f.line : ""}</span>` : ""}
+        ${f.cite ? `<span class="conf-cite">${escapeHtml(f.cite)}</span>` : ""}
+      </div>`).join("");
+  const summary = c.verdict === "pass"
+    ? `<div class="conf-clean">${escapeHtml(t("conf.clean"))}</div>`
+    : `<div class="conf-list">${rows}</div>`;
+  return `
+      <div class="detail-card">
+        <div class="collapsible" data-section="conformance">
+          <div class="card-title collapsible-header">
+            <span>${escapeHtml(t("conf.title"))} ${conformanceBadgeHtml(detail)}</span>
+            <span class="collapse-icon">&#9660;</span>
+          </div>
+          <div class="collapsible-body">
+            ${summary}
+            <div class="conf-baseline">${escapeHtml(t("conf.baseline"))} ${escapeHtml(c.baseline || "?")}</div>
+          </div>
+        </div>
+      </div>`;
+}
+
 function projectRowHtml(project) {
   const subs = [...project.subs];
   if (project.translate) subs.push(project.translate);
@@ -633,6 +703,7 @@ function projectRowHtml(project) {
       <button class="${starClass}" data-pin-root="${escapeHtml(project.root)}" title="Toggle Pin">${starSymbol}</button>
       <span class="name" title="${escapeHtml(project.root)}">${escapeHtml(project.name)}</span>
       ${gitHtml}
+      ${conformanceBadgeHtml(project)}
       <span class="phase phase-${escapeHtml(project.phase)}">${escapeHtml(project.phase)}</span>
       <span class="updated" title="${escapeHtml(formatLocalTime(project.updated))}">${timeWithHeat(project.updated)}</span>
       <span class="hide-btn" data-hide-root="${escapeHtml(project.root)}" title="Hide project from list">✕</span>
@@ -807,6 +878,7 @@ function renderDetailPane(detail) {
           <span style="display:flex; align-items:center; gap:6px;">
             ${escapeHtml(detail.name)}
             ${detail.git_branch ? `<span class="git-badge ${detail.git_dirty ? 'dirty' : ''}" style="font-size:10px; font-weight:normal;">⎇ ${escapeHtml(detail.git_branch)}${detail.git_dirty ? '*' : ''}</span>` : ""}
+            ${conformanceBadgeHtml(detail)}
           </span>
           <span style="display:flex; align-items:center; gap:4px;">
             <span class="phase-indicator phase-${escapeHtml(detail.phase)}" title="${escapeHtml(detail.phase)} — ${escapeHtml(t(PHASE_DESCRIPTIONS[detail.phase] || ''))}"></span>
@@ -832,6 +904,8 @@ function renderDetailPane(detail) {
         <span class="next-action-label">&#9654; NEXT</span>
         <span class="next-action-text">${escapeHtml(detail.next_action || "none")}</span>
       </div>
+
+      ${conformanceCardHtml(detail)}
 
       <div class="detail-card">
         <div class="collapsible" data-section="state-summary">
@@ -2066,6 +2140,24 @@ if (quitBtn) {
   });
 }
 
+const minimizeBtn = document.getElementById("minimizeBtn");
+if (minimizeBtn) {
+  minimizeBtn.addEventListener("click", () => {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.minimize_window) {
+      window.pywebview.api.minimize_window();
+    }
+  });
+}
+
+const maximizeBtn = document.getElementById("maximizeBtn");
+if (maximizeBtn) {
+  maximizeBtn.addEventListener("click", () => {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.maximize_window) {
+      window.pywebview.api.maximize_window();
+    }
+  });
+}
+
 let collapseHintAcknowledged = false;
 
 function showCollapseHint() {
@@ -2394,6 +2486,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
   const flashChanges = document.getElementById("setFlashChanges").checked;
   const localeVal = document.getElementById("setLocale").value;
   const locale = document.getElementById("setLocale").value;
+  const fvd = document.getElementById("setFileViewerDefault").value;
 
   // Read custom commands from UI
   const customCommands = [];
@@ -2441,7 +2534,6 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
     document.body.style.zoom = zoomLevel;
     applyFontFamily(fontFamily);
     flashChangesEnabled = flashChanges;
-    const fvd = document.getElementById("setFileViewerDefault").value;
     fileViewerDefault = fvd;
     closeSettings();
   }).catch((err) => {
@@ -2868,7 +2960,7 @@ setInterval(() => {
   if (!flashChangesEnabled || !Object.keys(flashState).length) return;
 
   if (!_flashSurfColor) {
-    _flashSurfColor = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#2a1c0a";
+    _flashSurfColor = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#4a341b";
   }
 
   const now = Date.now();

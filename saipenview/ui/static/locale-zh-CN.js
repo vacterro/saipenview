@@ -45,6 +45,8 @@ const LOCALE_ZH_CN = {
   "toolbar.swap.title.swapped": "恢复默认布局",
   "toolbar.help.title": "SAIPENVIEW 帮助与维基",
   "toolbar.help.text": "?",
+  "toolbar.minimize.title": "最小化窗口",
+  "toolbar.maximize.title": "最大化窗口",
   "toolbar.quit.title": "退出 SAIPENVIEW（关闭时保留在系统托盘）",
   "toolbar.quit.text": "退出",
 
@@ -240,4 +242,10 @@ const LOCALE_ZH_CN = {
   "outbox.outboxBtn.text": "出件箱",
   "outbox.critical": "严重",
   "outbox.criticalCount": "${n} 个严重",
+
+  // ── 合规性检查 ──
+  "conf.title": "合规性",
+  "conf.clean": "未发现问题 — 该项目的 .saipen/ 文件符合协议。",
+  "conf.tooltipPass": "符合 SAIPEN",
+  "conf.baseline": "检查依据 SAIPEN",
 };
