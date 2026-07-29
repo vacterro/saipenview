@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 
 DEFAULTS = {
-    "hotkeys": ["ctrl+alt+x", "alt+f15"],
+    "hotkeys": ["ctrl+alt+x", "alt+f15", "ctrl+q"],
     "zoom_level": 1.0,
     "scan_roots": None,  # None = autodetect local drives (excluding system drive)
     "rescan_interval": 300,
@@ -34,7 +34,7 @@ DEFAULTS = {
     # Two slots per hotkey, same as "hotkeys" above. alt+f14 mirrors the
     # existing alt+f15 convention -- F13..F24 don't exist on normal keyboards,
     # so they're collision-free targets for a remapper/macro key.
-    "snap_hotkey": ["ctrl+q", "alt+f14"],
+    "snap_hotkey": ["alt+f14"],
     "collapse_hint_acknowledged": False,
     "collapsed_sections": {},
     "show_on_launch": True,  # False = start hidden in tray (old default)

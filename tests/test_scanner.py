@@ -206,10 +206,13 @@ class TestScan:
         results = scan(scan_roots=["Z:\\nonexistent"], max_depth=3, delay=0)
         assert results == []
 
-    def test_finds_projects(self, tmp_path):
+    def test_finds_projects(self, tmp_path, monkeypatch):
         from saipenview.scanner import scan
 
-        # Create a real SAIPEN project
+        # tmp_path contains garbage markers (pytest-of-), so _is_garbage_root
+        # would filter it out. Bypass for this test.
+        monkeypatch.setattr("saipenview.scanner._is_garbage_root", lambda root: False)
+
         proj = tmp_path / "real-project"
         (proj / ".saipen").mkdir(parents=True)
         (proj / ".saipen" / "STATE.md").write_text("---\nphase: BUILD\n---\n", encoding="utf-8")

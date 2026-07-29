@@ -83,7 +83,50 @@ EXCLUDE_DIRS = {
     "out",
     "dist",
     "build",
+    # Garbage/temp/test dirs that should never contain real SAIPEN projects
+    "_TEMP_",
+    "tmp",
+    "temp",
+    "Temp",
+    "TMP",
+    "TEMP",
+    "tests",
+    "test",
+    "Test",
+    "Tests",
+    "scratch",
+    "backup",
+    "Backup",
+    "cache",
+    "CACHE",
+    "log",
+    "logs",
+    "Logs",
+    "trash",
 }
+
+# Path components that mark a project root as garbage (test fixture, temp,
+# scratch) and exclude from scan results even if reached via os.walk.
+# Case-insensitive check against each path part.
+GARBAGE_PATH_MARKERS: set[str] = {
+    "_temp_",
+    "pytest-of-",
+    "tmp",
+    "scratch",
+    "test-fixture",
+    "__pycache__",
+    ".pytest_cache",
+}
+
+def _is_garbage_root(root: Path) -> bool:
+    """True if root path contains any GARBAGE_PATH_MARKERS component."""
+    for part in root.parts:
+        lower = part.lower()
+        for marker in GARBAGE_PATH_MARKERS:
+            if marker in lower:
+                return True
+    return False
+
 
 MAX_SCAN_DEPTH = 8
 SCAN_INTER_DIR_DELAY = 0.001
@@ -239,6 +282,9 @@ def _scan_one_root(
             _push_error(f"failed to load project at {project_root}: {e}")
             continue
         if status is not None:
+            if _is_garbage_root(project_root):
+                _push_error(f"skipped garbage path: {project_root}")
+                continue
             projects.append(status)
     return projects
 
@@ -291,16 +337,19 @@ def scan(
         pool.submit(_scan_worker, root, max_depth, delay, extra_excludes): root
         for root in roots
     }
-    for future in concurrent.futures.as_completed(
-        futures, timeout=PER_ROOT_TIMEOUT_SECONDS + 5
-    ):
-        root = futures[future]
-        try:
-            projects.extend(future.result(timeout=0))
-        except concurrent.futures.TimeoutError:
-            _push_error(f"scan of {root} exceeded {PER_ROOT_TIMEOUT_SECONDS}s, skipped")
-        except OSError as e:
-            _push_error(f"scan of {root} failed: {e}")
+    try:
+        for future in concurrent.futures.as_completed(
+            futures, timeout=PER_ROOT_TIMEOUT_SECONDS + 5
+        ):
+            root = futures[future]
+            try:
+                projects.extend(future.result(timeout=0))
+            except concurrent.futures.TimeoutError:
+                _push_error(f"scan of {root} exceeded {PER_ROOT_TIMEOUT_SECONDS}s, skipped")
+            except OSError as e:
+                _push_error(f"scan of {root} failed: {e}")
+    except concurrent.futures.TimeoutError:
+        _push_error("overall scan timeout reached, some roots skipped")
     _set_scan_progress(
         pct=100, root="", roots_done=_scan_progress.get("roots_total", 0)
     )
@@ -308,6 +357,8 @@ def scan(
     seen = set()
     deduped = []
     for p in projects:
+        if _is_garbage_root(p.root):
+            continue
         k = str(p.root).lower()
         if k not in seen:
             seen.add(k)

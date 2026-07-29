@@ -197,6 +197,33 @@ class MainWindow:
             )
             self._geometry_thread.start()
 
+    def minimize(self) -> None:
+        """Minimize window to taskbar."""
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW(None, "SAIPENVIEW")
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+        except Exception as e:
+            print(f"SAIPENVIEW: minimize failed: {e}", file=sys.stderr)
+
+    def maximize(self) -> None:
+        """Maximize window."""
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW(None, "SAIPENVIEW")
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+        except Exception as e:
+            print(f"SAIPENVIEW: maximize failed: {e}", file=sys.stderr)
+
+    def restore(self) -> None:
+        """Restore from minimized or maximized."""
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW(None, "SAIPENVIEW")
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        except Exception as e:
+            print(f"SAIPENVIEW: restore failed: {e}", file=sys.stderr)
+
     def _force_foreground(self) -> None:
         """Restore from minimized and genuinely take the foreground.
 
