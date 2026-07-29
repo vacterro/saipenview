@@ -194,6 +194,30 @@ Each SAIPEN project stores its state in three canonical files:
 
 **SubSaipen agents** (`saiwiki`, `saihunt`, `saitranslate`) live in `.saipen/extensions/subs/` and communicate via `kitchen/OUTBOX.md` — the protocol's built-in cross-agent message bus. SAIPENVIEW discovers all of them and renders a unified dashboard.
 
+### Conformance
+
+Showing what a project *says* is only half of it. A project can read perfectly
+in the list — a phase, a task, a next action — while being a state the protocol
+rejects, and until you ran `tools/validate.py` by hand there was no way to tell
+those two apart.
+
+Every row carries a verdict badge, and the detail pane lists what is wrong:
+
+| Verdict | Meaning |
+|---|---|
+| `OK` | Nothing found in this project's own `.saipen/` files |
+| `N WARNS` | Legal, but drifting — a stale checkpoint, a non-standard LOG verb |
+| `N FAILS` | A state the protocol rejects: a `WAIT:` with no category, a checkbox that disagrees with its section, a `needs:` pointing at a ticket that does not exist, a UTF-16 `STATE.md` no other SAIPEN tool can read |
+
+Each finding names the rule, the file and line, and the clause it comes from,
+so it can be looked up rather than taken on faith.
+
+This is a **second opinion, not a replacement** for `tools/validate.py`. It
+re-checks only what a project's own files can decide, and it grades against a
+copy of the protocol's vocabularies — so the SAIPEN version it was read from is
+printed under every verdict. The viewer is allowed to lag the protocol. It is
+not allowed to lag it quietly.
+
 > 💡 *The name "SAIPENVIEW" says it all — it provides a **view** into every **SAIPEN** project on your machine.*
 
 <br>
@@ -244,6 +268,9 @@ saipenview/
 ├── api.py              JS-facing pywebview bridge (30+ methods)
 ├── scanner.py          Drive walk + background rescan loop
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsing
+├── textio.py           One reader for every .saipen/ file — BOM, UTF-16, cp1251
+├── protocol.py         The protocol's closed vocabularies + BASELINE_VERSION
+├── conformance.py      Grades a project against those vocabularies
 ├── config.py           Settings load/save (atomic writes)
 ├── tray.py             pystray system-tray icon + menu
 ├── hotkey.py           Global hotkey registration (keyboard lib)
