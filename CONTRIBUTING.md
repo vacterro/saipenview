@@ -227,7 +227,7 @@ node --check saipenview/ui/static/app.js
 
 ## Testing
 
-SAIPENVIEW does not yet have a formal test suite. Contributions that add tests are especially welcome.
+SAIPENVIEW has a pytest suite (`tests/test_*.py`, 400+ tests). Contributions that add tests are especially welcome.
 
 ### Current Validation Approach
 

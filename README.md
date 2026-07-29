@@ -237,7 +237,7 @@ Key defaults:
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["ctrl+q", "alt+f14"],
+  "snap_hotkey":      ["alt+f14"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,

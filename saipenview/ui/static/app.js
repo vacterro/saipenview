@@ -748,13 +748,21 @@ function renderDetailPane(detail) {
   const starText = detail.is_pinned ? "Unpin ★" : "Pin ☆";
 
   let ticketsHtml = "";
+  // The collapsed CSS state only ever hides the 6th-from-end item onward
+  // (style.css .collapsible.collapsed .collapsible-body > :nth-last-child(n+6)),
+  // so a section with 5 or fewer entries can never visibly change -- the arrow
+  // was clickable and animating with nothing behind it. Recent DONE in
+  // particular is server-capped to exactly 5 (api.py done[-5:]), so its arrow
+  // was 100% dead every single time. Only render the affordance when there's
+  // something it could actually hide.
   const renderTicketGroup = (title, tickets) => {
     if (!tickets || !tickets.length) return "";
     const sectionKey = "tickets-" + title.toLowerCase().replace(/[^a-z]+/g, "-");
+    const canCollapse = tickets.length > 5;
     return `<div class="collapsible" data-section="${sectionKey}">
-      <div class="card-title collapsible-header">
+      <div class="card-title${canCollapse ? " collapsible-header" : ""}">
         <span>${title} (${tickets.length}) <span class="dblclick-hint">📄</span></span>
-        <span class="collapse-icon">▼</span>
+        ${canCollapse ? '<span class="collapse-icon">▼</span>' : ""}
       </div>
       <div class="ticket-list collapsible-body">
         ${tickets.map((t) => `<div class="ticket-item"><span class="ticket-id">${escapeHtml(t.id)}</span><span class="ticket-desc">${escapeHtml(t.desc)}</span></div>`).join("")}
@@ -764,10 +772,11 @@ function renderDetailPane(detail) {
   const renderTicketGroupWithActions = (title, tickets, root) => {
     if (!tickets || !tickets.length) return "";
     const sectionKey = "tickets-" + title.toLowerCase().replace(/[^a-z]+/g, "-");
+    const canCollapse = tickets.length > 5;
     return `<div class="collapsible" data-section="${sectionKey}">
-      <div class="card-title collapsible-header">
+      <div class="card-title${canCollapse ? " collapsible-header" : ""}">
         <span>${title} (${tickets.length}) <span class="dblclick-hint">📄</span></span>
-        <span class="collapse-icon">▼</span>
+        ${canCollapse ? '<span class="collapse-icon">▼</span>' : ""}
       </div>
       <div class="ticket-list collapsible-body">
         ${tickets.map((t) => {
@@ -786,11 +795,12 @@ function renderDetailPane(detail) {
 
   let logHtml = "";
   if (detail.log_tail && detail.log_tail.length) {
+    const canCollapse = detail.log_tail.length > 5;
     logHtml = `<div class="detail-card history">
       <div class="collapsible" data-section="log">
-        <div class="card-title collapsible-header">
+        <div class="card-title${canCollapse ? " collapsible-header" : ""}">
           <span>Recent Activity (LOG.md) <span class="dblclick-hint">📄</span></span>
-          <span class="collapse-icon">▼</span>
+          ${canCollapse ? '<span class="collapse-icon">▼</span>' : ""}
         </div>
         <div class="ticket-list collapsible-body">
           ${detail.log_tail.map((l) => `<div class="log-item">${escapeHtml(l)}</div>`).join("")}
@@ -804,11 +814,12 @@ function renderDetailPane(detail) {
       const staleBadge = detail.subs_stale
         ? `<span class="stale-badge" title="Sub-agent protocol files are out of date — ${escapeHtml(detail.subs_stale_details || '')}">STALE</span>`
         : "";
+      const canCollapse = detail.subs.length > 5;
       subsHtml = `<div class="detail-card">
         <div class="collapsible" data-section="sub-agents">
-          <div class="card-title collapsible-header">
+          <div class="card-title${canCollapse ? " collapsible-header" : ""}">
             <span>Sub-agents (${detail.subs.length})${staleBadge ? ' ' + staleBadge : ''} <span class="dblclick-hint">📄</span></span>
-            <span class="collapse-icon">▼</span>
+            ${canCollapse ? '<span class="collapse-icon">▼</span>' : ""}
           </div>
           <div class="ticket-list collapsible-body">
             ${detail.subs.map((s) => {
