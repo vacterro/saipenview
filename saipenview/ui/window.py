@@ -197,6 +197,17 @@ class MainWindow:
             )
             self._geometry_thread.start()
 
+    def _stop_geometry_thread(self) -> None:
+        """Signal the periodic saver to exit and let show() start a fresh one.
+
+        Deliberately does NOT join: this runs on the UI/hotkey path and the
+        thread is a daemon sitting in a 15s `wait()`, so joining would stall a
+        hide by up to 15 seconds. Dropping the reference is what lets
+        _start_geometry_thread's `is None` guard build a new one on show.
+        """
+        self._geometry_stop.set()
+        self._geometry_thread = None
+
     def minimize(self) -> None:
         """Minimize window to taskbar."""
         try:
@@ -314,6 +325,30 @@ class MainWindow:
         self._toggle_frameless_style(self._frameless)
         return self._frameless
 
+    def _notify_visibility(self, visible: bool) -> None:
+        """Tell the page whether anyone can actually see it.
+
+        SAIPENVIEW is a tray app: it spends most of its life hidden, and until
+        this existed the page kept polling on its 5s timer the whole time --
+        re-reading every known project's `.saipen/` files and rebuilding the
+        detail pane's innerHTML for nobody. `document.hidden` does NOT cover
+        this: a pywebview `hide()` is a native window hide, and the Page
+        Visibility API never fires for it, so the page has no way to find out
+        on its own.
+
+        Best-effort by design. A failed notify must never break show/hide --
+        the worst case is the page keeps polling, which is exactly the old
+        behaviour.
+        """
+        try:
+            self._window.evaluate_js(
+                f"window.__saipenSetVisible && window.__saipenSetVisible({str(visible).lower()})"
+            )
+        except Exception as e:
+            print(
+                f"SAIPENVIEW: visibility notify({visible}) failed: {e}", file=sys.stderr
+            )
+
     def show(self) -> None:
         self._window.show()
         # Set here, NOT in the `shown` event -- that only fires once (see
@@ -322,6 +357,9 @@ class MainWindow:
         self._start_geometry_thread()
         self._save_geometry()
         self._force_foreground()
+        # After _force_foreground, so the page's catch-up poll starts against a
+        # window that is already up: the refresh lands as the user is looking.
+        self._notify_visibility(True)
 
     def focus(self) -> None:
         """Bring window to foreground even if minimized, pywebview-independent."""
@@ -331,6 +369,11 @@ class MainWindow:
         self._save_geometry()
         self._window.hide()
         self._visible = False
+        self._notify_visibility(False)
+        # The 15s geometry autosave exists to catch moves/resizes; a hidden
+        # window has none, so leaving the thread running just rewrites the same
+        # config.json values to disk forever. show() restarts it.
+        self._stop_geometry_thread()
 
     def toggle(self) -> None:
         self.hide() if self._visible else self.show()

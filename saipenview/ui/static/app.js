@@ -1770,7 +1770,29 @@ document.getElementById("errorBadge")?.addEventListener("click", () => {
   }).catch((e) => console.error("updateErrorBadge scroll failed:", e));
 });
 
+// Whether the native window is actually on screen. Driven from Python
+// (MainWindow._notify_visibility) because a pywebview hide() is a native window
+// hide that the Page Visibility API never reports -- document.hidden stays
+// false the whole time the tray app is put away.
+//
+// Starts true: if the notify bridge ever breaks, the app degrades to the old
+// always-poll behaviour rather than to a window that silently never refreshes.
+let windowVisible = true;
+
+window.__saipenSetVisible = function (visible) {
+  const was = windowVisible;
+  windowVisible = !!visible;
+  // Catch up the moment we become visible, instead of showing whatever was on
+  // screen 5 seconds before the user hit the hotkey and waiting out the timer.
+  if (windowVisible && !was) poll();
+};
+
 function poll() {
+  // Hidden means nobody can see the result, and the work is not free:
+  // refresh_known() re-reads every known project's .saipen/ files and render()
+  // rebuilds the detail pane's innerHTML. On a machine with a large scan that
+  // was hundreds of ms of disk I/O every 5s, forever, for an invisible window.
+  if (!windowVisible) return;
   // refresh_known() re-reads only the .saipen/ files of projects we already
   // know (no drive walk, git skipped -> ~1.7ms/project), so edits show up in
   // seconds instead of waiting out rescan_interval, and the sidebar can no
@@ -2962,6 +2984,10 @@ window.addEventListener("wheel", (e) => {
 }, { passive: false });
 
 setInterval(() => {
+  // Same reasoning as poll()'s guard: a clock nobody is looking at does not
+  // need a querySelectorAll every second. Repainted on show by the catch-up
+  // poll's render, so it is never stale by the time it is visible.
+  if (!windowVisible) return;
   document.querySelectorAll('.now-clock').forEach(el => { el.textContent = `(now: ${nowStr()})`; });
 }, 1000);
 
