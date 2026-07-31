@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable, Iterable
 from typing import cast
@@ -39,9 +40,26 @@ class HotkeyListener:
         self._on_toggle()
 
     def start(self) -> None:
+        """Register every combo, and keep going when one of them won't take.
+
+        Previously a single bad combo aborted the loop: `keyboard.add_hotkey`
+        raises ValueError on an unparseable name, so one stale or mistyped
+        entry left every LATER binding unregistered and propagated the error
+        into whatever called start() -- including set_hotkeys() from the
+        Settings save path, where it took out the working bindings the user
+        already had. Now each combo stands alone: the good ones register, the
+        bad one is reported, and the app keeps a usable toggle.
+        """
         self.stop()
         for combo in self._hotkeys:
-            keyboard.add_hotkey(combo, self._debounced_toggle)
+            try:
+                keyboard.add_hotkey(combo, self._debounced_toggle)
+            except (ValueError, ImportError) as e:
+                print(
+                    f"SAIPENVIEW: hotkey {combo!r} not registered: {e}",
+                    file=sys.stderr,
+                )
+                continue
             self._registered.append(combo)
 
     def stop(self) -> None:

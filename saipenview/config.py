@@ -10,7 +10,11 @@ import threading
 from pathlib import Path
 
 DEFAULTS = {
-    "hotkeys": ["ctrl+alt+x", "alt+f15", "ctrl+q"],
+    # Exactly two slots, matching FastPrompter's binding pair. ctrl+q used to
+    # sit here as a third: a global hotkey hijacks the combo in EVERY app, and
+    # ctrl+q is a ubiquitous quit accelerator, so it fired the toggle from
+    # unrelated windows. Two bindings is also what README documents.
+    "hotkeys": ["ctrl+alt+x", "alt+f15"],
     "zoom_level": 1.0,
     "scan_roots": None,  # None = autodetect local drives (excluding system drive)
     "rescan_interval": 300,
@@ -31,9 +35,12 @@ DEFAULTS = {
     "sort_order": "smart",
     "sidebar_width": 160,
     "show_hidden": False,
-    # Two slots per hotkey, same as "hotkeys" above. alt+f14 mirrors the
-    # existing alt+f15 convention -- F13..F24 don't exist on normal keyboards,
-    # so they're collision-free targets for a remapper/macro key.
+    # Same two-slot shape as "hotkeys" above; both are lists so either can hold
+    # a second binding. alt+f14 mirrors the alt+f15 convention -- F13..F24
+    # don't exist on normal keyboards, so they're collision-free targets for a
+    # remapper/macro key. Only ONE default here on purpose: snap-corner is a
+    # secondary action and there is no second combo that is safe to claim
+    # globally without guessing at what the user already uses.
     "snap_hotkey": ["alt+f14"],
     "collapse_hint_acknowledged": False,
     "collapsed_sections": {},
