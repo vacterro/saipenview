@@ -71,7 +71,7 @@ def _work_area() -> tuple[int, int, int, int]:
             )
             return fallback
         return (r.left, r.top, r.right, r.bottom)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
         print(
             f"SAIPENVIEW: work-area query failed, using 1920x1080 fallback: {e}",
             file=sys.stderr,
@@ -145,7 +145,7 @@ class MainWindow:
                         "window_y": y,
                     }
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: window geometry save failed: {e}", file=sys.stderr)
 
     def _set_window_icon(self) -> None:
@@ -168,7 +168,7 @@ class MainWindow:
                 )
             if hBig:
                 ctypes.windll.user32.SendMessageW(hwnd, _WM_SETICON, _ICON_BIG, hBig)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: taskbar icon set failed: {e}", file=sys.stderr)
 
     def _on_closing(self):
@@ -214,7 +214,7 @@ class MainWindow:
             hwnd = ctypes.windll.user32.FindWindowW(None, "SAIPENVIEW")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: minimize failed: {e}", file=sys.stderr)
 
     def maximize(self) -> None:
@@ -223,7 +223,7 @@ class MainWindow:
             hwnd = ctypes.windll.user32.FindWindowW(None, "SAIPENVIEW")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: maximize failed: {e}", file=sys.stderr)
 
     def restore(self) -> None:
@@ -232,7 +232,7 @@ class MainWindow:
             hwnd = ctypes.windll.user32.FindWindowW(None, "SAIPENVIEW")
             if hwnd:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: restore failed: {e}", file=sys.stderr)
 
     def _force_foreground(self) -> None:
@@ -269,7 +269,7 @@ class MainWindow:
             finally:
                 if attached:
                     u.AttachThreadInput(fg_tid, cur_tid, False)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: force_foreground failed: {e}", file=sys.stderr)
 
     def _toggle_frameless_style(self, frameless: bool) -> None:
@@ -314,7 +314,7 @@ class MainWindow:
                 0,
                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(
                 f"SAIPENVIEW: toggle_frameless({frameless}) failed: {e}",
                 file=sys.stderr,
@@ -344,7 +344,7 @@ class MainWindow:
             self._window.evaluate_js(
                 f"window.__saipenSetVisible && window.__saipenSetVisible({str(visible).lower()})"
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(
                 f"SAIPENVIEW: visibility notify({visible}) failed: {e}", file=sys.stderr
             )
@@ -381,7 +381,7 @@ class MainWindow:
     def set_always_on_top(self, enabled: bool) -> None:
         try:
             self._window.on_top = enabled
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(
                 f"SAIPENVIEW: set_always_on_top({enabled}) failed: {e}", file=sys.stderr
             )
@@ -407,7 +407,7 @@ class MainWindow:
         # snap and the zone picker were all dead the whole time.)
         try:
             self._window.move(self._window.x + dx, self._window.y + dy)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: move_by({dx},{dy}) failed: {e}", file=sys.stderr)
 
     def _is_in_quarter(self, x, y, w, h, qx, qy, qw, qh, tol=20) -> bool:
@@ -467,11 +467,11 @@ class MainWindow:
             # Show feedback toast — runs in background thread but evaluate_js
             # queues execution on the webview's main thread.
             self._window.evaluate_js(f'showToast("Snapped {nxtLabel}", "info", 1500)')
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: cycle_snap_corner failed: {e}", file=sys.stderr)
             try:
                 self._window.evaluate_js('showToast("Snap failed", "error", 3000)')
-            except Exception as toast_err:
+            except Exception as toast_err:  # noqa: BLE001 - defensive catch for pywebview window operations
                 # Best-effort UI notice about an error already printed above;
                 # still say so rather than vanish, per T-027's policy.
                 print(

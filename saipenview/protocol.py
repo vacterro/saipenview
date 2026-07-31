@@ -21,7 +21,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.103.0"
+BASELINE_VERSION = "7.133.0"
 
 # RFC § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.
@@ -136,7 +136,7 @@ VALID_TRANSITIONS: dict[str, tuple[str, ...]] = {
     "BUILD": ("VERIFY", "BLOCKED"),
     "VERIFY": ("REVIEW", "SCOUT", "BUILD", "BLOCKED"),
     "REVIEW": ("SHIP", "BUILD", "SCOUT", "BLOCKED"),
-    "SHIP": ("DONE", "BLOCKED"),
+    "SHIP": ("DONE", "BUILD", "BLOCKED"),
     "DONE": ("SCOUT", "PLAN", "HUNT", "BLOCKED"),
     "VALIDATE": ("SCOUT", "PLAN", "DONE", "BLOCKED"),
     "HUNT": ("ADD", "PLAN", "SCOUT", "BLOCKED"),

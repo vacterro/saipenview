@@ -49,9 +49,7 @@ _KNOWN_TICKET_FIELDS = frozenset(
 # so an escaped pipe never invents a field.
 _PIPE_SENTINEL = "\x00"
 
-_LOG_ENTRY_RE = re.compile(
-    r"^-\s+(\d{2}\.\d{2}\.\d{2})\s+(\d{2}:\d{2})\s+\[E-(\d+)\]"
-)
+_LOG_ENTRY_RE = re.compile(r"^-\s+(\d{2}\.\d{2}\.\d{2})\s+(\d{2}:\d{2})\s+\[E-(\d+)\]")
 _LOG_ANY_EVENT_RE = re.compile(r"^-\s+.*?\[E-(\d+)\]")
 # RFC § 1.2's Event Graph skeleton, as `tools/validate.py` enforces it. This
 # grader used to look only at lines that already carried an `[E-###]` and skip
@@ -146,9 +144,9 @@ def _parse_utc(stamp: str) -> datetime.datetime | None:
     if not m:
         return None
     try:
-        return datetime.datetime.strptime(
-            stamp.strip(), "%Y-%m-%dT%H:%M:%SZ"
-        ).replace(tzinfo=datetime.timezone.utc)
+        return datetime.datetime.strptime(stamp.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc
+        )
     except ValueError:
         return None
 
@@ -225,8 +223,7 @@ def check_state(state: dict[str, str], root: Path, c: _Collector) -> None:
     if mode and mode not in protocol.MODES:
         c.fail(
             "state.mode.enum",
-            f"mode {mode!r} is not one of "
-            f"{'/'.join(protocol.MODES)}",
+            f"mode {mode!r} is not one of {'/'.join(protocol.MODES)}",
             "RFC § 1.3",
             _STATE_FILE,
         )
@@ -326,7 +323,7 @@ def _check_next_action(next_action: str, c: _Collector) -> None:
 
     if next_action.startswith("saipen "):
         rest = next_action[len("saipen ") :].split()
-        verb = rest[0].strip('."\'') if rest else ""
+        verb = rest[0].strip(".\"'") if rest else ""
         if verb and verb not in protocol.SAIPEN_COMMANDS:
             c.fail(
                 "next_action.command",
@@ -376,8 +373,7 @@ def _check_updated(updated: str, c: _Collector) -> None:
     if stamp is None:
         c.fail(
             "state.updated.format",
-            f"updated {updated!r} is not the required UTC form "
-            f"YYYY-MM-DDTHH:MM:SSZ",
+            f"updated {updated!r} is not the required UTC form YYYY-MM-DDTHH:MM:SSZ",
             "RFC § 1.2",
             _STATE_FILE,
         )
@@ -452,7 +448,11 @@ def parse_board_strict(text: str) -> tuple[dict[str, BoardTicket], list[str], li
             fm = _FIELD_RE.match(part)
             if not fm or fm.group(1) not in _KNOWN_TICKET_FIELDS:
                 problems.append(
-                    (line_no, "unknown_field", f"{tid}: {part.replace(_PIPE_SENTINEL, '|')!r}")
+                    (
+                        line_no,
+                        "unknown_field",
+                        f"{tid}: {part.replace(_PIPE_SENTINEL, '|')!r}",
+                    )
                 )
                 continue
             fields[fm.group(1)] = fm.group(2)
@@ -838,11 +838,7 @@ def check_subs(subs, c: _Collector) -> None:
                     f"{where}/kitchen/OUTBOX.md",
                 )
         counts = sub.board_counts
-        if (
-            not any(counts.values())
-            and not sub.outbox
-            and sub.phase in ("?", "", None)
-        ):
+        if not any(counts.values()) and not sub.outbox and sub.phase in ("?", "", None):
             c.warn(
                 "sub.empty",
                 f"{sub.name} has an empty board, an empty OUTBOX and no phase "

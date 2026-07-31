@@ -49,11 +49,19 @@ DEFAULTS = {
     "layout_swap": False,  # Swap sidebar/detail pane position
     "top_panel_collapsed": False,  # Toolbar collapsed state
     "file_viewer_default": "source",  # Default file viewer mode: source | reader
+    # Agent engine layer (Wave 1)
+    "default_engine": "claude-code",  # preferred engine name
+    "engine_overrides": {},  # per-engine config: {"claude-code": {"path": "..."}}
+    "agent_output_buffer_size": 5000,  # max lines in rolling output deque
 }
 
 
 def config_path() -> Path:
-    return Path(__file__).resolve().parent / "_data" / "config.json"
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).parent
+    else:
+        base = Path(__file__).resolve().parent.parent
+    return base / "saipenview" / "_data" / "config.json"
 
 
 def load_config() -> dict:

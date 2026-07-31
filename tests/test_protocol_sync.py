@@ -69,6 +69,8 @@ def _literal(src: str, name: str):
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == name:
+                    if isinstance(node.value, ast.Call) and getattr(node.value.func, "id", None) == "frozenset":
+                        return ast.literal_eval(node.value.args[0])
                     return ast.literal_eval(node.value)
     return None
 
@@ -140,7 +142,7 @@ class TestAgainstValidator:
         assert set(protocol.NEXT_ACTION_PREFIXES) == set(canon)
 
     def test_saipen_commands(self, validator_src):
-        canon = _nested_literal(validator_src, "known")
+        canon = _literal(validator_src, "SAIPEN_COMMANDS")
         assert canon is not None, "the § 1.10 command set not found in validator"
         assert protocol.SAIPEN_COMMANDS == frozenset(canon)
 

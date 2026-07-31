@@ -17,6 +17,10 @@ def _run_vbs_path() -> Path:
 
 
 def _launch_command() -> str:
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
     return f'wscript.exe "{_run_vbs_path()}"'
 
 

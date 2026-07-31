@@ -1,5 +1,7 @@
 """JS-facing API exposed to the pywebview window as `pywebview.api`."""
 
+# Agent engine layer (Wave 1)
+
 from __future__ import annotations
 
 import json
@@ -14,6 +16,9 @@ from tkinter import filedialog
 
 from saipenview.config import config_path, load_config, save_config
 from saipenview.conformance import check_project
+from saipenview.engines import get_engine, list_engines
+from saipenview.events import event_bus
+from saipenview.git_diff import commit_agent_work, get_working_diff, revert_agent_work
 from saipenview.parser import (
     OutboxEntry,
     ProjectStatus,
@@ -22,6 +27,7 @@ from saipenview.parser import (
     load_project,
     parse_board,
 )
+from saipenview.runtime import ProcessManager
 from saipenview.scanner import (
     BackgroundScanner,
     _auto_roots,
@@ -185,7 +191,9 @@ class Api:
             try:
                 with open(self._cache_file, encoding="utf-8") as f:
                     self._projects = json.load(f)
-                self._projects = [p for p in self._projects if not _is_garbage_root(Path(p["root"]))]
+                self._projects = [
+                    p for p in self._projects if not _is_garbage_root(Path(p["root"]))
+                ]
                 self._has_scanned = True
             except Exception as e:
                 print(
@@ -194,6 +202,9 @@ class Api:
                 )
 
         self._linked_worktrees: list[dict] = []
+        self._process_manager = ProcessManager(
+            buffer_size=self._config.get("agent_output_buffer_size", 5000)
+        )
         self.background_scanner = BackgroundScanner(
             on_result=self._set_cache,
             scan_roots=self._config["scan_roots"],
@@ -203,6 +214,22 @@ class Api:
             extra_excludes=set(self._config.get("exclude_dirs", [])),
             on_scan_start=lambda: self._set_scanning(True),
         )
+
+        event_bus.subscribe("saipen.state_changed", self._on_file_changed)
+        event_bus.subscribe("saipen.board_changed", self._on_file_changed)
+        event_bus.subscribe("saipen.log_appended", self._on_file_changed)
+
+    def _on_file_changed(self, data: dict) -> None:
+        root = data["root"]
+        file = data["file"]
+        self.refresh_known()
+        if self._window:
+            try:
+                self._window.evaluate_js(
+                    f"if (window.onSaipenFileChanged) window.onSaipenFileChanged('{root}', '{file}')"
+                )
+            except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
+                print(f"SAIPENVIEW: js push failed: {e}", file=sys.stderr)
 
     def _set_scanning(self, val: bool) -> None:
         with self._lock:
@@ -271,7 +298,7 @@ class Api:
                 # edit, so carry the previous values and let the slow full scan
                 # refresh them.
                 proj = load_project(Path(root), with_git=False)
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 # One unreadable project must not stop the refresh (same rule
                 # _scan_one_root follows). Keep the last-known row instead.
                 print(f"SAIPENVIEW: refresh_known({root}) failed: {e}", file=sys.stderr)
@@ -307,7 +334,7 @@ class Api:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f)
             os.replace(tmp_path, self._cache_file)
-        except Exception as e:
+        except (OSError, ValueError) as e:
             print(
                 f"SAIPENVIEW: failed to write cache at {self._cache_file}: {e}",
                 file=sys.stderr,
@@ -356,7 +383,7 @@ class Api:
                 delay=self._config.get("scan_delay_ms", 10) / 1000.0,
                 extra_excludes=set(self._config.get("exclude_dirs", [])),
             )
-        except Exception as e:
+        except (OSError, ValueError) as e:
             print(f"SAIPENVIEW: linked worktree scan failed: {e}", file=sys.stderr)
             self._linked_worktrees = []
 
@@ -404,7 +431,12 @@ class Api:
         for p in pages:
             if p["id"] == page_id:
                 # Resolve path: project root is 1 level up from saipenview/api.py
-                base = Path(__file__).resolve().parent.parent
+                import sys
+
+                if getattr(sys, "frozen", False):
+                    base = Path(sys.executable).parent
+                else:
+                    base = Path(__file__).resolve().parent.parent
                 candidate = (
                     base
                     / ".saipen"
@@ -418,7 +450,7 @@ class Api:
                     try:
                         content = read_doc(candidate)
                         return {"id": p["id"], "title": p["title"], "content": content}
-                    except Exception as e:
+                    except OSError as e:
                         print(
                             f"SAIPENVIEW: get_wiki_page read failed: {e}",
                             file=sys.stderr,
@@ -527,7 +559,7 @@ class Api:
                 # the path is an existing dir from our own scan, never user text.
                 os.startfile(root_str)  # noqa: S606
                 return True
-            except Exception as e:
+            except OSError as e:
                 print(
                     f"SAIPENVIEW: open_folder({root_str}) failed: {e}", file=sys.stderr
                 )
@@ -538,7 +570,7 @@ class Api:
             try:
                 subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root_str}"'])
                 return True
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 print(
                     f"SAIPENVIEW: open_terminal({root_str}) failed: {e}",
                     file=sys.stderr,
@@ -580,7 +612,7 @@ class Api:
                 # a UTF-16 STATE.md as an error toast and a BOM-carrying one
                 # with a stray glyph on line 1.
                 return read_doc(file_path)
-        except Exception as e:
+        except OSError as e:
             print(
                 f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr
             )
@@ -591,7 +623,7 @@ class Api:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
             return True
-        except Exception as e:
+        except OSError as e:
             print(
                 f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr
             )
@@ -678,14 +710,14 @@ class Api:
         previous = self._config["snap_hotkey"]
         try:
             self._on_snap_hotkey_changed(hotkeys)
-        except Exception:
+        except Exception:  # noqa: BLE001 - defensive catch for hotkey binding failure
             # Hotkey registration failed (invalid combo, keyboard lib error, etc.)
             # Try to restore previous hotkeys silently
             try:
                 self._on_snap_hotkey_changed(
                     previous if isinstance(previous, list) else [previous]
                 )
-            except Exception as revert_err:
+            except Exception as revert_err:  # noqa: BLE001 - defensive catch for hotkey rollback failure
                 # Both the new binding AND the rollback failed -- the user now
                 # has NO working snap hotkey, which is exactly the state that
                 # must not happen quietly.
@@ -756,7 +788,7 @@ class Api:
             cmd = f'Set-Clipboard -Value "{text.replace(chr(34), chr(34) + chr(34))}"'
             subprocess.run(["powershell", "-NoProfile", "-Command", cmd], check=True)
             return True
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             print(f"SAIPENVIEW: clipboard_copy failed: {e}", file=sys.stderr)
             return False
 
@@ -822,6 +854,7 @@ class Api:
             self.background_scanner.start()
 
     def stop(self) -> None:
+        self._process_manager.stop_all()
         self.background_scanner.stop()
 
     def set_auto_scan(self, enabled: bool) -> dict:
@@ -881,7 +914,7 @@ class Api:
         try:
             subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root_str}" && {command}'])
             return True
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             print(
                 f"SAIPENVIEW: run_command({root_str}, {command}) failed: {e}",
                 file=sys.stderr,
@@ -933,7 +966,7 @@ class Api:
                         }
                     )
             return found
-        except Exception:
+        except OSError:
             return []
 
     def quick_search(self, query: str) -> list[dict]:
@@ -1030,3 +1063,70 @@ class Api:
         """Close the main window (hides to tray)."""
         if self._window:
             self._window.hide()
+
+    # ── Agent Engine Control (Wave 1) ─────────────────────────────────
+
+    def get_engines(self) -> list[dict]:
+        """Return all registered engines with availability status."""
+        return [eng.to_dict() for _, eng in list_engines()]
+
+    def launch_agent(self, root: str, engine_name: str, instruction: str) -> dict:
+        """Launch an agent process on a project.
+
+        Args:
+            root: Project root path.
+            engine_name: Engine identifier (e.g. 'claude-code', 'generic-cli').
+            instruction: Prompt or command to send to the agent.
+
+        Returns:
+            Dict with 'ok' bool and details or 'error' string.
+        """
+        engine = get_engine(engine_name)
+        if not engine:
+            return {"ok": False, "error": f"Unknown engine: {engine_name}"}
+        if not engine.detect():
+            return {
+                "ok": False,
+                "error": f"Engine '{engine.display_name}' not found on this machine",
+            }
+        return self._process_manager.launch(engine, root, instruction)
+
+    def stop_agent(self, root: str) -> dict:
+        """Kill a running agent process."""
+        return self._process_manager.kill(root)
+
+    def add_human_note(self, root: str, note: str) -> dict:
+        state_md = Path(root) / ".saipen" / "STATE.md"
+        if not state_md.exists():
+            return {"ok": False, "error": "STATE.md not found"}
+        try:
+            with open(state_md, "a", encoding="utf-8") as f:
+                f.write(f"\nhuman_note: {note}\n")
+            return {"ok": True}
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+
+    def get_diff(self, root: str) -> dict:
+        return get_working_diff(root)
+
+    def commit_agent_work(self, root: str, message: str) -> dict:
+        return commit_agent_work(root, message)
+
+    def revert_agent_work(self, root: str) -> dict:
+        return revert_agent_work(root)
+
+    def send_agent_input(self, root: str, text: str) -> dict:
+        """Send text to a running agent's stdin."""
+        return self._process_manager.send_input(root, text)
+
+    def get_agent_output(self, root: str, since_line: int = 0) -> dict:
+        """Return new output lines since a given line number."""
+        return self._process_manager.get_output(root, since_line)
+
+    def get_agent_status(self, root: str) -> dict:
+        """Return status info for an agent process on a project."""
+        return self._process_manager.get_status(root)
+
+    def list_running_agents(self) -> list[dict]:
+        """Return status dicts for all tracked agent processes."""
+        return self._process_manager.list_running()

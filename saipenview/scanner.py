@@ -118,6 +118,7 @@ GARBAGE_PATH_MARKERS: set[str] = {
     ".pytest_cache",
 }
 
+
 def _is_garbage_root(root: Path) -> bool:
     """True if root path contains any GARBAGE_PATH_MARKERS component."""
     for part in root.parts:
@@ -183,7 +184,7 @@ def find_linked_worktrees(
                             "git_dir": git_dir_content,
                         }
                     )
-                except Exception as e:
+                except (OSError, ValueError) as e:
                     # Don't drop the worktree just because its marker file
                     # wouldn't read -- that would silently hide the very thing
                     # this function exists to surface. Report it and still list
@@ -275,7 +276,7 @@ def _scan_one_root(
     ):
         try:
             status = load_project(project_root)
-        except Exception as e:
+        except (OSError, ValueError) as e:
             # One malformed project (bad encoding, corrupt frontmatter, ...)
             # MUST NOT take the rest of this root -- let alone every other
             # root -- down with it. Skip it, surface it, keep walking.
@@ -345,7 +346,9 @@ def scan(
             try:
                 projects.extend(future.result(timeout=0))
             except concurrent.futures.TimeoutError:
-                _push_error(f"scan of {root} exceeded {PER_ROOT_TIMEOUT_SECONDS}s, skipped")
+                _push_error(
+                    f"scan of {root} exceeded {PER_ROOT_TIMEOUT_SECONDS}s, skipped"
+                )
             except OSError as e:
                 _push_error(f"scan of {root} failed: {e}")
     except concurrent.futures.TimeoutError:
@@ -425,7 +428,7 @@ class BackgroundScanner:
                         extra_excludes=self._extra_excludes,
                     )
                 )
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 # An uncaught exception in scan() (e.g. all roots timeout
                 # and as_completed raises) would kill the daemon thread
                 # silently under pythonw.exe (no console). Log, push an

@@ -44,3 +44,8 @@ nul
 NUL
 NUL.*
 
+
+# Executables
+*.exe
+*.dist/
+crash.log

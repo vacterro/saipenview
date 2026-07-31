@@ -1,3 +1,4 @@
+window.agentTestState = {};
 const POLL_MS = 5000;
 let currentFilter = "ALL";
 let searchQuery = "";
@@ -12,11 +13,14 @@ let showHidden = false;
 let currentSort = "smart";
 let collapsedConfig = {};
 let currentDetailRoot = null;
-// True while the State Summary editor is open. The 5s poll rebuilds the whole
+let stateEditActive = false;
+let agentSinceLineNum = {};
+let availableEnginesCache = [];
+let agentStatusCache = {};
+let currentAgentPanelRoot = null;
 // detail pane via innerHTML, which destroyed the open edit form (and anything
 // typed into it) within seconds -- that was T-066's "Edit does nothing" AND
 // "form collapses itself". Live refresh pauses for this pane while it's true.
-let stateEditActive = false;
 
 // Flash highlight: snapshot-based change detection, hexBlend decay over ~20s
 let flashChangesEnabled = true;
@@ -740,9 +744,16 @@ function renderDetailPane(detail) {
     currentDetailRoot = null;
     stateEditActive = false;
     pane.innerHTML = '<div class="detail-placeholder">Select a project to view details</div>';
+    currentAgentPanelRoot = null;
     return;
   }
   currentDetailRoot = detail.root;
+
+  let contentDiv = document.getElementById("detailPaneContent");
+  if (!contentDiv) {
+    pane.innerHTML = '<div id="detailPaneContent" style="display:flex; flex-direction:column; gap:3px; flex:1 1 auto;"></div><div id="agentPanelContainer"></div>';
+    contentDiv = document.getElementById("detailPaneContent");
+  }
 
   const starSymbol = detail.is_pinned ? "★" : "☆";
   const starText = detail.is_pinned ? "Unpin ★" : "Pin ☆";
@@ -883,7 +894,7 @@ function renderDetailPane(detail) {
       }).catch((e) => console.error("error card fetch failed:", e));
     }
 
-    pane.innerHTML = `
+    contentDiv.innerHTML = `
       <div class="detail-header">
         <div class="detail-title">
           <span style="display:flex; align-items:center; gap:6px;">
@@ -998,6 +1009,8 @@ function renderDetailPane(detail) {
       ${subsHtml}
       ${logHtml}
     `;
+
+    renderAgentPanel(detail.root, document.getElementById("agentPanelContainer"));
 
   document.getElementById("openFolderBtn")?.addEventListener("click", () => {
     window.pywebview.api.open_folder(detail.root);
@@ -1787,6 +1800,14 @@ window.__saipenSetVisible = function (visible) {
   if (windowVisible && !was) poll();
 };
 
+let fileChangeDebounce = null;
+window.onSaipenFileChanged = function(root, fileName) {
+  if (fileChangeDebounce) clearTimeout(fileChangeDebounce);
+  fileChangeDebounce = setTimeout(() => {
+    poll();
+  }, 100);
+};
+
 function poll() {
   // Hidden means nobody can see the result, and the work is not free:
   // refresh_known() re-reads every known project's .saipen/ files and render()
@@ -1802,6 +1823,7 @@ function poll() {
       render(projects, status.scanned);
       renderLinkedWorktrees();
       updateScanIndicator(status.scanning);
+      pollAgentOutput();
     })
     .catch(() => {
       const statusEl = document.getElementById("status");
@@ -2744,6 +2766,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("pywebviewready", () => {
+  window.pywebview.api.get_engines().then(e => { availableEnginesCache = e || []; });
   Promise.all([window.pywebview.api.get_config(), window.pywebview.api.get_local_drives()])
     .then(([cfg, drives]) => {
       applyFontFamily(cfg.font_family);
@@ -3081,6 +3104,283 @@ document.body.addEventListener("mousedown", (e) => {
   e.preventDefault();
 });
 
+function renderAgentPanel(root, container) {
+  if (!container) return;
+  const status = agentStatusCache[root];
+  const isRunning = status && status.status === "running";
+
+  if (currentAgentPanelRoot !== root) {
+    currentAgentPanelRoot = root;
+    agentSinceLineNum[root] = 0;
+  }
+
+  const stateStr = isRunning ? "running" : "stopped";
+  let shouldBuildSkeleton = true;
+  const existingPanel = container.querySelector('.agent-panel');
+  if (currentAgentPanelRoot === root && existingPanel) {
+    shouldBuildSkeleton = false;
+  }
+
+  if (shouldBuildSkeleton) {
+    container.innerHTML = `<div class="agent-panel detail-card" style="margin-top:4px;" data-state="${stateStr}">
+      <div class="card-title">Agent Control</div>
+      <div id="agentControlTop-${escapeHtml(root)}"></div>
+      <div class="agent-output-panel sunken" id="agentOutputPanel-${escapeHtml(root)}">
+        <div id="agentOutputLines-${escapeHtml(root)}"></div>
+        <div class="agent-output-meta" id="agentOutputMeta-${escapeHtml(root)}">Lines: 0</div>
+      </div>
+      <div id="agentControlBottom-${escapeHtml(root)}"></div>
+    </div>`;
+  } else {
+    // If state hasn't changed, we just update the elapsed and meta.
+    if (existingPanel.getAttribute("data-state") === stateStr) {
+      if (isRunning) {
+        const elapsedEl = container.querySelector(".agent-status-elapsed");
+        if (elapsedEl && status.elapsed) elapsedEl.textContent = Math.floor(status.elapsed) + 's';
+        const metaEl = container.querySelector(".agent-output-meta");
+        if (metaEl && status.total_lines) metaEl.textContent = "Lines: " + status.total_lines;
+      }
+      return; // Nothing else to rebuild!
+    } else {
+      existingPanel.setAttribute("data-state", stateStr);
+    }
+  }
+
+  const topEl = container.querySelector(`#agentControlTop-${escapeHtml(root)}`);
+  const bottomEl = container.querySelector(`#agentControlBottom-${escapeHtml(root)}`);
+
+  let topHtml = "";
+  if (status) {
+    let phaseDot = 'DONE';
+    if (status.status === 'failed' || status.status === 'killed') phaseDot = 'BLOCKED';
+    else if (status.status === 'running') phaseDot = 'BUILD';
+
+    
+    const ts = window.agentTestState[root];
+    let testBadgeHtml = "";
+    if (ts && ts.status !== 'none') {
+      let color = ts.status === 'fail' ? 'var(--danger)' : (ts.status === 'pass' ? 'var(--success)' : 'var(--accentTeal)');
+      let label = ts.status === 'running' ? 'Tests: RUN' : (ts.status === 'fail' ? 'Tests: FAIL' : 'Tests: PASS');
+      testBadgeHtml = `<span style="color:${color}; font-size:10px; padding:2px 4px; margin-right:4px; font-weight:bold; border: 1px inset var(--borderDark); background: var(--surfaceBase);">${label}</span>`;
+    }
+topHtml = `<div class="agent-status-bar raised">
+      <div class="agent-status-info">
+        <span class="phase-indicator phase-${phaseDot}" style="position:static; display:inline-block; width:6px; height:6px;"></span>
+        <span>${escapeHtml(status.engine_display || status.engine)}</span>
+        <span>[${escapeHtml(status.status)}]</span>
+        <span class="agent-status-elapsed">${status.elapsed ? Math.floor(status.elapsed) + 's' : ''}</span>
+      </div>
+      <div>
+${testBadgeHtml}
+                ${isRunning ? `<button class="stop-agent-btn" data-root="${escapeHtml(root)}" style="color:var(--danger)">Stop</button>` : ''}
+        <button class="view-diff-btn" data-root="${escapeHtml(root)}">Diff</button>
+      </div>
+    </div>`;
+  }
+  topEl.innerHTML = topHtml;
+
+  let bottomHtml = "";
+  if (isRunning) {
+    bottomHtml = `<div class="agent-chat-panel" style="padding:4px;">
+      <div class="agent-chat-shortcuts" style="display:flex; gap:4px; margin-bottom:4px;">
+        <button class="chat-shortcut-btn raised" data-cmd="saipen continue" style="font-size:10px; padding:2px 4px;">Continue</button>
+        <button class="chat-shortcut-btn raised" data-cmd="saipen hunt" style="font-size:10px; padding:2px 4px;">Hunt</button>
+        <button class="chat-shortcut-btn raised" data-cmd="saipen clean" style="font-size:10px; padding:2px 4px;">Clean</button>
+      </div>
+      <div class="agent-launch-row">
+        <textarea id="agentChatInput" placeholder="Send message to agent (stdin)..."></textarea>
+        <button id="agentSendBtn" data-root="${escapeHtml(root)}" style="color:var(--success)">Send</button>
+      </div>
+    </div>`;
+  } else {
+    const engineOptions = availableEnginesCache.filter(e => e.available).map(e => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.display_name)}</option>`).join("");
+    const availableCount = availableEnginesCache.filter(e => e.available && e.name !== "generic-cli").length;
+    let hintHtml = "";
+    if (availableCount === 0) {
+      hintHtml = `<div style="color:var(--textSecondary);font-size:10px;padding:2px;margin-bottom:2px;background:var(--surfaceRaised);border:1px solid var(--borderHighlight);border-right-color:var(--borderDark);border-bottom-color:var(--borderDark);">
+        <span style="color:var(--danger);font-weight:bold;">!</span> No native agent CLIs (Claude, Gemini, Codex, Aider, Cline) detected on PATH. Fallback generic CLI is selected.
+      </div>`;
+    }
+    bottomHtml = `<div class="agent-launch-panel">
+      ${hintHtml}
+      <div class="agent-launch-row">
+        <select id="agentEngineSelect">${engineOptions}</select>
+        <textarea id="agentInstructionInput" placeholder="Agent instruction...">saipen continue</textarea>
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <button id="agentLaunchBtn" data-root="${escapeHtml(root)}" style="color:var(--success)" ${!engineOptions ? "disabled" : ""}>Launch</button>
+          <button id="agentHumanNoteBtn" data-root="${escapeHtml(root)}" style="color:var(--text); font-size:10px; padding:2px 4px;" title="Append human_note: to STATE.md">Note</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  bottomEl.innerHTML = bottomHtml;
+
+  const stopBtn = container.querySelector(".stop-agent-btn");
+  if (stopBtn) {
+    stopBtn.addEventListener("click", () => {
+      window.pywebview.api.stop_agent(root).then(res => {
+        if (res.ok) showToast("Agent stopped", "info");
+        else showToast("Stop failed: " + res.error, "error");
+        pollAgentOutput();
+      });
+    });
+  }
+  
+  const diffBtn = container.querySelector(".view-diff-btn");
+  if (diffBtn) {
+    diffBtn.addEventListener("click", () => openDiffViewer(root));
+  }
+
+  if (isRunning) {
+    const sendBtn = container.querySelector("#agentSendBtn");
+    const chatInput = container.querySelector("#agentChatInput");
+    
+    const sendInput = () => {
+      const text = chatInput.value;
+      if (!text.trim()) return;
+      window.pywebview.api.send_agent_input(root, text + "\n").then(res => {
+        if (res.ok) {
+          chatInput.value = "";
+          showToast("Sent", "success");
+        } else {
+          showToast("Send failed: " + res.error, "error");
+        }
+      });
+    };
+
+    if (sendBtn) sendBtn.addEventListener("click", sendInput);
+    if (chatInput) {
+      chatInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendInput();
+        }
+      });
+    }
+
+    const shortcuts = container.querySelectorAll(".chat-shortcut-btn");
+    shortcuts.forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const cmd = e.target.getAttribute("data-cmd");
+        if (cmd) {
+          window.pywebview.api.send_agent_input(root, cmd + "\n").then(res => {
+            if (res.ok) showToast("Sent: " + cmd, "success");
+            else showToast("Send failed: " + res.error, "error");
+          });
+        }
+      });
+    });
+  } else {
+    const launchBtn = container.querySelector("#agentLaunchBtn");
+    if (launchBtn) {
+      launchBtn.addEventListener("click", () => {
+        const engine = container.querySelector("#agentEngineSelect").value;
+        const instruction = container.querySelector("#agentInstructionInput").value;
+        if (!engine || !instruction.trim()) {
+          showToast("Engine and instruction required", "warning");
+          return;
+        }
+        window.pywebview.api.launch_agent(root, engine, instruction.trim()).then(res => {
+          if (res.ok) {
+            showToast("Agent launched", "success");
+            agentSinceLineNum[root] = 0;
+            pollAgentOutput();
+          } else {
+            showToast("Launch failed: " + res.error, "error");
+          }
+        });
+      });
+    }
+
+    const humanNoteBtn = container.querySelector("#agentHumanNoteBtn");
+    if (humanNoteBtn) {
+      humanNoteBtn.addEventListener("click", () => {
+        const note = prompt("Enter human note to append to STATE.md:");
+        if (note) {
+          window.pywebview.api.add_human_note(root, note).then(res => {
+            if (res.ok) showToast("Note added", "success");
+            else showToast("Failed to add note: " + res.error, "error");
+          });
+        }
+      });
+    }
+  }
+}
+
+
+function parseTestLine(root, line) {
+  const ts = window.agentTestState[root] || { status: 'none' };
+  const l = line.toLowerCase();
+  
+  if (l.includes('==== test session starts ====') || /^> .*test/.test(line) || l.includes('starting test')) {
+    ts.status = 'running';
+  } else if (/(\d+) passed.*(\d+) failed/.test(l)) {
+    const m = l.match(/(\d+) passed.*(\d+) failed/);
+    if (parseInt(m[2]) > 0) ts.status = 'fail';
+    else ts.status = 'pass';
+  } else if (/(\d+) failed/.test(l)) {
+    ts.status = 'fail';
+  } else if (/(\d+) passed/.test(l)) {
+    if (ts.status !== 'fail') ts.status = 'pass';
+  } else if (/^fail\s+/.test(line) || l.includes('test failed')) {
+    ts.status = 'fail';
+  } else if (/^ok\s+/.test(line)) {
+    if (ts.status !== 'fail') ts.status = 'pass';
+  }
+  
+  window.agentTestState[root] = ts;
+}
+function pollAgentOutput() {
+  window.pywebview.api.list_running_agents().then(agents => {
+    const badge = document.getElementById("runningAgentsBadge");
+    if (badge) {
+      if (agents && agents.length > 0) {
+        badge.style.display = "inline-flex";
+        badge.textContent = "🤖 " + agents.length;
+      } else {
+        badge.style.display = "none";
+      }
+    }
+  });
+
+  if (!currentDetailRoot) return;
+  const root = currentDetailRoot;
+  
+  window.pywebview.api.get_agent_status(root).then(status => {
+    agentStatusCache[root] = status;
+    const container = document.getElementById("agentPanelContainer");
+    if (container) {
+      renderAgentPanel(root, container);
+    }
+    
+    if (status && (status.status === "running" || status.status === "done" || status.status === "failed" || status.status === "killed")) {
+      let since = agentSinceLineNum[root] || 0;
+      window.pywebview.api.get_agent_output(root, since).then(res => {
+        if (res && res.lines && res.lines.length > 0) {
+          const linesContainer = document.getElementById("agentOutputLines-" + escapeHtml(root));
+          if (linesContainer) {
+            const panel = linesContainer.parentElement;
+            const isScrolledToBottom = panel.scrollHeight - panel.clientHeight <= panel.scrollTop + 10;
+            
+            res.lines.forEach(line => {
+              parseTestLine(root, line);
+              const div = document.createElement("div");
+              div.className = "agent-output-line";
+              div.textContent = line;
+              linesContainer.appendChild(div);
+            });
+            
+            if (isScrolledToBottom) {
+              panel.scrollTop = panel.scrollHeight;
+            }
+          }
+          agentSinceLineNum[root] = since + res.lines.length;
+        }
+      });
+    }
+  });
+}
+
 document.body.addEventListener("mousemove", (e) => {
   if (!_dragState) return;
   const dx = e.screenX - _dragState.sx;
@@ -3097,3 +3397,176 @@ document.body.addEventListener("mouseup", () => {
   document.body.style.userSelect = "";
   _dragState = null;
 });
+
+
+let currentDiffRoot = null;
+
+function colorizeDiff(diffText) {
+  if (!diffText.trim()) return "<div style='color:var(--textMuted);'>No changes.</div>";
+  return diffText.split('\n').map(line => {
+    let color = "var(--text)";
+    if (line.startsWith("+")) color = "var(--success)";
+    else if (line.startsWith("-")) color = "var(--danger)";
+    else if (line.startsWith("@@")) color = "var(--accentTeal)";
+    return `<div style="color:${color};">${escapeHtml(line)}</div>`;
+  }).join("");
+}
+
+function openDiffViewer(root) {
+  currentDiffRoot = root;
+  const modal = document.getElementById("diffViewerModal");
+  const content = document.getElementById("diffViewerContent");
+  const status = document.getElementById("diffViewerStatus");
+  modal.style.display = "flex";
+  content.innerHTML = "Loading...";
+  status.textContent = "";
+  
+  refreshDiff();
+}
+
+function refreshDiff() {
+  if (!currentDiffRoot) return;
+  const content = document.getElementById("diffViewerContent");
+  window.pywebview.api.get_diff(currentDiffRoot).then(res => {
+    if (res.ok) {
+      content.innerHTML = colorizeDiff(res.diff);
+    } else {
+      content.innerHTML = `<div style="color:var(--danger)">Error: ${escapeHtml(res.error)}</div>`;
+    }
+  });
+}
+
+document.getElementById("closeDiffViewerBtn")?.addEventListener("click", () => {
+  document.getElementById("diffViewerModal").style.display = "none";
+});
+document.getElementById("refreshDiffBtn")?.addEventListener("click", refreshDiff);
+
+document.getElementById("commitChangesBtn")?.addEventListener("click", () => {
+  if (!currentDiffRoot) return;
+  const msg = prompt("Enter commit message:");
+  if (msg) {
+    window.pywebview.api.commit_agent_work(currentDiffRoot, msg).then(res => {
+      if (res.ok) {
+        showToast("Committed", "success");
+        refreshDiff();
+      } else {
+        showToast("Commit failed: " + res.error, "error");
+      }
+    });
+  }
+});
+
+document.getElementById("revertChangesBtn")?.addEventListener("click", () => {
+  if (!currentDiffRoot) return;
+  showConfirm("Are you sure you want to revert all changes?", () => {
+    window.pywebview.api.revert_agent_work(currentDiffRoot).then(res => {
+      if (res.ok) {
+        showToast("Reverted", "info");
+        refreshDiff();
+      } else {
+        showToast("Revert failed: " + res.error, "error");
+      }
+    });
+  });
+});
+
+
+
+function openFleetDashboard() {
+  const modal = document.getElementById("fleetDashboardModal");
+  modal.style.display = "flex";
+  refreshFleetDashboard();
+}
+
+function refreshFleetDashboard() {
+  const tbody = document.getElementById("fleetDashboardTableBody");
+  const summary = document.getElementById("fleetDashboardSummary");
+  if (!tbody || !summary) return;
+
+  window.pywebview.api.list_running_agents().then(agents => {
+    if (!agents || agents.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding: 10px; color:var(--textMuted)">No running agents</td></tr>';
+      summary.textContent = "0 agents running";
+      return;
+    }
+
+    let totalCpu = 0;
+    let totalRam = 0;
+    
+    tbody.innerHTML = agents.map(a => {
+      const isRunning = a.status === "running";
+      const cpu = isRunning ? (a.cpu_percent || 0) : 0;
+      const ram = isRunning ? (a.memory_mb || 0) : 0;
+      
+      totalCpu += cpu;
+      totalRam += ram;
+      
+      return `
+        <tr style="border-bottom: 1px solid var(--surfaceRaised);">
+          <td style="padding: 2px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 250px;" title="${escapeHtml(a.root)}">${escapeHtml(a.root.split(/[\\/]/).pop())}</td>
+          <td style="padding: 2px 4px;">${escapeHtml(a.engine_display || a.engine)}</td>
+          <td style="padding: 2px 4px; color:${isRunning ? 'var(--success)' : 'var(--textMuted)'}">${escapeHtml(a.status)}</td>
+          <td style="padding: 2px 4px;">${cpu.toFixed(1)}%</td>
+          <td style="padding: 2px 4px;">${ram.toFixed(1)}</td>
+          <td style="padding: 2px 4px;">${formatUptime(a.elapsed)}</td>
+          <td style="padding: 2px 4px;">
+            ${isRunning ? `<button class="kill-agent-btn" data-root="${escapeHtml(a.root)}" style="font-size:9px; padding:0 4px; color:var(--danger)">Kill</button>` : ''}
+          </td>
+        </tr>
+      `;
+    }).join("");
+    
+    summary.textContent = `${agents.length} agent(s) | CPU: ${totalCpu.toFixed(1)}% | RAM: ${totalRam.toFixed(1)} MB`;
+    
+    // Bind kill buttons
+    tbody.querySelectorAll(".kill-agent-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const root = btn.getAttribute("data-root");
+        window.pywebview.api.stop_agent(root).then(res => {
+          if (res.ok) {
+            showToast("Agent stopped", "info");
+            refreshFleetDashboard();
+            pollAgentOutput();
+          } else {
+            showToast("Failed to stop: " + res.error, "error");
+          }
+        });
+      });
+    });
+  });
+}
+
+function formatUptime(seconds) {
+  if (!seconds || seconds < 0) return "0s";
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}m ${s}s`;
+}
+
+document.getElementById("closeFleetDashboardBtn")?.addEventListener("click", () => {
+  document.getElementById("fleetDashboardModal").style.display = "none";
+});
+document.getElementById("refreshFleetBtn")?.addEventListener("click", refreshFleetDashboard);
+
+document.getElementById("killAllAgentsBtn")?.addEventListener("click", () => {
+  showConfirm("Are you sure you want to kill ALL running agents?", () => {
+    window.pywebview.api.list_running_agents().then(agents => {
+      const running = agents.filter(a => a.status === "running");
+      if (running.length === 0) return showToast("No agents to kill", "info");
+      
+      let promises = running.map(a => window.pywebview.api.stop_agent(a.root));
+      Promise.all(promises).then(() => {
+        showToast(`Killed ${running.length} agent(s)`, "info");
+        refreshFleetDashboard();
+        pollAgentOutput();
+      });
+    });
+  });
+});
+
+// Bind runningAgentsBadge in toolbar to open dashboard
+document.getElementById("runningAgentsBadge")?.addEventListener("click", () => {
+  openFleetDashboard();
+});
+

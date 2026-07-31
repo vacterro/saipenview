@@ -313,7 +313,7 @@ def load_sub_log_tail(sub_path: Path, max_lines: int = 3) -> list[str]:
             if line.strip().startswith("-")
         ]
         return lines[-max_lines:]
-    except Exception:
+    except OSError:
         return []
 
 
@@ -324,7 +324,7 @@ def load_sub_board(sub_path: Path) -> dict[str, int]:
         return {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
     try:
         return parse_board(read_doc(board_path)).counts()
-    except Exception:
+    except OSError:
         return {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
 
 
@@ -334,7 +334,7 @@ def load_outbox(kitchen_dir: Path) -> list[OutboxEntry]:
         return []
     try:
         return parse_outbox(read_doc(outbox_path))
-    except Exception:
+    except OSError:
         return []
 
 
@@ -795,7 +795,7 @@ def load_log_tail(root: Path, max_lines: int = 5) -> list[str]:
             if line.strip().startswith("-")
         ]
         return lines[-max_lines:]
-    except Exception:
+    except OSError:
         return []
 
 
@@ -866,7 +866,7 @@ def get_git_status(root: Path) -> tuple[str, bool]:
         )
         dirty = bool(sp.stdout.strip())
         return branch, dirty
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return "", False
 
 
@@ -886,11 +886,7 @@ def load_project(root: Path, with_git: bool = True) -> ProjectStatus | None:
     if not state_path.is_file():
         return None
     state = parse_frontmatter(read_doc(state_path))
-    board = (
-        parse_board(read_doc(board_path))
-        if board_path.is_file()
-        else Board()
-    )
+    board = parse_board(read_doc(board_path)) if board_path.is_file() else Board()
     subs_stale, subs_stale_details = check_subs_staleness(root, state)
     quick_actions = detect_quick_actions(root)
     branch, dirty = get_git_status(root) if with_git else ("", False)
