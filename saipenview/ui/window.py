@@ -339,15 +339,31 @@ class MainWindow:
         Best-effort by design. A failed notify must never break show/hide --
         the worst case is the page keeps polling, which is exactly the old
         behaviour.
+
+        Dispatched on a throwaway daemon thread, and THAT IS LOAD-BEARING.
+        `evaluate_js` is synchronous: it marshals onto the WebView2 UI thread
+        and waits for a result. Called inline it put a blocking call on the
+        hotkey thread and, worse, inside SingleInstanceGuard's accept loop
+        (which runs on_show_request -> show() inline). A just-hidden window
+        could stall that call indefinitely, wedging the listener; with its
+        listen(1) backlog then full, every later launch had its connection
+        refused, could not bind either, and exited 0 in silence -- the app
+        stopped starting at all. Never block a caller for a notification that
+        is only ever an optimization.
         """
-        try:
-            self._window.evaluate_js(
-                f"window.__saipenSetVisible && window.__saipenSetVisible({str(visible).lower()})"
-            )
-        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
-            print(
-                f"SAIPENVIEW: visibility notify({visible}) failed: {e}", file=sys.stderr
-            )
+
+        def _push() -> None:
+            try:
+                self._window.evaluate_js(
+                    f"window.__saipenSetVisible && window.__saipenSetVisible({str(visible).lower()})"
+                )
+            except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
+                print(
+                    f"SAIPENVIEW: visibility notify({visible}) failed: {e}",
+                    file=sys.stderr,
+                )
+
+        threading.Thread(target=_push, daemon=True).start()
 
     def show(self) -> None:
         self._window.show()
