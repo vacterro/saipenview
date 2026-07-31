@@ -615,7 +615,7 @@ class TestSetScanTuning:
     def test_starts_scanner_when_auto_scan(self, api):
         api._auto_scan = True
         with patch.object(api.background_scanner, "stop"):
-            with patch.object(api.background_scanner, "start") as mock_start:
+            with patch.object(api.background_scanner, "start"):
                 result = api.set_scan_tuning(3, 50, 120)
                 assert result["scan_depth"] == 3
 
@@ -851,7 +851,7 @@ class TestGetLocales:
     def test_returns_two_locales(self, api):
         locales = api.get_locales()
         assert len(locales) == 2
-        codes = [l["code"] for l in locales]
+        codes = [loc["code"] for loc in locales]
         assert "en" in codes
         assert "zh-CN" in codes
 

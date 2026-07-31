@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ── Helpers ──
 
 _MOCKED_MODULES: set[str] = set()
@@ -204,7 +203,6 @@ class TestTrayModule:
         _ensure_mock("PIL")
         _ensure_mock("PIL.Image")
 
-        from pathlib import Path
 
         import saipenview.tray  # noqa: F811
 

@@ -105,7 +105,7 @@ class TestSingleInstanceGuard:
 
     def test_socket_close_in_stop_handles_error(self):
         """If socket.close() raises, stop() catches it."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         from saipenview.guard import SingleInstanceGuard
 

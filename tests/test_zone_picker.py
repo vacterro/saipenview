@@ -28,8 +28,8 @@ class TestZonePickerImport:
     def test_helpers_import(self):
         """Helper functions can be accessed."""
         from saipenview.zone_picker import (
-            RECT,
             MONITORINFO,
+            RECT,
             _get_cursor_pos,
             _get_monitor_work_area,
         )

@@ -58,7 +58,6 @@ class TestIsEnabled:
         from saipenview.autostart import _launch_command, is_enabled
 
         with patch("saipenview.autostart.winreg") as mock_winreg:
-            mock_key = mock_winreg.OpenKey.return_value.__enter__.return_value
             mock_winreg.QueryValueEx.return_value = (_launch_command(), 1)
             result = is_enabled()
             assert result is True

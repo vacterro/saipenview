@@ -781,7 +781,6 @@ class TestLoadProject:
     def test_load_project_handles_state_stat_error(self, tmp_path):
         """If stat() on STATE.md fails for mtime (but is_file passes), mtime=0."""
         import os
-
         from unittest.mock import patch
 
         from saipenview.parser import load_project

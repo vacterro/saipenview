@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+
 def main():
     repo_root = Path(__file__).resolve().parent.parent
     os.chdir(repo_root)

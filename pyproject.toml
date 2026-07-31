@@ -91,6 +91,9 @@ python_files = ["test_*.py"]
 # the user's own config/picker, not from network input.
 "saipenview/api.py" = ["S603", "S607"]
 "saipenview/parser.py" = ["S603", "S607"]
+"saipenview/git_diff.py" = ["S603", "S607"]
+"saipenview/runtime.py" = ["S603", "S607"]
+"tools/build.py" = ["S603"]
 # Test files use `assert` extensively (standard pytest pattern); bandit's
 # S101 warning is noise here.
 "tests/*" = ["S101", "S108", "SIM113"]
