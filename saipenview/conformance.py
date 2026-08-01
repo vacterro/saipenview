@@ -696,9 +696,27 @@ def check_log(root: Path, c: _Collector) -> None:
     prev_event = None
     seen: dict[int, int] = {}
     undated = 0
+    in_comment = False
     for line_no, raw in enumerate(read_doc(log_path).splitlines(), 1):
         line = raw.rstrip()
         if not line.strip() or line.startswith("#"):
+            continue
+
+        # HTML comments are annotations ABOUT the log, not entries in it, and
+        # demanding the Event Graph skeleton from one is a grader bug, not a
+        # finding. Real case: FastPrompter's LOG carries a 16-line
+        # `<!-- RECOVERY SPLICE ... -->` block explaining that a saitranslate
+        # INIT bootstrap had overwritten BOARD/LOG/STATE -- exactly the kind of
+        # note a human needs, reported as 16 failures for having the wrong
+        # shape. Skipped whole: a `<!--` opener suppresses until its `-->`,
+        # since the body lines carry no marker of their own.
+        if in_comment:
+            if "-->" in line:
+                in_comment = False
+            continue
+        if line.lstrip().startswith("<!--"):
+            if "-->" not in line:
+                in_comment = True
             continue
 
         if "�" in line:

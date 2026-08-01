@@ -538,6 +538,49 @@ class TestLog:
         )
         assert "log.skeleton" in rules(grade(project))
 
+    def test_html_comment_is_an_annotation_not_a_malformed_entry(self, project):
+        # An HTML comment is a note ABOUT the log, not an entry in it. Demanding
+        # the Event Graph skeleton from one is a grader bug: FastPrompter's LOG
+        # carries a 16-line `<!-- RECOVERY SPLICE ... -->` block explaining that
+        # a saitranslate INIT bootstrap had overwritten BOARD/LOG/STATE, and the
+        # grader reported all 16 lines as failures for having the wrong shape --
+        # punishing exactly the kind of note a human most needs to leave.
+        (project / ".saipen" / "LOG.md").write_text(
+            "# Log\n\n"
+            "<!-- ====================================== -->\n"
+            "<!-- RECOVERY SPLICE 25.07.26 -- a bootstrap -->\n"
+            "<!-- overwrote BOARD.md, LOG.md and STATE.md -->\n"
+            "<!-- ====================================== -->\n"
+            "- 27.07.26 10:00 [E-1] RUN: fine\n",
+            encoding="utf-8",
+        )
+        assert "log.skeleton" not in rules(grade(project))
+
+    def test_multi_line_html_comment_body_is_skipped_too(self, project):
+        # The body lines of a block comment carry no marker of their own, so an
+        # opener must suppress until its `-->` or the middle lines get flagged.
+        (project / ".saipen" / "LOG.md").write_text(
+            "# Log\n\n"
+            "<!--\n"
+            "- 27.07.26 this looks like an entry but is inside a comment\n"
+            "-->\n"
+            "- 27.07.26 10:00 [E-1] RUN: fine\n",
+            encoding="utf-8",
+        )
+        assert "log.skeleton" not in rules(grade(project))
+
+    def test_a_real_bad_line_after_a_comment_still_fails(self, project):
+        # The skip must not swallow the rest of the file: closing the comment
+        # has to re-arm the check, or this fix would blind the grader entirely.
+        (project / ".saipen" / "LOG.md").write_text(
+            "# Log\n\n"
+            "<!-- a note -->\n"
+            "- 27.07.26 10:00 [E-1] RUN: fine\n"
+            "- and then a stray fragment\n",
+            encoding="utf-8",
+        )
+        assert "log.skeleton" in rules(grade(project))
+
     def test_prose_bullet_is_not_an_entry(self, project):
         (project / ".saipen" / "LOG.md").write_text(
             "# Log\n\n- just some notes I left here\n", encoding="utf-8"

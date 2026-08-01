@@ -7,6 +7,18 @@
   --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020;
   --selection:#3D372A; --compareBack:#14120C;
   --goldStar:#FFC107;
+  /* Red for TEXT. --danger stays what it is -- a fill/border colour, fine
+     behind white text or as a 1px edge -- but it was also being used as the
+     foreground of every FAIL badge, blocker line and error title, where
+     #7A2020 measures 1.32:1 against --surface. WCAG AA wants 4.5:1, so those
+     labels were not "hard to read", they were barely visible. This one is
+     5.26:1 on --surface, 5.04:1 on --surfaceSoft, 6.91:1 on --background.
+     Deliberately its own token, not a lightened --danger: UI.md's rule is that
+     a semantic token is never used as text colour, and the two jobs want
+     different values. Not part of the Wintage palette JSON, so the installer's
+     token rewrite leaves it alone -- if a future palette changes --danger, this
+     needs re-checking by hand. */
+  --dangerText:#E08A8A;
   --phase-init:#7A6A4A;  --phase-plan:#4A7A8A;  --phase-scout:#6A8A4A;
   --phase-hunt:#8A4A4A;  --phase-add:#4A8A5A;   --phase-clean:#8A5A4A;
   --phase-translate:#5A4A8A; --phase-validate:#4A8A8A;
@@ -129,7 +141,7 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .project-row .name { color: var(--textPrimary); font-weight: bold; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .project-row .phase { padding: 0 2px; font-size: 9px; min-width: 40px; text-align: center; flex: 0 0 auto; }
 .project-row .task { color: var(--textSecondary); font-size: 10px; padding-left: 16px; }
-.project-row .blocker { color: var(--danger); font-size: 10px; padding-left: 16px; }
+.project-row .blocker { color: var(--dangerText); font-size: 10px; padding-left: 16px; }
 .project-row .updated { color: var(--textMuted); font-size: 9px; flex: 0 0 auto; }
 .hide-btn, .unhide-btn { color: var(--textMuted); font-size: 9px; cursor: pointer; padding: 0 2px; flex: 0 0 auto; }
 .hide-btn:hover { color: var(--warning); }
@@ -230,7 +242,7 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .outbox-status-blocked { color: var(--warning); }
 .outbox-status-draft { color: var(--textMuted); }
 .outbox-status-reviewed, .outbox-status-stale { color: var(--textMuted); font-style: italic; }
-.outbox-critical-flag { color: var(--danger); font-weight: bold; font-size: 9px; }
+.outbox-critical-flag { color: var(--dangerText); font-weight: bold; font-size: 9px; }
 .outbox-summary { color: var(--textPrimary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .empty { color: var(--textMuted); padding: 12px; text-align: center; }
@@ -301,6 +313,15 @@ body.collapsed .detail-header { display: none !important; }
 .collapsible-header:hover .dblclick-hint { display: inline; }
 .collapse-icon { font-size: 9px; color: var(--textMuted); flex: 0 0 auto; }
 .collapsible.collapsed .collapsible-body > :nth-last-child(n+6) { display: none; }
+/* Conformance is the one card whose findings are NOT direct children of the
+   body -- they sit inside a .conf-list wrapper, so the rule above sees a body
+   of exactly two children (the list + the baseline note), matches nothing, and
+   collapsing it hid nothing at all. The arrow flipped and the screen did not
+   move, on the one card most likely to be 100+ rows long.
+   Counts from the FRONT here, not the back: findings are ordered most-severe
+   first, so the useful five are the first five -- keeping the last five would
+   collapse a 114-row FAIL list down to its five least important entries. */
+.collapsible.collapsed .collapsible-body > .conf-list > :nth-child(n+6) { display: none; }
 
 /* Mini-collapsible inside State Summary — collapsed by default, toggled via JS */
 .mini-c.collapsed .mini-c-body { display: none; }
@@ -366,7 +387,7 @@ body.collapsed .detail-header { display: none !important; }
 .search-ticket-section { font-size: 8px; font-weight: bold; flex: 0 0 auto; min-width: 40px; }
 .search-ticket-section.section-doing { color: var(--borderHighlight); }
 .search-ticket-section.section-todo { color: var(--textSecondary); }
-.search-ticket-section.section-blocked { color: var(--danger); }
+.search-ticket-section.section-blocked { color: var(--dangerText); }
 .search-ticket-section.section-done { color: var(--textMuted); }
 .search-ticket-id { color: var(--accentTeal); font-family: monospace; font-size: 10px; font-weight: bold; flex: 0 0 auto; min-width: 42px; }
 .search-ticket-desc { color: var(--textPrimary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -386,7 +407,7 @@ body.collapsed .detail-header { display: none !important; }
 
 /* Scan errors card — danger-tinted, sits above ticket cards */
 .error-card { border-color: var(--danger); }
-.error-card .card-title { color: var(--danger); }
+.error-card .card-title { color: var(--dangerText); }
 .error-item { display: flex; gap: 6px; align-items: baseline; font-size: 10px; padding: 2px 4px; border-bottom: 1px solid var(--borderDark); }
 .error-item:last-child { border-bottom: none; }
 .error-time { color: var(--textMuted); font-family: monospace; font-size: 9px; flex-shrink: 0; min-width: 110px; }
@@ -655,7 +676,7 @@ body.collapsed .detail-header { display: none !important; }
 .toast { pointer-events: auto; min-width: 100px; max-width: 240px; padding: 4px 8px; font-size: 10px; display: flex; align-items: center; gap: 6px; }
 .toast.toast-info { color: var(--accentTeal); border-color: var(--accentTeal); background: var(--surface); }
 .toast.toast-success { color: var(--success); border-color: var(--success); background: var(--surface); }
-.toast.toast-error { color: var(--danger); border-color: var(--danger); background: var(--surface); font-weight: bold; }
+.toast.toast-error { color: var(--dangerText); border-color: var(--danger); background: var(--surface); font-weight: bold; }
 .toast.toast-warning { color: var(--warning); border-color: var(--warning); background: var(--surface); }
 .toast .toast-close { margin-left: auto; cursor: pointer; font-size: 9px; padding: 0 2px; color: var(--textMuted); border: none; background: none; font-weight: bold; }
 .toast .toast-close:hover { color: var(--textPrimary); }
@@ -673,7 +694,7 @@ body.collapsed .detail-header { display: none !important; }
    about the project as a dirty working tree, and no louder. */
 .conf-badge { font-size: 8px; padding: 0 4px; font-weight: bold; vertical-align: middle;
   border: 1px solid var(--borderMuted); color: var(--textMuted); cursor: help; }
-.conf-badge.fail { color: var(--danger); border-color: var(--danger); }
+.conf-badge.fail { color: var(--dangerText); border-color: var(--dangerText); }
 .conf-badge.warn { color: var(--warning); border-color: var(--warning); }
 .conf-badge.pass { color: var(--success); border-color: var(--success); }
 .conf-badge.unknown { color: var(--textMuted); border-color: var(--borderMuted); }
@@ -684,7 +705,7 @@ body.collapsed .detail-header { display: none !important; }
 .conf-item:last-child { border-bottom: none; }
 .conf-sev { flex: 0 0 auto; font-size: 8px; font-weight: bold; padding: 0 3px;
   border: 1px solid currentColor; }
-.conf-sev.fail { color: var(--danger); }
+.conf-sev.fail { color: var(--dangerText); }
 .conf-sev.warn { color: var(--warning); }
 .conf-rule { flex: 0 0 auto; color: var(--textMuted); font-size: 9px; }
 .conf-msg { flex: 1 1 auto; color: var(--textSecondary); word-break: break-word; }
