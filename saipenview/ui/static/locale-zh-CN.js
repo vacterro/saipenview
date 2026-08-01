@@ -47,6 +47,7 @@ const LOCALE_ZH_CN = {
   "toolbar.help.text": "?",
   "toolbar.minimize.title": "最小化窗口",
   "toolbar.maximize.title": "最大化窗口",
+  "toolbar.close.title": "关闭到系统托盘（SAIPENVIEW 继续运行）",
   "toolbar.quit.title": "退出 SAIPENVIEW（关闭时保留在系统托盘）",
   "toolbar.quit.text": "退出",
 

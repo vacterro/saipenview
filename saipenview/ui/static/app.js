@@ -2204,6 +2204,18 @@ if (minimizeBtn) {
   });
 }
 
+// Close hides to tray; Exit (quitBtn) ends the process. Both existed on the Python
+// side -- api.close_window() has always hidden to tray -- but nothing in the UI ever
+// called it, so the only exit-shaped control was the one that kills the app.
+const closeBtn = document.getElementById("closeBtn");
+if (closeBtn) {
+  closeBtn.addEventListener("click", () => {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.close_window) {
+      window.pywebview.api.close_window();
+    }
+  });
+}
+
 const maximizeBtn = document.getElementById("maximizeBtn");
 if (maximizeBtn) {
   maximizeBtn.addEventListener("click", () => {

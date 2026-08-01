@@ -48,6 +48,7 @@ const LOCALE_EN = {
   "toolbar.help.text": "?",
   "toolbar.minimize.title": "Minimize window",
   "toolbar.maximize.title": "Maximize window",
+  "toolbar.close.title": "Close to tray (SAIPENVIEW keeps running)",
   "toolbar.quit.title": "Exit SAIPENVIEW (stays in tray on close)",
   "toolbar.quit.text": "Exit",
 
