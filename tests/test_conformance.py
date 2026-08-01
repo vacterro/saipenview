@@ -259,9 +259,14 @@ class TestNextAction:
         assert "next_action.question" in rules(grade(project))
 
     def test_undefined_saipen_command(self, project):
-        # `saipen hunt` passes the prefix rule while naming something § 1.10
-        # does not define -- HUNT is reached autonomously, never invoked.
-        set_state(project, next_action='"saipen hunt"')
+        # Passes the `saipen ` prefix rule while naming something § 1.10 does
+        # not define. The example used to be `saipen hunt`, on the reasoning
+        # that HUNT was reached autonomously and never invoked -- true until
+        # SAIPEN 7.148.0 made it a real command (the shortcut table had `hh`
+        # routing to a phase with nothing behind it). Picked a word the
+        # protocol has no plans for instead, so the case tests the rule rather
+        # than a snapshot of the command list.
+        set_state(project, next_action='"saipen refactor"')
         assert "next_action.command" in rules(grade(project))
 
 

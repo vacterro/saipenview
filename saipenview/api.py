@@ -26,6 +26,7 @@ from saipenview.parser import (
     load_log_tail,
     load_project,
     parse_board,
+    update_state,
 )
 from saipenview.runtime import ProcessManager
 from saipenview.scanner import (
@@ -1096,12 +1097,33 @@ class Api:
         return self._process_manager.kill(root)
 
     def add_human_note(self, root: str, note: str) -> dict:
+        """Leave a note the NEXT agent will actually pick up.
+
+        This used to append to the end of STATE.md, which put the line after
+        the frontmatter's closing `---` -- outside the block every reader
+        parses. `parse_frontmatter` returned None for it, and BOOT.md step 5
+        ("human_note: set? Apply it this session, clear it, LOG the trace")
+        looks in exactly the place the note never reached. So the UI's Note
+        button wrote a message to the agent that no agent could ever read, and
+        said "ok" while doing it.
+
+        Goes through update_state, which rewrites the frontmatter block itself
+        -- that also fixes the append-safety problem the plain "a" mode had:
+        a STATE.md not ending on a line boundary would have had its last field
+        extended rather than a new line added (SAIPEN 7.147.0).
+
+        Newlines are stripped: the frontmatter is flat one-key-per-line, so an
+        embedded newline would silently split the note into a bogus second key.
+        """
         state_md = Path(root) / ".saipen" / "STATE.md"
         if not state_md.exists():
             return {"ok": False, "error": "STATE.md not found"}
+        flat = " ".join(str(note).split())
+        if not flat:
+            return {"ok": False, "error": "note is empty"}
         try:
-            with open(state_md, "a", encoding="utf-8") as f:
-                f.write(f"\nhuman_note: {note}\n")
+            if not update_state(Path(root), {"human_note": flat}):
+                return {"ok": False, "error": "STATE.md has no frontmatter block"}
             return {"ok": True}
         except OSError as e:
             return {"ok": False, "error": str(e)}

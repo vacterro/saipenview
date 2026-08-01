@@ -21,7 +21,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.146.0"
+BASELINE_VERSION = "7.149.0"
 
 # RFC § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.
@@ -87,8 +87,12 @@ WAIT_CATEGORIES: tuple[str, ...] = (
     "init",
 )
 
-# RFC § 1.10's closed command list. Phases (HUNT/ADD/BUILD...) are reached
-# autonomously and are never words a next_action may invoke.
+# RFC § 1.10's closed command list. Most phases (ADD/BUILD/SCOUT...) are
+# reached autonomously and are never words a next_action may invoke -- but
+# "phase" and "command" are separate namespaces, not opposites: a few phases
+# have a command of the same name, and HUNT gained one in 7.148.0. Read this
+# list as the authority on what may follow `saipen `, never as "the phases
+# that are missing from PHASES".
 SAIPEN_COMMANDS: frozenset[str] = frozenset(
     {
         "set",
@@ -98,6 +102,9 @@ SAIPEN_COMMANDS: frozenset[str] = frozenset(
         "plan",
         "clean",
         "translate",
+        # Added by SAIPEN 7.148.0: the shortcut table had `hh` routing to HUNT,
+        # a phase with no command behind it, so `saipen hunt` became real.
+        "hunt",
         "markhunt",
         "prepare",
         "ship",
