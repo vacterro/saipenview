@@ -1,3 +1,7 @@
+<div align="right">
+  🌍 <strong>EN</strong> | <a href="README.ru.md">RU</a> | <a href="README.ee.md">EE</a> | <a href="README.ded.md">ДЕД</a> | <a href="README.ja.md">JA</a>
+</div>
+
 <div align="center">
   <img src="screenshots/saipen_icon.png" alt="SAIPENVIEW" width="120" height="120">
   <h1 align="center">SAIPENVIEW</h1>
@@ -14,7 +18,7 @@
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
-    <a href="https://buymeacoffee.com/vacuum34"><img src="https://img.shields.io/badge/Buy_Me_A_Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+    [🤍 Support Developer](https://buymeacoffee.com/vacuum34)
   </p>
 </div>
 
@@ -323,7 +327,7 @@ For detailed setup, coding conventions, and PR workflow, see [CONTRIBUTING.md](C
 
 - **Windows 10 / 11** — WebView2 runtime (pre-installed on Win11, auto-installs on Win10)
 - **Python 3.10+**
-- Dependencies: `pystray`, `keyboard`, `pywebview`, `Pillow`
+- Dependencies: `pystray`, `keyboard`, `pywebview`, `Pillow`, `watchdog`, `psutil`
 
 <br>
 
