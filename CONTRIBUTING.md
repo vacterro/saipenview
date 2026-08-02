@@ -70,9 +70,9 @@ Run `run.vbs` (double-click) or:
 start /min pythonw -m saipenview
 ```
 
-### With Console Window
+### Launch Scripts
 
-Run `run.bat` (double-click).
+Run `run.bat` (double-click) — tray-only app; console output visible only during the one-time `.venv` bootstrap. For a real console (stderr visible), use `python -m saipenview` from a terminal instead.
 
 ### Console Logging
 
@@ -96,17 +96,26 @@ pip install dist\saipenview-*.whl
 
 ```
 saipenview/
-├── app.py          — Entry wiring: tray + hotkey + window + api
+├── app.py          — Entry wiring: tray + hotkey + window + api + single-instance guard
 ├── scanner.py      — Drive walk + background rescan loop
 ├── parser.py       — STATE.md/BOARD.md/LOG.md parsing, sub/translate rollup
-├── api.py          — JS-facing pywebview bridge (30+ methods)
+├── textio.py       — One reader for every .saipen/ file (BOM, UTF-16, cp1251)
+├── protocol.py     — The protocol's closed vocabularies + BASELINE_VERSION
+├── conformance.py  — Grades a project against those vocabularies
+├── api.py          — JS-facing pywebview bridge (66 public methods)
 ├── config.py       — Settings load/save (atomic writes)
 ├── tray.py         — pystray system-tray icon + context menu
 ├── hotkey.py       — Global hotkey registration (keyboard lib)
 ├── autostart.py    — Windows Registry autostart management
-├── zone_picker.py  — Ctrl+Q corner-snap zone picker (tkinter)
+├── zone_picker.py  — Alt+F14 corner-snap zone picker (tkinter)
+├── events.py       — In-process event bus
+├── guard.py        — Single-instance lock + show-request handoff
+├── git_diff.py     — Working-tree diff / commit / revert for agent actions
+├── runtime.py      — Agent Engine process manager
+├── watcher.py      — Watchdog file watcher on .saipen/ files
 ├── __init__.py     — Version constant
 ├── __main__.py     — CLI entry point
+├── engines/        — Agent Engine: supported CLI engines (claude-code, codex, aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py   — pywebview window show/hide/toggle/drag/snap
 │   └── static/     — Frontend assets
@@ -124,6 +133,7 @@ saipenview/
 - **Atomic writes** — config and cache use `temp-file + os.replace` so a crash can never truncate them.
 - **Stale-read safe** — the 5s UI poll calls `refresh_known()` (re-reads only `.saipen/` files, no directory walk), so edits to `STATE.md` appear within seconds without a full drive scan.
 - **No CSS transitions** — all visual effects (flash, heat, hover) are JavaScript-driven `hexBlend` recomputations, strictly following the vintage no-animation constraint.
+- **Agent Engine layer** — `runtime.py`, `engines/`, `events.py`, `guard.py`, `git_diff.py`, `watcher.py` follow the same conventions as the rest of the package; `api.py` exposes its 66 public methods to the frontend.
 
 ---
 
@@ -131,7 +141,7 @@ saipenview/
 
 ### Python
 
-- **Target version**: Python 3.11 (project requires >=3.10).
+- **Target version**: Python 3.10 (ruff `target-version = "py310"`; the project supports >=3.10, tested on 3.10–3.12).
 - **Line length**: 88 characters (ruff default; the codebase permits up to ~100 for readability).
 - **Naming**: `snake_case` for variables/functions, `PascalCase` for classes, `UPPER_CASE` for constants.
 - **Type hints**: Required on all public function signatures. Use `from __future__ import annotations` for cleaner forward references.
