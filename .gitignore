@@ -13,6 +13,9 @@ env/
 build/
 dist/
 *.egg-info/
+# Nuitka leaves these three beside the project root
+*.build/
+*.onefile-build/
 
 # Project runtime data
 saipenview/_data/
@@ -35,6 +38,8 @@ uv.lock
 # Temp / swap
 *.tmp
 *.bak
+# Wintage's installer parks a superseded style.css.bak here when it refreshes one
+*.bak.stale
 *.swp
 .DS_Store
 Thumbs.db

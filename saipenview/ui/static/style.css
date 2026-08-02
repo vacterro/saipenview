@@ -208,6 +208,16 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .detail-header { display: flex; flex-direction: column; gap: 2px; padding-bottom: 4px; border-bottom: 1px solid var(--borderMuted); }
 .detail-title { font-size: 12px; font-weight: bold; color: var(--borderHighlight); display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .detail-title .phase { flex: 0 0 auto; }
+/* Which project am I looking at is the one question the header must always
+   answer. It used to stop answering it below a certain width: a flex row with
+   no min-width:0 anywhere cannot shrink its text children, so the branch badge,
+   the conformance badge and the phase pill pushed the name straight out of the
+   box. Now the NAME is the only thing allowed to shrink, down to an ellipsis
+   and never past ~5em, and everything beside it is fixed-size. */
+.detail-name-group { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.detail-name { flex: 0 1 auto; min-width: 5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-name-group .git-badge, .detail-name-group .conf-badge { flex: 0 0 auto; }
+.detail-title-right { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 .detail-path { font-size: 9px; color: var(--textMuted); word-break: break-all; }
 
 .action-bar { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 3px; }
@@ -312,7 +322,14 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .modal-body input, .modal-body select { width: 100%; }
 .modal-actions { display: flex; gap: 4px; justify-content: flex-end; margin-top: 8px; flex: 0 0 auto; }
 
-body.collapsed .detail-header { display: none !important; }
+/* Collapsed mode hid the whole header, and the project name went with it --
+   so the one thing a shrunken panel still has to say, which project this is,
+   was the first thing it stopped saying. The path and the action bar are the
+   parts worth reclaiming the pixels from; the title line stays. */
+body.collapsed .detail-header { padding-bottom: 2px; }
+body.collapsed .detail-path,
+body.collapsed .detail-header .action-bar { display: none !important; }
+body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 
 .sub-detail-item { margin-bottom:4px; padding-bottom:4px; border-bottom:1px solid var(--borderMuted); }
 .sub-detail-item .sub-name { font-size:12px; font-weight:bold; color:var(--borderHighlight); letter-spacing:0.3px; }
@@ -723,12 +740,14 @@ body.collapsed .detail-header { display: none !important; }
 .conf-msg { flex: 1 1 auto; color: var(--textSecondary); word-break: break-word; }
 .conf-where { flex: 0 0 auto; color: var(--textMuted); font-size: 9px; }
 .conf-cite { flex: 0 0 auto; color: var(--accentTeal); font-size: 9px; }
-.conf-clean { color: var(--success); font-size: 10px; padding: 2px 0; }
 .conf-baseline { color: var(--textMuted); font-size: 9px; font-style: italic;
   padding-top: 3px; border-top: 1px solid var(--borderMuted); margin-top: 3px; }
 
 /* Agent Panel Styles */
 .agent-panel { display: flex; flex-direction: column; gap: 4px; }
+/* One line saying what this panel launches and what happens to the output.
+   Without it "Agent Control" over a row of three-letter buttons is a puzzle. */
+.agent-subtitle { font-size: 10px; color: var(--textSecondary); line-height: 1.35; }
 .agent-status-bar { display: flex; justify-content: space-between; align-items: center; background: var(--surfaceRaised); padding: 2px 4px; border: 1px solid var(--borderHighlight); border-right-color: var(--borderDark); border-bottom-color: var(--borderDark); font-size: 11px; }
 .agent-status-info { display: flex; gap: 6px; align-items: center; color: var(--borderHighlight); font-weight: bold; }
 .agent-status-elapsed { color: var(--textSecondary); font-weight: normal; font-size: 10px; }

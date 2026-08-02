@@ -696,6 +696,12 @@ function conformanceBadgeHtml(project) {
 function conformanceCardHtml(detail) {
   const c = detail && detail.conformance;
   if (!c) return "";
+  // A clean verdict is not news. The card used to render anyway, saying
+  // "no findings" in a section the user then has to read past on every single
+  // conforming project. Silence is the report: nothing here means nothing
+  // wrong, and the OK badge in the header still says so in one glyph for
+  // anyone who wants the verdict confirmed rather than inferred.
+  if (c.verdict === "pass" && !(c.findings || []).length) return "";
   const rows = (c.findings || []).map((f) => `
       <div class="conf-item">
         <span class="conf-sev ${escapeHtml(f.severity)}">${escapeHtml(f.severity.toUpperCase())}</span>
@@ -704,9 +710,9 @@ function conformanceCardHtml(detail) {
         ${f.file ? `<span class="conf-where">${escapeHtml(f.file)}${f.line ? ":" + f.line : ""}</span>` : ""}
         ${f.cite ? `<span class="conf-cite">${escapeHtml(f.cite)}</span>` : ""}
       </div>`).join("");
-  const summary = c.verdict === "pass"
-    ? `<div class="conf-clean">${escapeHtml(t("conf.clean"))}</div>`
-    : `<div class="conf-list">${rows}</div>`;
+  // Reached only when there IS something to show -- a fail, a warn, or a pass
+  // that still carries info-level findings -- so the findings are the summary.
+  const summary = `<div class="conf-list">${rows}</div>`;
   return `
       <div class="detail-card">
         <div class="collapsible" data-section="conformance">
@@ -929,12 +935,12 @@ function renderDetailPane(detail) {
     contentDiv.innerHTML = `
       <div class="detail-header">
         <div class="detail-title">
-          <span style="display:flex; align-items:center; gap:6px;">
-            ${escapeHtml(detail.name)}
+          <span class="detail-name-group">
+            <span class="detail-name" title="${escapeHtml(detail.name)}">${escapeHtml(detail.name)}</span>
             ${detail.git_branch ? `<span class="git-badge ${detail.git_dirty ? 'dirty' : ''}" style="font-size:10px; font-weight:normal;">⎇ ${escapeHtml(detail.git_branch)}${detail.git_dirty ? '*' : ''}</span>` : ""}
             ${conformanceBadgeHtml(detail)}
           </span>
-          <span style="display:flex; align-items:center; gap:4px;">
+          <span class="detail-title-right">
             <span class="phase-indicator phase-${escapeHtml(detail.phase)}" title="${escapeHtml(detail.phase)} — ${escapeHtml(t(PHASE_DESCRIPTIONS[detail.phase] || ''))}"></span>
             <span class="phase phase-${escapeHtml(detail.phase)}">${escapeHtml(detail.phase)}</span>
           </span>
@@ -3178,11 +3184,12 @@ function renderAgentPanel(root, container) {
 
   if (shouldBuildSkeleton) {
     container.innerHTML = `<div class="agent-panel detail-card" style="margin-top:4px;" data-state="${stateStr}">
-      <div class="card-title">Agent Control</div>
+      <div class="card-title">${escapeHtml(t("agent.title"))}</div>
+      <div class="agent-subtitle" id="agentSubtitle-${escapeHtml(root)}">${escapeHtml(t(isRunning ? "agent.subtitle.running" : "agent.subtitle.idle"))}</div>
       <div id="agentControlTop-${escapeHtml(root)}"></div>
-      <div class="agent-output-panel sunken" id="agentOutputPanel-${escapeHtml(root)}">
+      <div class="agent-output-panel sunken" id="agentOutputPanel-${escapeHtml(root)}" title="${escapeHtml(t("agent.output.title"))}">
         <div id="agentOutputLines-${escapeHtml(root)}"></div>
-        <div class="agent-output-meta" id="agentOutputMeta-${escapeHtml(root)}">Lines: 0</div>
+        <div class="agent-output-meta" id="agentOutputMeta-${escapeHtml(root)}">${escapeHtml(t("agent.output.lines"))}: 0</div>
       </div>
       <div id="agentControlBottom-${escapeHtml(root)}"></div>
     </div>`;
@@ -3193,11 +3200,14 @@ function renderAgentPanel(root, container) {
         const elapsedEl = container.querySelector(".agent-status-elapsed");
         if (elapsedEl && status.elapsed) elapsedEl.textContent = Math.floor(status.elapsed) + 's';
         const metaEl = container.querySelector(".agent-output-meta");
-        if (metaEl && status.total_lines) metaEl.textContent = "Lines: " + status.total_lines;
+        if (metaEl && status.total_lines) metaEl.textContent = t("agent.output.lines") + ": " + status.total_lines;
       }
       return; // Nothing else to rebuild!
     } else {
       existingPanel.setAttribute("data-state", stateStr);
+      // The subtitle explains the state, so it has to follow the state.
+      const subEl = existingPanel.querySelector(".agent-subtitle");
+      if (subEl) subEl.textContent = t(isRunning ? "agent.subtitle.running" : "agent.subtitle.idle");
     }
   }
 
@@ -3227,8 +3237,8 @@ topHtml = `<div class="agent-status-bar raised">
       </div>
       <div>
 ${testBadgeHtml}
-                ${isRunning ? `<button class="stop-agent-btn" data-root="${escapeHtml(root)}" style="color:var(--danger)">Stop</button>` : ''}
-        <button class="view-diff-btn" data-root="${escapeHtml(root)}">Diff</button>
+                ${isRunning ? `<button class="stop-agent-btn" data-root="${escapeHtml(root)}" style="color:var(--dangerText)" title="${escapeHtml(t("agent.stop.title"))}">${escapeHtml(t("agent.stop.label"))}</button>` : ''}
+        <button class="view-diff-btn" data-root="${escapeHtml(root)}" title="${escapeHtml(t("agent.diff.title"))}">${escapeHtml(t("agent.diff.label"))}</button>
       </div>
     </div>`;
   }
@@ -3238,13 +3248,13 @@ ${testBadgeHtml}
   if (isRunning) {
     bottomHtml = `<div class="agent-chat-panel" style="padding:4px;">
       <div class="agent-chat-shortcuts" style="display:flex; gap:4px; margin-bottom:4px;">
-        <button class="chat-shortcut-btn raised" data-cmd="saipen continue" style="font-size:10px; padding:2px 4px;">Continue</button>
-        <button class="chat-shortcut-btn raised" data-cmd="saipen hunt" style="font-size:10px; padding:2px 4px;">Hunt</button>
-        <button class="chat-shortcut-btn raised" data-cmd="saipen clean" style="font-size:10px; padding:2px 4px;">Clean</button>
+        <button class="chat-shortcut-btn raised" data-cmd="saipen continue" style="font-size:10px; padding:2px 4px;" title="${escapeHtml(t("agent.shortcut.continue.title"))}">Continue</button>
+        <button class="chat-shortcut-btn raised" data-cmd="saipen hunt" style="font-size:10px; padding:2px 4px;" title="${escapeHtml(t("agent.shortcut.hunt.title"))}">Hunt</button>
+        <button class="chat-shortcut-btn raised" data-cmd="saipen clean" style="font-size:10px; padding:2px 4px;" title="${escapeHtml(t("agent.shortcut.clean.title"))}">Clean</button>
       </div>
       <div class="agent-launch-row">
-        <textarea id="agentChatInput" placeholder="Send message to agent (stdin)..."></textarea>
-        <button id="agentSendBtn" data-root="${escapeHtml(root)}" style="color:var(--success)">Send</button>
+        <textarea id="agentChatInput" placeholder="${escapeHtml(t("agent.chat.placeholder"))}"></textarea>
+        <button id="agentSendBtn" data-root="${escapeHtml(root)}" style="color:var(--success)" title="${escapeHtml(t("agent.send.title"))}">${escapeHtml(t("agent.send.label"))}</button>
       </div>
     </div>`;
   } else {
@@ -3253,17 +3263,17 @@ ${testBadgeHtml}
     let hintHtml = "";
     if (availableCount === 0) {
       hintHtml = `<div style="color:var(--textSecondary);font-size:10px;padding:2px;margin-bottom:2px;background:var(--surfaceRaised);border:1px solid var(--borderHighlight);border-right-color:var(--borderDark);border-bottom-color:var(--borderDark);">
-        <span style="color:var(--danger);font-weight:bold;">!</span> No native agent CLIs (Claude, Gemini, Codex, Aider, Cline) detected on PATH. Fallback generic CLI is selected.
+        <span style="color:var(--dangerText);font-weight:bold;">!</span> ${escapeHtml(t("agent.noEngines"))}
       </div>`;
     }
     bottomHtml = `<div class="agent-launch-panel">
       ${hintHtml}
       <div class="agent-launch-row">
-        <select id="agentEngineSelect">${engineOptions}</select>
-        <textarea id="agentInstructionInput" placeholder="Agent instruction...">saipen continue</textarea>
+        <select id="agentEngineSelect" title="${escapeHtml(t("agent.engine.title"))}">${engineOptions}</select>
+        <textarea id="agentInstructionInput" title="${escapeHtml(t("agent.instruction.title"))}" placeholder="${escapeHtml(t("agent.instruction.placeholder"))}">saipen continue</textarea>
         <div style="display:flex; flex-direction:column; gap:2px;">
-          <button id="agentLaunchBtn" data-root="${escapeHtml(root)}" style="color:var(--success)" ${!engineOptions ? "disabled" : ""}>Launch</button>
-          <button id="agentHumanNoteBtn" data-root="${escapeHtml(root)}" style="color:var(--text); font-size:10px; padding:2px 4px;" title="Append human_note: to STATE.md">Note</button>
+          <button id="agentLaunchBtn" data-root="${escapeHtml(root)}" style="color:var(--success)" title="${escapeHtml(t("agent.launch.title"))}" ${!engineOptions ? "disabled" : ""}>${escapeHtml(t("agent.launch.label"))}</button>
+          <button id="agentHumanNoteBtn" data-root="${escapeHtml(root)}" style="font-size:10px; padding:2px 4px;" title="${escapeHtml(t("agent.note.title"))}">${escapeHtml(t("agent.note.label"))}</button>
         </div>
       </div>
     </div>`;

@@ -1,9 +1,10 @@
+<!-- JA TRANSLATION STUB -->
 <div align="right">
-  🌍 <strong>EN</strong> | <a href="docs/i18n/README.ar.md">AR</a> | <a href="docs/i18n/README.bg.md">BG</a> | <a href="docs/i18n/README.cs.md">CS</a> | <a href="docs/i18n/README.da.md">DA</a> | <a href="docs/i18n/README.de.md">DE</a> | <a href="docs/i18n/README.ee.md">EE</a> | <a href="docs/i18n/README.el.md">EL</a> | <a href="docs/i18n/README.es.md">ES</a> | <a href="docs/i18n/README.fi.md">FI</a> | <a href="docs/i18n/README.fr.md">FR</a> | <a href="docs/i18n/README.he.md">HE</a> | <a href="docs/i18n/README.hi.md">HI</a> | <a href="docs/i18n/README.hr.md">HR</a> | <a href="docs/i18n/README.hu.md">HU</a> | <a href="docs/i18n/README.id.md">ID</a> | <a href="docs/i18n/README.it.md">IT</a> | <a href="docs/i18n/README.ja.md">JA</a> | <a href="docs/i18n/README.ko.md">KO</a> | <a href="docs/i18n/README.nl.md">NL</a> | <a href="docs/i18n/README.no.md">NO</a> | <a href="docs/i18n/README.pl.md">PL</a> | <a href="docs/i18n/README.pt.md">PT</a> | <a href="docs/i18n/README.ro.md">RO</a> | <a href="docs/i18n/README.ru.md">RU</a> | <a href="docs/i18n/README.sk.md">SK</a> | <a href="docs/i18n/README.sv.md">SV</a> | <a href="docs/i18n/README.th.md">TH</a> | <a href="docs/i18n/README.tr.md">TR</a> | <a href="docs/i18n/README.uk.md">UK</a> | <a href="docs/i18n/README.vi.md">VI</a> | <a href="docs/i18n/README.zh.md">ZH</a> | <a href="docs/i18n/README.zh-CN.md">ZH-CN</a> | <a href="docs/i18n/README.ded.md">ДЕД</a>
+  🌍 <a href="../../README.md">EN</a> | <a href="README.ar.md">AR</a> | <a href="README.bg.md">BG</a> | <a href="README.cs.md">CS</a> | <a href="README.da.md">DA</a> | <a href="README.de.md">DE</a> | <a href="README.ee.md">EE</a> | <a href="README.el.md">EL</a> | <a href="README.es.md">ES</a> | <a href="README.fi.md">FI</a> | <a href="README.fr.md">FR</a> | <a href="README.he.md">HE</a> | <a href="README.hi.md">HI</a> | <a href="README.hr.md">HR</a> | <a href="README.hu.md">HU</a> | <a href="README.id.md">ID</a> | <a href="README.it.md">IT</a> | <strong>JA</strong> | <a href="README.ko.md">KO</a> | <a href="README.nl.md">NL</a> | <a href="README.no.md">NO</a> | <a href="README.pl.md">PL</a> | <a href="README.pt.md">PT</a> | <a href="README.ro.md">RO</a> | <a href="README.ru.md">RU</a> | <a href="README.sk.md">SK</a> | <a href="README.sv.md">SV</a> | <a href="README.th.md">TH</a> | <a href="README.tr.md">TR</a> | <a href="README.uk.md">UK</a> | <a href="README.vi.md">VI</a> | <a href="README.zh.md">ZH</a> | <a href="README.zh-CN.md">ZH-CN</a> | <a href="README.ded.md">ДЕД</a>
 </div>
 
 <div align="center">
-  <img src="screenshots/saipen_icon.png" alt="SAIPENVIEW" width="120" height="120">
+  <img src="../../screenshots/saipen_icon.png" alt="SAIPENVIEW" width="120" height="120">
   <h1 align="center">SAIPENVIEW</h1>
   <p align="center">
     <strong>Desktop tray viewer for every SAIPEN project on your machine</strong>
@@ -14,7 +15,7 @@
   </p>
   <p>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
+    <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
@@ -31,7 +32,7 @@
 ## ✨ At a Glance
 
 <p align="center">
-  <img src="screenshots/dashboard.png" alt="SAIPENVIEW Dashboard Screenshot" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
+  <img src="../../screenshots/dashboard.png" alt="SAIPENVIEW Dashboard Screenshot" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
   <br>
   <em>Every SAIPEN project, sub-agent, ticket, and git status — all in one view.</em>
 </p>
@@ -340,7 +341,7 @@ pip install -r requirements.txt
 python -m saipenview
 ```
 
-For detailed setup, coding conventions, and PR workflow, see [CONTRIBUTING.md](CONTRIBUTING.md).
+For detailed setup, coding conventions, and PR workflow, see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ### Requirements
 
@@ -354,7 +355,7 @@ For detailed setup, coding conventions, and PR workflow, see [CONTRIBUTING.md](C
 
 ## 📄 License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](../../LICENSE).
 
 <br>
 
@@ -370,7 +371,7 @@ MIT — see [LICENSE](LICENSE).
 ## 📸 More Screenshots
 
 <p align="center">
-  <img src="screenshots/detail-pane.png" alt="SAIPENVIEW Detail Pane" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
+  <img src="../../screenshots/detail-pane.png" alt="SAIPENVIEW Detail Pane" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
   <br>
   <em>Detail pane with tickets, sub-agents, and file viewer.</em>
 </p>

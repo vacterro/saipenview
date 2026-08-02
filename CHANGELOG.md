@@ -4,7 +4,20 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
-## [0.1.7] - unreleased
+## [0.1.8] - 2026-08-02
+
+### Fixed
+- Global hotkeys are layout-independent. `keyboard.add_hotkey("ctrl+q")` resolved the letter through the *active* Windows layout, so with a Russian (or any non-Latin) layout selected the combo bound to the wrong physical key — and on a machine with no Latin layout installed at all it raised `ValueError` and the hotkey silently never registered. Character keys now bind to their US scan-code positions; modifiers and F-keys still go through `keyboard`, which is already layout-independent for those
+- Wintage's theme installer no longer rolls SAIPENVIEW's stylesheet back in time. `Invoke-Saipenview` recolours from `style.css.bak`, and that backup was taken once and never refreshed — so every run rewrote `style.css` as `<old snapshot> + new colours`, deleting the `--dangerText` token, the `.conf-list` collapse rule, the Agent Panel block and the `.bmac-btn` rule. This is the CSS that "regenerated itself" to a file matching no commit in this repo's history. Fixed upstream in Wintage (`desktop/install.ps1`): the backup's shape is compared against the live file and re-taken when the app's own CSS has moved on
+- Project name stays readable when the window is narrow or collapsed. `.detail-title` had no `min-width: 0` anywhere, so the branch badge, conformance badge and phase pill pushed the name straight out of the box; collapsed mode hid the whole header, name included. The name now truncates with an ellipsis instead of vanishing, and collapsed mode drops the path and action bar rather than the title
+- Protocol baseline 7.164.0 -> 7.171.0 (stamp-only, no vocabulary drift)
+
+### Changed
+- Conformance section is hidden when there is nothing to report. A clean verdict rendered a card saying "no findings" on every conforming project; the `OK` badge in the header already says it in one glyph
+- Agent Control explains itself: a one-line description of what it launches and where the output goes, plus a tooltip on every control (engine picker, instruction box, Launch, Note, Stop, Diff, Send, and the Continue/Hunt/Clean shortcuts). All strings are i18n keys instead of hardcoded English
+- Repo root holds one `README.md` again — the 33 translations moved to `docs/i18n/`, with every language bar and relative link retargeted, and all 33 now linked instead of 5. Dropped the tracked `scratch_t119.py` and the stray `nul` file
+
+## [0.1.7] - 2026-08-02
 
 ### Added
 - Full locale wiring: all 34 `locale-*.js` loaded by `index.html`, 33 languages selectable in Settings, `api.get_locales()` returns 34 with native names (was hardcoded en/zh-CN)

@@ -252,4 +252,32 @@ const LOCALE_EN = {
   "conf.clean": "No findings — this project's own .saipen/ files are legal.",
   "conf.tooltipPass": "Conformant against SAIPEN",
   "conf.baseline": "Checked against SAIPEN",
+
+  // ── Agent Control ──
+  // This panel used to be a bare "Agent Control" title over a row of unlabelled
+  // buttons, which told the user nothing about what it launches or what the
+  // buttons do. Every string here exists to answer one of those two questions.
+  "agent.title": "Agent Control",
+  "agent.subtitle.idle": "Start a coding-agent CLI inside this project folder. Its output streams below, and you can reply to it, inspect its uncommitted changes, or stop it from here.",
+  "agent.subtitle.running": "An agent is running in this project. Everything it prints appears below; type in the box to answer it.",
+  "agent.engine.title": "Which agent CLI to launch. Only CLIs found on PATH are listed.",
+  "agent.instruction.title": "The first message the agent receives. 'saipen continue' makes it read this project's .saipen/ files and pick up where the last session stopped.",
+  "agent.instruction.placeholder": "First message to the agent...",
+  "agent.launch.label": "Launch",
+  "agent.launch.title": "Start the selected agent in this project folder",
+  "agent.note.label": "Note",
+  "agent.note.title": "Write a human_note: line into STATE.md. The next agent to boot applies it once, then clears it — no process needs to be running.",
+  "agent.stop.label": "Stop",
+  "agent.stop.title": "Terminate the running agent process",
+  "agent.diff.label": "Diff",
+  "agent.diff.title": "Show what has changed in this repo but is not committed yet",
+  "agent.send.label": "Send",
+  "agent.send.title": "Send this text to the agent (Enter sends, Shift+Enter starts a new line)",
+  "agent.chat.placeholder": "Reply to the agent — Enter sends, Shift+Enter = new line",
+  "agent.shortcut.continue.title": "Send 'saipen continue' — resume the protocol from STATE.md",
+  "agent.shortcut.hunt.title": "Send 'saipen hunt' — sweep the codebase for new problems",
+  "agent.shortcut.clean.title": "Send 'saipen clean' — tidy the board and the repo",
+  "agent.output.lines": "Lines",
+  "agent.output.title": "Live output from the agent process. Read-only.",
+  "agent.noEngines": "No agent CLI found on PATH (Claude, Gemini, Codex, Aider, Cline). A generic CLI is selected as a fallback.",
 };
