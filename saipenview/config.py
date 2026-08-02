@@ -58,7 +58,7 @@ DEFAULTS = {
     # without it still renders in the same family.
     "font_family": "Verdana_m1",
     "custom_commands": [],  # [{label: string, command: string}, ...]
-    "locale": "en",  # UI language: en | zh-CN
+    "locale": "en",  # UI language: en | 33 more (see api.get_locales)
     "layout_swap": False,  # Swap sidebar/detail pane position
     "top_panel_collapsed": False,  # Toolbar collapsed state
     "file_viewer_default": "source",  # Default file viewer mode: source | reader

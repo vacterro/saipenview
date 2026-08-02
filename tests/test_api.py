@@ -428,10 +428,12 @@ class TestSimpleGetters:
 
     def test_get_locales(self, api):
         locales = api.get_locales()
-        assert len(locales) == 2
+        assert len(locales) == 34
         codes = [loc["code"] for loc in locales]
         assert "en" in codes
         assert "zh-CN" in codes
+        assert "ru" in codes
+        assert "ded" in codes
 
     def test_get_wiki_pages(self, api):
         pages = api.get_wiki_pages()
@@ -850,7 +852,7 @@ class TestGetLocales:
 
     def test_returns_two_locales(self, api):
         locales = api.get_locales()
-        assert len(locales) == 2
+        assert len(locales) == 34
         codes = [loc["code"] for loc in locales]
         assert "en" in codes
         assert "zh-CN" in codes

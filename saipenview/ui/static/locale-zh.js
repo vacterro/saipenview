@@ -2,7 +2,7 @@
 // This file is also the fallback: if a key is missing in another locale,
 // the English value is used.
 
-const LOCALE_EN = {
+const LOCALE_ZH = {
   // ── Toolbar ──
   "toolbar.search.placeholder": "[ZH] Search...",
   "toolbar.search.title": "[ZH] Filter projects by name or path",

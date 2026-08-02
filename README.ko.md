@@ -72,6 +72,11 @@
 - **원클릭 수집** — 준비된 항목을 메인 프로젝트로 병합
 - **만료 경고** — 오래된 프로토콜 파일 탐지
 
+- **Agent Engine** - 프로젝트에서 `claude-code`(또는 다른 엔진: codex, aider, gemini, cline, goose, agy, generic_cli) 실행
+  - **실시간 상태** - 실행/종료 상태, CPU, 프로젝트별 경과 시간
+  - **출력 콘솔** - 버퍼링된 에이전트 출력(기본 5000줄), stdin 입력
+  - **Kill / stop all** - 프로세스 종료 및 전체 중지
+  - **단일 인스턴스 보호** - 앱 인스턴스 하나만; 두 번째 실행은 창을 다시 표시
 ### 🎮 상호작용
 - **파일 뷰어** — STATE.md, BOARD.md, LOG.md 조회 및 편집
   - 소스 모드 (편집 가능) + 리더 모드 (렌더링됨)
@@ -83,7 +88,7 @@
 
 ### ⌨️ 단축키 및 창 관리
 - **표시/숨기기** — `Ctrl+Alt+X` (설정 가능)
-- **모서리 스냅** — `Ctrl+Q`로 좌상 → 우상 → 좌하 → 우하 순환
+- **모서리 맞춤** - `Alt+F14` 순환: 좌상 → 우상 → 좌하 → 우하
 - **확대/축소** — `Ctrl+마우스휠`, `Ctrl+`+`/`-`
 - **시스템 트레이** — 트레이로 최소화, 숨김 상태로 시작
 - **최상단 고정** 토글
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | 스크립트 | 동작 |
 |---|---|
-| `run.vbs` | 숨김 (트레이 전용) |
-| `run.bat` | 표시 (콘솔 열림) |
+| `run.vbs` | 숨김(트레이 전용), 조용함 |
+| `run.bat` | 트레이로 실행; 콘솔은 1회성 venv/의존성 설정 중에만 표시 |
 둘 다 `.venv`를 자동 생성하고 의존성을 설치합니다.
 
 </td>
@@ -150,7 +155,7 @@ saipenview
 | 작업 | 방법 |
 |---|---|
 | **표시 / 숨기기** | `Ctrl+Alt+X` 또는 `Alt+F15` (둘 다 변경 가능) |
-| **모서리 스냅** | `Ctrl+Q` — 좌상 → 우상 → 좌하 → 우하 순환 |
+| **모서리 맞춤** | `Alt+F14` - 순환: 왼쪽-위 → 오른쪽-위 → 왼쪽-아래 → 오른쪽-아래 |
 | **강제 종료** | `Ctrl+Shift+Alt+Q` — 프로세스 강제 종료 |
 | **확대 / 축소** | `Ctrl+마우스휠` 또는 `Ctrl` + `+` / `-` |
 | **확대/축소 초기화** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW는 정의된 페이즈를 통해 AI 에이전트의 프로젝트 작�
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE`도 존재합니다 - 전체 어휘와 전이 테이블은 `saipenview/protocol.py`에 있습니다(`BLOCKED`는 대부분의 단계에서 도달 가능).
 각 SAIPEN 프로젝트는 세 개의 표준 파일에 상태를 저장합니다:
 
 | 파일 | 용도 |
@@ -229,7 +235,7 @@ INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
 saipenview/_data/config.json
 ```
 
-주요 기본값:
+주요 기본값(축약 - 전체 `DEFAULTS` 사전은 `saipenview/config.py`에 있음):
 
 ```json
 {
@@ -241,16 +247,22 @@ saipenview/_data/config.json
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 모든 로컬 드라이브를 자동 탐지하려면 `scan_roots: null`로 설정하세요.  
 스캔 대상을 제한하려면 경로 목록(예: `["V:\\", "D:\\projects"]`)을 지정하세요.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size`가 Agent Engine을 구동합니다(기능 참조).  
 모든 설정은 앱 내 **설정(Settings)** 모달을 통해서도 변경할 수 있습니다.
 
 <br>
@@ -261,8 +273,8 @@ saipenview/_data/config.json
 
 ```
 saipenview/
-├── app.py              엔트리 바인딩 — 트레이, 단축키, 창, API
-├── api.py              JS용 pywebview 브릿지 (30개 이상의 메서드)
+├── app.py              진입 배선 - 트레이, 단축키, 창, api, 단일 인스턴스 보호
+├── api.py              JS 지향 pywebview 브리지(공개 메서드 66개)
 ├── scanner.py          드라이브 탐색 + 백그라운드 재스캔 루프
 ├── parser.py           STATE.md / BOARD.md / LOG.md 파싱
 ├── textio.py           모든 .saipen/ 파일 단일 리더 — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             pystray 시스템 트레이 아이콘 + 메뉴
 ├── hotkey.py           전역 단축키 등록 (keyboard 라이브러리)
 ├── autostart.py        Windows 레지스트리 자동 시작 관리
-├── zone_picker.py      Ctrl+Q 모서리 스냅 오버레이 (tkinter)
+├── zone_picker.py      Alt+F14 모서리 맞춤 오버레이(tkinter)
+├── events.py           프로세스 내 이벤트 버스(EventBus)
+├── guard.py            단일 인스턴스 잠금 + 표시 요청 전달
+├── git_diff.py         에이전트 작업용 작업 트리 diff / commit / revert
+├── runtime.py          Agent Engine - 실행된 에이전트의 프로세스 관리자
+├── watcher.py          .saipen/ 파일 감시용 Watchdog 파일 감시자
+├── engines/            Agent Engine - 지원 CLI 엔진(claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       pywebview 창 — 표시/숨기기/토글/스냅
 │   └── static/
 │       ├── index.html
 │       ├── style.css   빈티지 다크 골드 Win95 테마
-│       └── app.js      프론트엔드 로직 (~2600줄)
+│       └── app.js      프론트엔드 로직(약 3300줄)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        README 스크린샷

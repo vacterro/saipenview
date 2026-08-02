@@ -72,6 +72,11 @@
 - **Verzamelen met één klik** — voeg gereed zijnde items samen in het hoofdproject
 - **Verouderingswaarschuwing** — detecteert verouderde protocolbestanden
 
+- **Agent Engine** - start `claude-code` (of andere engines: codex, aider, gemini, cline, goose, agy, generic_cli) in een project
+  - **Live status** - draaiend/gestopt, CPU, verstreken tijd per project
+  - **Uitvoerconsole** - gebufferde agentuitvoer (standaard 5000 regels), stdin-invoer
+  - **Kill / stop all** - proces doden en globale stop
+  - **Enkelvoudige instantie** - slechts één app-instantie; tweede start toont het venster opnieuw
 ### 🎮 Interactie
 - **Bestandsviewer** — lees & bewerk STATE.md, BOARD.md, LOG.md
   - Bronmodus (bewerkbaar) + Leesmodus (geformatteerd)
@@ -83,7 +88,7 @@
 
 ### ⌨️ Sneltoetsen & Venster
 - **Tonen/Verbergen** — `Ctrl+Alt+X` (instelbaar)
-- **Hoek-snapping** — `Ctrl+Q` wisselt LB → RB → LO → RO
+- **Hoek-snapping** - `Alt+F14` wisselt LB → RB → LO → RO
 - **Zoom** — `Ctrl+Muiswiel`, `Ctrl+`+`/`-`
 - **Systeemvak (Tray)** — minimaliseren naar systeemvak, verborgen starten
 - **Altijd op voorgrond** schakelaar
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | Script | Gedrag |
 |---|---|
-| `run.vbs` | Verborgen (alleen systeemvak) |
-| `run.bat` | Zichtbaar (console open) |
+| `run.vbs` | Verborgen (alleen systeemvak), stil |
+| `run.bat` | Start naar het systeemvak; console alleen zichtbaar tijdens eenmalige venv/afhankelijkheden-instelling |
 Beide maken automatisch `.venv` aan & installeren afhankelijkheden.
 
 </td>
@@ -150,7 +155,7 @@ Binnenkort beschikbaar ✨
 | Actie | Hoe |
 |---|---|
 | **Tonen / Verbergen** | `Ctrl+Alt+X` of `Alt+F15` (beide instelbaar) |
-| **Hoek-snapping** | `Ctrl+Q` — wisselt Links-Boven → Rechts-Boven → Links-Onder → Rechts-Onder |
+| **Hoek-snapping** | `Alt+F14` - wisselt Links-Boven → Rechts-Boven → Links-Onder → Rechts-Onder |
 | **Noodstop (Kill switch)** | `Ctrl+Shift+Alt+Q` — proces geforceerd beëindigen |
 | **In- / uitzoomen** | `Ctrl+Muiswiel` of `Ctrl` + `+` / `-` |
 | **Zoom herstellen** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW is een hulpprogramma voor projecten die gebruikmaken van het **SAIPEN
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` bestaan ook - de volledige vocabulaire en de overgangstabel staan in `saipenview/protocol.py` (`BLOCKED` is bereikbaar vanuit de meeste fasen).
 Elk SAIPEN-project slaat zijn status op in drie canonieke bestanden:
 
 | Bestand | Doel |
@@ -229,7 +235,7 @@ De configuratie is draagbaar — opgeslagen naast de applicatie, niet in `%APPDA
 saipenview/_data/config.json
 ```
 
-Belangrijkste standaardinstellingen:
+Belangrijkste standaardwaarden (verkort - het volledige `DEFAULTS`-woordenboek staat in `saipenview/config.py`):
 
 ```json
 {
@@ -241,16 +247,22 @@ Belangrijkste standaardinstellingen:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Stel `scan_roots: null` in om automatisch alle lokale schijven te detecteren.  
 Stel in op een lijst met paden (bijv. `["V:\\", "D:\\projects"]`) om het scannen te beperken.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` sturen de Agent Engine (zie Functies).  
 Alle instellingen zijn ook te configureren via het modale venster **Instellingen** in de app.
 
 <br>
@@ -261,8 +273,8 @@ Alle instellingen zijn ook te configureren via het modale venster **Instellingen
 
 ```
 saipenview/
-├── app.py              Koppeling ingang — systeemvak, sneltoets, venster, api
-├── api.py              pywebview bridge naar JS (30+ methoden)
+├── app.py              Ingangsbedrading - systeemvak, hotkey, venster, api, enkelvoudige-instantiebeveiliging
+├── api.py              JS-gerichte pywebview-brug (66 openbare methoden)
 ├── scanner.py          Schijfscan + achtergrond-rescanlus
 ├── parser.py           STATE.md / BOARD.md / LOG.md verwerking
 ├── textio.py           Eén lezer voor elk .saipen/-bestand — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             pystray systeemvak-icoon + menu
 ├── hotkey.py           Globale sneltoetsregistratie (keyboard lib)
 ├── autostart.py        Windows Registry automatische opstartbeheer
-├── zone_picker.py      Ctrl+Q hoek-snap overlay (tkinter)
+├── zone_picker.py      Alt+F14 hoek-snap overlay (tkinter)
+├── events.py           In-process gebeurtenisbus (EventBus)
+├── guard.py            Enkelvoudige-instantieslot + tonen-verzoek overdracht
+├── git_diff.py         Werkboom diff / commit / revert voor agentacties
+├── runtime.py          Agent Engine - procesbeheerder voor gestarte agents
+├── watcher.py          Watchdog-bestandswaker op .saipen/-bestanden
+├── engines/            Agent Engine - ondersteunde CLI-engines (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       pywebview venster — tonen/verbergen/schakelen/snappen
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Vintage donkergouden Win95-thema
-│       └── app.js      Frontend-logica (~2600 regels)
+│       └── app.js      Frontend-logica (~3300 regels)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        README screenshots

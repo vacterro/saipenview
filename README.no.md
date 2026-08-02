@@ -72,6 +72,11 @@
 - **Ett-klikk-samling** — samle klare oppføringer inn i hovedprosjektet
 - **Foreldelsesadvarsel** — oppdager utdaterte protokollfiler
 
+- **Agent Engine** - start `claude-code` (eller andre motorer: codex, aider, gemini, cline, goose, agy, generic_cli) i et prosjekt
+  - **Live status** - kjorende/avsluttet tilstand, CPU, forlopt tid per prosjekt
+  - **Utgangskonsoll** - bufret agentutgang (standard 5000 linjer), stdin-inndata
+  - **Kill / stop all** - drep prosess og global stopp
+  - **Enkeltinstans-beskyttelse** - bare én app-forekomst; andre start viser vinduet igjen
 ### 🎮 Interaksjon
 - **Filviser** — les og rediger STATE.md, BOARD.md, LOG.md
   - Kildemodus (redigerbar) + Lesemodus (rendret)
@@ -83,7 +88,7 @@
 
 ### ⌨️ Snarveier og vindu
 - **Vis/skjul** — `Ctrl+Alt+X` (konfigurerbar)
-- **Fest til hjørner** — `Ctrl+Q` veksler ØV → ØH → NV → NH
+- **Fest til hjorner** - `Alt+F14` veksler OV → OH → NV → NH
 - **Zoom** — `Ctrl+Mushjul`, `Ctrl`+`+`/`-`
 - **Systemfelt** — minimer til systemfelt, start skjult
 - **Alltid øverst**-bryter
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | Skript | Oppførsel |
 |---|---|
-| `run.vbs` | Skjult (kun systemfelt) |
-| `run.bat` | Synlig (konsoll åpen) |
+| `run.vbs` | Skjult (kun skuff), stille |
+| `run.bat` | Start til skuffen; konsollen er synlig bare under engangsoppsett av venv/avhengigheter |
 Begge oppretter automatisk `.venv` og installerer avhengigheter.
 
 </td>
@@ -150,7 +155,7 @@ Kommer snart ✨
 | Handling | Hvordan |
 |---|---|
 | **Vis / Skjul** | `Ctrl+Alt+X` eller `Alt+F15` (begge konfigurerbare) |
-| **Fest til hjørne** | `Ctrl+Q` — veksler Øverst-venstre → Øverst-høyre → Nederst-venstre → Nederst-høyre |
+| **Fest til hjorne** | `Alt+F14` - veksler Overst-venstre → Overst-hoyre → Nederst-venstre → Nederst-hoyre |
 | **Nødstopp** | `Ctrl+Shift+Alt+Q` — tving avslutning av prosessen |
 | **Zoom inn / ut** | `Ctrl+Mushjul` eller `Ctrl` + `+` / `-` |
 | **Tilbakestill zoom** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW er en følgesvenn for prosjekter som bruker **SAIPEN-protokollen** �
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` finnes også - det fulle vokabularet og overgangstabellen ligger i `saipenview/protocol.py` (`BLOCKED` kan nås fra de fleste faser).
 Hvert SAIPEN-prosjekt lagrer sin tilstand i tre kanoniske filer:
 
 | Fil | Formål |
@@ -229,7 +235,7 @@ Konfigurasjonen er portabel — lagres ved siden av appen, ikke i `%APPDATA%`:
 saipenview/_data/config.json
 ```
 
-Viktige standardverdier:
+Viktigste standardverdier (forkortet - den fulle `DEFAULTS`-ordboken ligger i `saipenview/config.py`):
 
 ```json
 {
@@ -241,16 +247,22 @@ Viktige standardverdier:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Sett `scan_roots: null` for å oppdage alle lokale stasjoner automatisk.  
 Sett til en liste med stier (f.eks. `["V:\\", "D:\\projects"]`) for å begrense skanningen.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` styrer Agent Engine (se Funksjoner).  
 Alle innstillinger er også konfigurerbare gjennom **Innstillinger**-modalen i appen.
 
 <br>
@@ -261,8 +273,8 @@ Alle innstillinger er også konfigurerbare gjennom **Innstillinger**-modalen i a
 
 ```
 saipenview/
-├── app.py              Hovedoppsett — systemfelt, snarvei, vindu, api
-├── api.py              JS-rettet pywebview-bro (30+ metoder)
+├── app.py              Inngangsforbindelse - skuff, hotkey, vindu, api, enkeltinstans-beskyttelse
+├── api.py              JS-vendt pywebview-bro (66 offentlige metoder)
 ├── scanner.py          Stasjonsgjennomgang + bakgrunnsskanningsløkke
 ├── parser.py           Tolkning av STATE.md / BOARD.md / LOG.md
 ├── textio.py           Én leser for hver .saipen/-fil — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             pystray-systemfeltikon + meny
 ├── hotkey.py           Global snarveiregistrering (keyboard-bibliotek)
 ├── autostart.py        Håndtering av Windows Registry-oppstart
-├── zone_picker.py      Ctrl+Q hjørnefestingsvisning (tkinter)
+├── zone_picker.py      Alt+F14 hjornefestingsvisning (tkinter)
+├── events.py           In-process hendelsesbuss (EventBus)
+├── guard.py            Enkeltinstans-lås + vising-foresporsel overlevering
+├── git_diff.py         Arbeidstre diff / commit / revert for agenthandlinger
+├── runtime.py          Agent Engine - prosesshåndtering for startede agenter
+├── watcher.py          Watchdog-filvakt på .saipen/-filer
+├── engines/            Agent Engine - stottede CLI-motorer (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       pywebview-vindu — vis/skjul/veksle/fest
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Mørk-gyldent vintage Win95-tema
-│       └── app.js      Frontend-logikk (~2600 linjer)
+│       └── app.js      Frontend-logikk (~3300 linjer)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        Skjermbilder for README

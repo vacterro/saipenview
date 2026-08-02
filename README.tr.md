@@ -72,6 +72,11 @@
 - **Tek tıkla toplama** — hazır girdileri ana projeye birleştirin
 - **Eski protokol uyarısı** — güncel olmayan protokol dosyalarını algılar
 
+- **Agent Engine** - bir projede `claude-code` (veya diğer motorlar: codex, aider, gemini, cline, goose, agy, generic_cli) başlat
+  - **Canlı durum** - çalışıyor/çıktı durumu, CPU, proje başına geçen süre
+  - **Çıktı konsolu** - tamponlanmış ajan çıktısı (varsayılan 5000 satır), stdin girişi
+  - **Kill / stop all** - işlemi öldür ve küresel durdurma
+  - **Tek örnek koruması** - yalnızca bir uygulama örneği; ikinci başlatma pencereyi yeniden gösterir
 ### 🎮 Etkileşim
 - **Dosya görüntüleyici** — STATE.md, BOARD.md, LOG.md dosyalarını okuyun ve düzenleyin
   - Kaynak modu (düzenlenebilir) + Okuyucu modu (görselleştirilmiş)
@@ -83,7 +88,7 @@
 
 ### ⌨️ Kısayollar ve Pencere
 - **Göster/Gizle** — `Ctrl+Alt+X` (yapılandırılabilir)
-- **Köşelere hizala** — `Ctrl+Q` SolÜst → SağÜst → SolAlt → SağAlt arasında geçiş yapar
+- **Köşelere hizala** - `Alt+F14` SolÜst → SağÜst → SolAlt → SağAlt arasında geçiş yapar
 - **Yakınlaştırma** — `Ctrl+FareTekerleği`, `Ctrl+`+`/`-`
 - **Sistem tepsisi** — tepsiye küçült, gizli başlat
 - **Her zaman üstte** geçişi
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | Betik | Davranış |
 |---|---|
-| `run.vbs` | Gizli (yalnızca tepsi) |
-| `run.bat` | Görünür (konsol açık) |
+| `run.vbs` | Gizli (yalnızca tepsi), sessiz |
+| `run.bat` | Tepsiye başlat; konsol yalnızca bir kerelik venv/bagimlilik kurulumunda görünür |
 Her ikisi de `.venv` klasörünü otomatik oluşturur ve bağımlılıkları yükler.
 
 </td>
@@ -150,7 +155,7 @@ Yakında geliyor ✨
 | Eylem | Nasıl |
 |---|---|
 | **Göster / Gizle** | `Ctrl+Alt+X` veya `Alt+F15` (her ikisi de yapılandırılabilir) |
-| **Köşeye hizala** | `Ctrl+Q` — Sol-Üst → Sağ-Üst → Sol-Alt → Sağ-Alt arasında geçiş yapar |
+| **Köşeye hizala** | `Alt+F14` - Sol-Üst → Sağ-Üst → Sol-Alt → Sağ-Alt arasında geçiş yapar |
 | **Acil kapatma** | `Ctrl+Shift+Alt+Q` — işlemi zorla kapatır |
 | **Yakınlaştır / Uzaklaştır** | `Ctrl+FareTekerleği` veya `Ctrl` + `+` / `-` |
 | **Yakınlaştırmayı sıfırla** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW, **SAIPEN Protokolü**'nü kullanan projeler için bir yardımcıdır
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` da mevcuttur - tam kelime hazinesi ve geçiş tablosu `saipenview/protocol.py` içindedir (`BLOCKED` çoğu aşamadan erişilebilir).
 Her SAIPEN projesi durumunu üç standart dosyada saklar:
 
 | Dosya | Amaç |
@@ -229,7 +235,7 @@ Yapılandırma taşınabilirdir — `%APPDATA%` yerine uygulamanın yanında sak
 saipenview/_data/config.json
 ```
 
-Temel varsayılanlar:
+Ana varsayılan değerler (kısaltılmış - tam `DEFAULTS` sözlüğü `saipenview/config.py` içindedir):
 
 ```json
 {
@@ -241,16 +247,22 @@ Temel varsayılanlar:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Tüm yerel sürücüleri otomatik algılamak için `scan_roots: null` olarak ayarlayın.  
 Taramayı sınırlandırmak için bir yol listesine ayarlayın (ör. `["V:\\", "D:\\projects"]`).  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` Agent Engine'i yönlendirir (bkz. Özellikler).  
 Tüm ayarlar ayrıca uygulamadaki **Ayarlar** penceresinden de yapılandırılabilir.
 
 <br>
@@ -261,8 +273,8 @@ Tüm ayarlar ayrıca uygulamadaki **Ayarlar** penceresinden de yapılandırılab
 
 ```
 saipenview/
-├── app.py              Giriş bağlantıları — sistem tepsisi, kısayol, pencere, api
-├── api.py              JS tarafına bakan pywebview köprüsü (30+ metot)
+├── app.py              Giriş bağlantısı - tepsi, kısayol, pencere, api, tek örnek koruması
+├── api.py              JS'ye dönük pywebview köprüsü (66 genel yöntem)
 ├── scanner.py          Sürücü gezintisi + arka plan yeniden tarama döngüsü
 ├── parser.py           STATE.md / BOARD.md / LOG.md ayrıştırma
 ├── textio.py           Her .saipen/ dosyası için tek okuyucu — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             pystray sistem tepsisi simgesi + menüsü
 ├── hotkey.py           Genel kısayol kaydı (keyboard kütüphanesi)
 ├── autostart.py        Windows Kayıt Defteri otomatik başlatma yönetimi
-├── zone_picker.py      Ctrl+Q köşe hizalama katmanı (tkinter)
+├── zone_picker.py      Alt+F14 köşe hizalama katmanı (tkinter)
+├── events.py           İşlem içi olay veriyolu (EventBus)
+├── guard.py            Tek örnek kilidi + görüntüleme isteği iletimi
+├── git_diff.py         Ajan eylemleri için çalışma ağacı diff / commit / revert
+├── runtime.py          Agent Engine - başlatılan ajanların işlem yöneticisi
+├── watcher.py          .saipen/ dosyalarını izleyen Watchdog dosya bekçisi
+├── engines/            Agent Engine - desteklenen CLI motorları (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       pywebview penceresi — göster/gizle/geçiş yap/hizala
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Nostaljik koyu-altın Win95 teması
-│       └── app.js      Ön yüz mantığı (~2600 satır)
+│       └── app.js      Ön uç mantığı (~3300 satır)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        README ekran görüntüleri

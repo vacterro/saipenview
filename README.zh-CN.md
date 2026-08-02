@@ -72,6 +72,11 @@
 - **一键合并** —— 将就绪的产出合并回主项目
 - **过期警告** —— 自动检测过期的协议文件
 
+- **Agent Engine** - 在项目中启动 `claude-code`（或其他引擎：codex, aider, gemini, cline, goose, agy, generic_cli）
+  - **实时状态** - 运行/退出状态、CPU、每个项目的耗时
+  - **输出控制台** - 缓冲的代理输出（默认 5000 行）、stdin 输入
+  - **Kill / stop all** - 终止进程和全局停止
+  - **单实例保护** - 仅一个应用实例；第二次启动重新显示窗口
 ### 🎮 交互控制
 - **文件查看器** —— 查看与编辑 STATE.md、BOARD.md、LOG.md
   - 源码模式（可编辑） + 阅读模式（已渲染）
@@ -83,7 +88,7 @@
 
 ### ⌨️ 快捷键与窗口
 - **显示/隐藏** —— `Ctrl+Alt+X`（可配置）
-- **吸附窗口角落** —— `Ctrl+Q` 依次在 左上 → 右上 → 左下 → 右下 切换
+- **贴靠角落** - `Alt+F14` 循环：左上 → 右上 → 左下 → 右下
 - **缩放** —— `Ctrl+鼠标滚轮`，`Ctrl` + `+` / `-`
 - **系统托盘** —— 最小化至托盘，支持静默启动
 - **窗口置顶** 切换
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | 脚本 | 运行行为 |
 |---|---|
-| `run.vbs` | 静默后台运行（仅托盘图标） |
-| `run.bat` | 窗口运行（保留控制台） |
+| `run.vbs` | 隐藏（仅托盘），静默 |
+| `run.bat` | 启动到托盘；仅一次性 venv/依赖设置时显示控制台 |
 均会自动创建 `.venv` 并安装依赖。
 
 </td>
@@ -150,7 +155,7 @@ saipenview
 | 操作 | 方式 |
 |---|---|
 | **显示 / 隐藏** | `Ctrl+Alt+X` 或 `Alt+F15`（均可配置） |
-| **窗口角落吸附** | `Ctrl+Q` —— 循环吸附：左上 → 右上 → 左下 → 右下 |
+| **贴靠角落** | `Alt+F14` - 循环：左上 → 右上 → 左下 → 右下 |
 | **紧急强退** | `Ctrl+Shift+Alt+Q` —— 强制退出程序进程 |
 | **放大 / 缩小** | `Ctrl+鼠标滚轮` 或 `Ctrl` + `+` / `-` |
 | **重置缩放** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW 是基于 **SAIPEN 协议** 开发的配套工具。SAIPEN 协议是�
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`、`MARKHUNT`、`TRANSLATE`、`PREPARE` 也存在 - 完整词汇表和状态转移表位于 `saipenview/protocol.py`（`BLOCKED` 可从大多数阶段到达）。
 每个 SAIPEN 项目都会在三个规范文件中存储其状态：
 
 | 文件 | 用途 |
@@ -229,7 +235,7 @@ INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
 saipenview/_data/config.json
 ```
 
-关键默认值：
+主要默认值（节选 - 完整 `DEFAULTS` 字典位于 `saipenview/config.py`）：
 
 ```json
 {
@@ -241,16 +247,22 @@ saipenview/_data/config.json
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 设置 `scan_roots: null` 将自动检测所有本地磁盘。  
 设置为路径列表（例如 `["V:\\", "D:\\projects"]`）可限定扫描范围。  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` 驱动 Agent Engine（见功能）。  
 所有设置项均可在应用内的 **设置** 弹窗中进行配置。
 
 <br>
@@ -261,8 +273,8 @@ saipenview/_data/config.json
 
 ```
 saipenview/
-├── app.py              程序入口 —— 托盘、快捷键、窗口、API 绑定
-├── api.py              面向 JS 的 pywebview 桥接层 (30+ 个方法)
+├── app.py              入口接线 - 托盘、热键、窗口、api、单实例保护
+├── api.py              面向 JS 的 pywebview 桥接（66 个公共方法）
 ├── scanner.py          磁盘遍历 + 后台重新扫描循环
 ├── parser.py           STATE.md / BOARD.md / LOG.md 解析器
 ├── textio.py           统一的 .saipen/ 文件读取器 —— 处理 BOM、UTF-16、cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             pystray 系统托盘图标与菜单
 ├── hotkey.py           全局快捷键注册 (keyboard 库)
 ├── autostart.py        Windows 注册表开机自启管理
-├── zone_picker.py      Ctrl+Q 窗口角落吸附覆盖层 (tkinter)
+├── zone_picker.py      Alt+F14 贴靠角落覆盖层（tkinter）
+├── events.py           进程内事件总线（EventBus）
+├── guard.py            单实例锁 + 显示请求交接
+├── git_diff.py         用于代理操作的工作树 diff / commit / revert
+├── runtime.py          Agent Engine - 已启动代理的进程管理器
+├── watcher.py          监视 .saipen/ 文件的 Watchdog 文件监视器
+├── engines/            Agent Engine - 支持的 CLI 引擎（claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       pywebview 窗口 —— 显示/隐藏/切换/吸附
 │   └── static/
 │       ├── index.html
 │       ├── style.css   复古暗金 Win95 主题
-│       └── app.js      前端逻辑 (~2600 行)
+│       └── app.js      前端逻辑（约 3300 行）
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        README 截图

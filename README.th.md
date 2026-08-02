@@ -72,6 +72,11 @@
 - **รวบรวมในคลิกเดียว** — พับรวมรายการที่พร้อมเข้าสู่โปรเจกต์หลัก
 - **คำเตือนไฟล์เก่า** — ตรวจจับไฟล์โปรโตคอลที่ล้าสมัย
 
+- **Agent Engine** - เปิด `claude-code` (หรือเอนจินอื่น: codex, aider, gemini, cline, goose, agy, generic_cli) ในโปรเจกต์
+  - **สถานะสด** - สถานะกำลังทำงาน/ออก, CPU, เวลาที่ใช้ต่อโปรเจกต์
+  - **คอนโซลเอาต์พุต** - เอาต์พุตเอเจนต์แบบบัฟเฟอร์ (ค่าเริ่มต้น 5000 บรรทัด), อินพุต stdin
+  - **Kill / stop all** - ฆ่ากระบวนการและหยุดทั้งหมด
+  - **ป้องกันหลายอินสแตนซ์** - แอปหนึ่งอินสแตนซ์เท่านั้น; การเปิดครั้งที่สองแสดงหน้าต่างอีกครั้ง
 ### 🎮 การโต้ตอบ (Interaction)
 - **ตัวดูไฟล์** — อ่านและแก้ไข STATE.md, BOARD.md, LOG.md
   - โหมดโค้ดต้นฉบับ (แก้ไขได้) + โหมดการอ่าน (แสดงผลแล้ว)
@@ -83,7 +88,7 @@
 
 ### ⌨️ คีย์ลัดและหน้าต่าง (Hotkeys & Window)
 - **แสดง/ซ่อน** — `Ctrl+Alt+X` (ตั้งค่าได้)
-- **ยึดมุมหน้าต่าง** — `Ctrl+Q` วนซ้ายบน → ขวาบน → ซ้ายล่าง → ขวาล่าง
+- **ติดมุม** - `Alt+F14` สลับ บน-ซ้าย → บน-ขวา → ล่าง-ซ้าย → ล่าง-ขวา
 - **ย่อ/ขยาย (Zoom)** — `Ctrl+MouseWheel`, `Ctrl+`+`/`-`
 - **ถาดระบบ (System tray)** — ย่อลงถาดระบบ, เริ่มต้นแบบซ่อน
 - **อยู่บนสุดเสมอ (Always-on-top)** — สลับโหมด
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | สคริปต์ | พฤติกรรม |
 |---|---|
-| `run.vbs` | แบบซ่อน (เฉพาะในถาดระบบ) |
-| `run.bat` | แบบแสดง (เปิดคอนโซล) |
+| `run.vbs` | ซ่อน (ถาดเท่านั้น), เงียบ |
+| `run.bat` | เปิดไปถาด; คอนโซลมองเห็นเฉพาะระหว่างตั้งค่า venv/ดีเพนเดนซีครั้งเดียว |
 ทั้งคู่จะสร้าง `.venv` อัตโนมัติและติดตั้งไลบรารีที่จำเป็น
 
 </td>
@@ -150,7 +155,7 @@ saipenview
 | การดำเนินการ | วิธีการ |
 |---|---|
 | **แสดง / ซ่อน** | `Ctrl+Alt+X` หรือ `Alt+F15` (ตั้งค่าได้ทั้งคู่) |
-| **ยึดมุม** | `Ctrl+Q` — วนซ้ายบน → ขวาบน → ซ้ายล่าง → ขวาล่าง |
+| **ติดมุม** | `Alt+F14` - สลับ บน-ซ้าย → บน-ขวา → ล่าง-ซ้าย → ล่าง-ขวา |
 | **ปุ่มบังคับปิด** | `Ctrl+Shift+Alt+Q` — บังคับปิดโปรเซสทันที |
 | **ขยาย / ย่อ** | `Ctrl+MouseWheel` หรือ `Ctrl` + `+` / `-` |
 | **รีเซ็ตการขยาย** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW เป็นเครื่องมือคู่หูสำหร
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` ก็มีเช่นกัน - คำศัพท์ทั้งหมดและตารางเปลี่ยนสถานะอยู่ใน `saipenview/protocol.py` (`BLOCKED` เข้าถึงได้จากเกือบทุกเฟส)
 แต่ละโปรเจกต์ SAIPEN จะจัดเก็บสถานะในไฟล์หลักสามไฟล์:
 
 | ไฟล์ | วัตถุประสงค์ |
@@ -229,7 +235,7 @@ INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
 saipenview/_data/config.json
 ```
 
-ค่าเริ่มต้นสำคัญ:
+ค่าเริ่มต้นหลัก (ย่อ - พจนานุกรม `DEFAULTS` เต็มอยู่ใน `saipenview/config.py`):
 
 ```json
 {
@@ -241,16 +247,22 @@ saipenview/_data/config.json
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 ตั้งค่า `scan_roots: null` เพื่อตรวจจับไดรฟ์ทั้งหมดในเครื่องโดยอัตโนมัติ  
 ตั้งค่าเป็นรายการพาธ (เช่น `["V:\\", "D:\\projects"]`) เพื่อจำกัดการสแกน  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` ขับเคลื่อน Agent Engine (ดูคุณสมบัติ)  
 การตั้งค่าทั้งหมดสามารถกำหนดค่าผ่านหน้าต่าง **การตั้งค่า (Settings)** ในแอปได้เช่นกัน
 
 <br>
@@ -261,8 +273,8 @@ saipenview/_data/config.json
 
 ```
 saipenview/
-├── app.py              จุดเชื่อมต่อเริ่มต้น — ถาดระบบ, คีย์ลัด, หน้าต่าง, api
-├── api.py              บริดจ์ pywebview ที่ฝั่ง JS เรียกใช้งาน (30+ เมธอด)
+├── app.py              การเชื่อมต่อจุดเข้า - ถาด, ปุ่มลัด, หน้าต่าง, api, ป้องกันหลายอินสแตนซ์
+├── api.py              บริดจ์ pywebview สำหรับ JS (66 เมธอดสาธารณะ)
 ├── scanner.py          การวนสแกนไดรฟ์ + ลูปสแกนซ้ำในเบื้องหลัง
 ├── parser.py           การแยกวิเคราะห์ STATE.md / BOARD.md / LOG.md
 ├── textio.py           ตัวอ่านหนึ่งเดียวสำหรับทุกไฟล์ .saipen/ — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             ไอคอนถาดระบบ pystray + เมนู
 ├── hotkey.py           การลงทะเบียนคีย์ลัดระดับโกลบอล (ไลบรารี keyboard)
 ├── autostart.py        การจัดการการเริ่มทำงานอัตโนมัติของ Windows Registry
-├── zone_picker.py      เลเยอร์ยึดมุมหน้าต่าง Ctrl+Q (tkinter)
+├── zone_picker.py      โอเวอร์เลย์ติดมุม Alt+F14 (tkinter)
+├── events.py           บัสเหตุการณ์ภายในกระบวนการ (EventBus)
+├── guard.py            ล็อกอินสแตนซ์เดียว + ส่งต่อคำขอแสดง
+├── git_diff.py         diff / commit / revert ทรีทำงานสำหรับการกระทำของเอเจนต์
+├── runtime.py          Agent Engine - ผู้จัดการกระบวนการของเอเจนต์ที่เปิดอยู่
+├── watcher.py          ตัวเฝ้าดูไฟล์ Watchdog สำหรับไฟล์ .saipen/
+├── engines/            Agent Engine - เอนจิน CLI ที่รองรับ (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       หน้าต่าง pywebview — แสดง/ซ่อน/สลับ/ยึดมุม
 │   └── static/
 │       ├── index.html
 │       ├── style.css   ธีม Win95 สีทองเข้มสไตล์วินเทจ
-│       └── app.js      ลอจิกฝั่งส่วนหน้า (~2600 บรรทัด)
+│       └── app.js      ลอจิกฟรอนต์เอนด์ (~3300 บรรทัด)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        ภาพหน้าจอ README

@@ -72,6 +72,11 @@
 - **Outbox counts** — ready/blocked/draft/reviewed at a glance
 - **One-click collect** — fold ready entries into main project
 - **Stale warning** — detects out-of-date protocol files
+- **Agent Engine** — launch `claude-code` (or other engines: codex, aider, gemini, cline, goose, agy, generic_cli) in a project
+  - **Live status** — running/exit state, CPU, elapsed time per project
+  - **Output console** — buffered agent output (default 5000 lines), stdin input
+  - **Kill / stop all** — per-project kill and global stop
+  - **Single-instance guard** — only one app instance; second launch re-shows window
 
 ### 🎮 Interaction
 - **File viewer** — read & edit STATE.md, BOARD.md, LOG.md
@@ -84,7 +89,7 @@
 
 ### ⌨️ Hotkeys & Window
 - **Show/Hide** — `Ctrl+Alt+X` (configurable)
-- **Snap corners** — `Ctrl+Q` cycles TL → TR → BL → BR
+- **Snap corners** — `Alt+F14` cycles TL → TR → BL → BR
 - **Zoom** — `Ctrl+MouseWheel`, `Ctrl+`+`/`-`
 - **System tray** — minimize to tray, start hidden
 - **Always-on-top** toggle
@@ -125,8 +130,8 @@ python -m venv .venv
 
 | Script | Behavior |
 |---|---|
-| `run.vbs` | Hidden (tray-only) |
-| `run.bat` | Visible (console open) |
+| `run.vbs` | Hidden (tray-only), silent |
+| `run.bat` | Tray-only launch; console visible only during one-time venv/deps bootstrap |
 Both auto-create `.venv` & install deps.
 
 </td>
@@ -151,7 +156,7 @@ Coming soon ✨
 | Action | How |
 |---|---|
 | **Show / Hide** | `Ctrl+Alt+X` or `Alt+F15` (both configurable) |
-| **Snap corner** | `Ctrl+Q` — cycles Top-Left → Top-Right → Bottom-Left → Bottom-Right |
+| **Snap corner** | `Alt+F14` — cycles Top-Left → Top-Right → Bottom-Left → Bottom-Right |
 | **Kill switch** | `Ctrl+Shift+Alt+Q` — force-quit the process |
 | **Zoom in / out** | `Ctrl+MouseWheel` or `Ctrl` + `+` / `-` |
 | **Zoom reset** | `Ctrl+0` |
@@ -186,9 +191,10 @@ SAIPENVIEW is a companion for projects using the **SAIPEN Protocol** — a state
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` also exist — the full vocabulary and transition table live in `saipenview/protocol.py` (with `BLOCKED` reachable from most phases).
 
 Each SAIPEN project stores its state in three canonical files:
 
@@ -238,7 +244,7 @@ Config is portable — stored next to the app, not `%APPDATA%`:
 saipenview/_data/config.json
 ```
 
-Key defaults:
+Key defaults (abridged — the full `DEFAULTS` dict lives in `saipenview/config.py`):
 
 ```json
 {
@@ -250,16 +256,22 @@ Key defaults:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Set `scan_roots: null` to autodetect all local drives.  
 Set to a list of paths (e.g. `["V:\\", "D:\\projects"]`) to limit scanning.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` drive the Agent Engine (see Features).  
 All settings are also configurable through the **Settings** modal in the app.
 
 <br>
@@ -270,8 +282,8 @@ All settings are also configurable through the **Settings** modal in the app.
 
 ```
 saipenview/
-├── app.py              Entry wiring — tray, hotkey, window, api
-├── api.py              JS-facing pywebview bridge (30+ methods)
+├── app.py              Entry wiring — tray, hotkey, window, api, single-instance guard
+├── api.py              JS-facing pywebview bridge (66 public methods)
 ├── scanner.py          Drive walk + background rescan loop
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsing
 ├── textio.py           One reader for every .saipen/ file — BOM, UTF-16, cp1251
@@ -281,13 +293,20 @@ saipenview/
 ├── tray.py             pystray system-tray icon + menu
 ├── hotkey.py           Global hotkey registration (keyboard lib)
 ├── autostart.py        Windows Registry autostart management
-├── zone_picker.py      Ctrl+Q corner-snap overlay (tkinter)
+├── zone_picker.py      Alt+F14 corner-snap overlay (tkinter)
+├── events.py           In-process event bus (EventBus)
+├── guard.py            Single-instance lock + show-request handoff
+├── git_diff.py         Working-tree diff / commit / revert for agent actions
+├── runtime.py          Agent Engine — process manager for launched agents
+├── watcher.py          Watchdog file watcher on .saipen/ files
+├── engines/            Agent Engine — supported CLI engines (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       pywebview window — show/hide/toggle/snap
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Vintage dark-golden Win95 theme
-│       └── app.js      Frontend logic (~2600 lines)
+│       └── app.js      Frontend logic (~3300 lines)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        README screenshots

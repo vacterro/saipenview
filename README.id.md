@@ -72,6 +72,11 @@
 - **Kumpulkan satu-klik** — gabungkan entri siap ke proyek utama
 - **Peringatan kadaluwarsa** — mendeteksi berkas protokol yang usang
 
+- **Agent Engine** - jalankan `claude-code` (atau mesin lain: codex, aider, gemini, cline, goose, agy, generic_cli) di proyek
+  - **Status langsung** - status berjalan/keluar, CPU, waktu berjalan per proyek
+  - **Konsol output** - output agen berbuffer (default 5000 baris), input stdin
+  - **Kill / stop all** - bunuh proses dan hentikan global
+  - **Proteksi instansi tunggal** - hanya satu instansi aplikasi; peluncuran kedua menampilkan ulang jendela
 ### 🎮 Interaksi
 - **Penampil berkas** — baca & sunting STATE.md, BOARD.md, LOG.md
   - Mode Sumber (dapat disunting) + Mode Pembaca (dirender)
@@ -83,7 +88,7 @@
 
 ### ⌨️ Tombol Pintas & Jendela
 - **Tampilkan/Sembunyikan** — `Ctrl+Alt+X` (dapat dikonfigurasi)
-- **Jepret sudut** — `Ctrl+Q` berganti Kiri Atas → Kanan Atas → Kiri Bawah → Kanan Bawah
+- **Jepret sudut** - `Alt+F14` berganti Kiri-Atas → Kanan-Atas → Kiri-Bawah → Kanan-Bawah
 - **Perbesar/Perkecil** — `Ctrl+RodaTetikus`, `Ctrl+`+`/`-`
 - **Baki sistem** — minimalkan ke baki, mulai tersembunyi
 - Sakelar **Selalu di atas**
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | Skrip | Perilaku |
 |---|---|
-| `run.vbs` | Tersembunyi (hanya baki) |
-| `run.bat` | Terlihat (konsol terbuka) |
+| `run.vbs` | Tersembunyi (hanya baki), senyap |
+| `run.bat` | Luncur ke baki; konsol terlihat hanya saat pengaturan venv/dependensi sekali saja |
 Keduanya membuat `.venv` secara otomatis & menginstal dependensi.
 
 </td>
@@ -150,7 +155,7 @@ Segera hadir ✨
 | Tindakan | Cara |
 |---|---|
 | **Tampilkan / Sembunyikan** | `Ctrl+Alt+X` atau `Alt+F15` (keduanya dapat dikonfigurasi) |
-| **Jepret sudut** | `Ctrl+Q` — berganti Kiri-Atas → Kanan-Atas → Kiri-Bawah → Kanan-Bawah |
+| **Jepret sudut** | `Alt+F14` - berganti Kiri-Atas → Kanan-Atas → Kiri-Bawah → Kanan-Bawah |
 | **Sakelar darurat** | `Ctrl+Shift+Alt+Q` — menghentikan paksa proses |
 | **Perbesar / Perkecil** | `Ctrl+RodaTetikus` atau `Ctrl` + `+` / `-` |
 | **Reset zoom** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW adalah pendamping untuk proyek yang menggunakan **Protokol SAIPEN** �
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` juga ada - kosakata lengkap dan tabel transisi ada di `saipenview/protocol.py` (`BLOCKED` dapat dicapai dari sebagian besar fase).
 Setiap proyek SAIPEN menyimpan statusnya dalam tiga berkas kanonis:
 
 | Berkas | Tujuan |
@@ -229,7 +235,7 @@ Konfigurasi bersifat portabel — disimpan di samping aplikasi, bukan di `%APPDA
 saipenview/_data/config.json
 ```
 
-Bawaan utama:
+Nilai default utama (diringkas - kamus lengkap `DEFAULTS` ada di `saipenview/config.py`):
 
 ```json
 {
@@ -241,16 +247,22 @@ Bawaan utama:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Atur `scan_roots: null` untuk mendeteksi otomatis semua drive lokal.  
 Atur ke daftar jalur (misalnya `["V:\\", "D:\\projects"]`) untuk membatasi pemindaian.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` menggerakkan Agent Engine (lihat Fitur).  
 Semua pengaturan juga dapat dikonfigurasi melalui modal **Pengaturan** di aplikasi.
 
 <br>
@@ -261,8 +273,8 @@ Semua pengaturan juga dapat dikonfigurasi melalui modal **Pengaturan** di aplika
 
 ```
 saipenview/
-├── app.py              Pengabelan entri — baki, tombol pintas, jendela, api
-├── api.py              Jembatan pywebview yang menghadap JS (30+ metode)
+├── app.py              Kabel masuk - baki, hotkey, jendela, api, proteksi instansi tunggal
+├── api.py              Jembatan pywebview ke JS (66 metode publik)
 ├── scanner.py          Penelusuran drive + ikal pindai ulang latar belakang
 ├── parser.py           Pemrosesan STATE.md / BOARD.md / LOG.md
 ├── textio.py           Satu pembaca untuk setiap berkas .saipen/ — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             Ikon baki sistem pystray + menu
 ├── hotkey.py           Pendaftaran tombol pintas global (pustaka keyboard)
 ├── autostart.py        Manajemen mulai otomatis Windows Registry
-├── zone_picker.py      Hamparan penjepretan sudut Ctrl+Q (tkinter)
+├── zone_picker.py      Hamparan penjepretan sudut Alt+F14 (tkinter)
+├── events.py           Bus peristiwa dalam proses (EventBus)
+├── guard.py            Kunci instansi tunggal + penyerahan permintaan tampil
+├── git_diff.py         Diff / commit / revert pohon kerja untuk tindakan agen
+├── runtime.py          Agent Engine - manajer proses agen yang diluncurkan
+├── watcher.py          Pengawas file Watchdog pada file .saipen/
+├── engines/            Agent Engine - mesin CLI didukung (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       Jendela pywebview — tampilkan/sembunyikan/sakelar/jepret
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Tema Win95 emas-gelap vintage
-│       └── app.js      Logika frontend (~2600 baris)
+│       └── app.js      Logika frontend (~3300 baris)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        Tangkapan layar README

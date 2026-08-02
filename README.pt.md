@@ -72,6 +72,11 @@
 - **Coleta num clique** — incorpora entradas prontas no projeto principal
 - **Aviso de obsolescência** — deteta ficheiros de protocolo desatualizados
 
+- **Agent Engine** - iniciar `claude-code` (ou outros motores: codex, aider, gemini, cline, goose, agy, generic_cli) em um projeto
+  - **Status ao vivo** - estado em execução/saída, CPU, tempo decorrido por projeto
+  - **Console de saída** - saída do agente em buffer (padrão 5000 linhas), entrada stdin
+  - **Kill / stop all** - matar processo e parada global
+  - **Proteção de instância única** - apenas uma instância do app; segundo início reexibe a janela
 ### 🎮 Interação
 - **Visualizador de ficheiros** — ler e editar STATE.md, BOARD.md, LOG.md
   - Modo Código Fonte (editável) + Modo Leitor (renderizado)
@@ -83,7 +88,7 @@
 
 ### ⌨️ Atalhos e Janela
 - **Mostrar/Ocultar** — `Ctrl+Alt+X` (configurável)
-- **Fixar nos cantos** — `Ctrl+Q` alterna SE → SD → IE → ID
+- **Fixar nos cantos** - `Alt+F14` alterna SE → SD → IE → ID
 - **Zoom** — `Ctrl+RodaDoRato`, `Ctrl`+`+`/`-`
 - **Bandeja do sistema** — minimizar para a bandeja, iniciar oculto
 - Alternar **Sempre no topo**
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | Script | Comportamento |
 |---|---|
-| `run.vbs` | Oculto (apenas bandeja) |
-| `run.bat` | Visível (consola aberta) |
+| `run.vbs` | Oculto (somente bandeja), silencioso |
+| `run.bat` | Início na bandeja; console visível apenas durante a configuração única de venv/dependências |
 Ambos criam automaticamente o `.venv` e instalam dependências.
 
 </td>
@@ -150,7 +155,7 @@ Em breve ✨
 | Ação | Como |
 |---|---|
 | **Mostrar / Ocultar** | `Ctrl+Alt+X` ou `Alt+F15` (ambos configuráveis) |
-| **Fixar no canto** | `Ctrl+Q` — alterna Sup. Esquerdo → Sup. Direito → Inf. Esquerdo → Inf. Direito |
+| **Fixar no canto** | `Alt+F14` - alterna Sup. Esquerdo → Sup. Direito → Inf. Esquerdo → Inf. Direito |
 | **Interrupção de emergência** | `Ctrl+Shift+Alt+Q` — forçar o encerramento do processo |
 | **Aumentar / reduzir zoom** | `Ctrl+RodaDoRato` ou `Ctrl` + `+` / `-` |
 | **Redefinir zoom** | `Ctrl+0` |
@@ -185,10 +190,11 @@ O SAIPENVIEW é um complemento para projetos que utilizam o **Protocolo SAIPEN**
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` também existem - o vocabulário completo e a tabela de transições vivem em `saipenview/protocol.py` (`BLOCKED` é alcançável pela maioria das fases).
 Cada projeto SAIPEN guarda o seu estado em três ficheiros canónicos:
 
 | Ficheiro | Finalidade |
@@ -229,7 +235,7 @@ A configuração é portátil — guardada junto à aplicação, não em `%APPDA
 saipenview/_data/config.json
 ```
 
-Valores padrão principais:
+Valores padrão principais (abreviado - o dicionário completo `DEFAULTS` está em `saipenview/config.py`):
 
 ```json
 {
@@ -241,16 +247,22 @@ Valores padrão principais:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Defina `scan_roots: null` para detetar automaticamente todas as unidades locais.  
 Defina como uma lista de caminhos (ex: `["V:\\", "D:\\projects"]`) para limitar a verificação.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` dirigem o Agent Engine (ver Recursos).  
 Todas as definições também são configuráveis através da janela de **Definições** na aplicação.
 
 <br>
@@ -261,8 +273,8 @@ Todas as definições também são configuráveis através da janela de **Defini
 
 ```
 saipenview/
-├── app.py              Ligação de entrada — bandeja, atalhos, janela, api
-├── api.py              Ponte pywebview para JS (mais de 30 métodos)
+├── app.py              Cabeamento de entrada - bandeja, hotkey, janela, api, proteção de instância única
+├── api.py              Ponte pywebview voltada a JS (66 métodos públicos)
 ├── scanner.py          Varredura de unidades + ciclo de reverificação em segundo plano
 ├── parser.py           Análise de STATE.md / BOARD.md / LOG.md
 ├── textio.py           Um leitor para cada ficheiro .saipen/ — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             Ícone de bandeja do sistema pystray + menu
 ├── hotkey.py           Registo global de atalhos (biblioteca keyboard)
 ├── autostart.py        Gestão de início automático no Registo do Windows
-├── zone_picker.py      Sobreposição de fixação no canto com Ctrl+Q (tkinter)
+├── zone_picker.py      Sobreposição de fixação no canto Alt+F14 (tkinter)
+├── events.py           Barramento de eventos no processo (EventBus)
+├── guard.py            Trava de instância única + entrega de solicitação de exibição
+├── git_diff.py         Diff / commit / revert da árvore de trabalho para ações de agentes
+├── runtime.py          Agent Engine - gerenciador de processos dos agentes iniciados
+├── watcher.py          Vigia de arquivos Watchdog sobre arquivos .saipen/
+├── engines/            Agent Engine - motores CLI suportados (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       Janela pywebview — mostrar/ocultar/alternar/fixar
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Tema vintage Win95 escuro-dourado
-│       └── app.js      Lógica de frontend (~2600 linhas)
+│       └── app.js      Lógica do frontend (~3300 linhas)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        Capturas de ecrã do README

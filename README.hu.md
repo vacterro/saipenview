@@ -72,6 +72,11 @@
 - **Egykattintásos gyűjtés** — kész elemek bevonása a főprojektbe
 - **Elévülési figyelmeztetés** — felismeri az elavult protokollfájlokat
 
+- **Agent Engine** - `claude-code` indítása (vagy más motorok: codex, aider, gemini, cline, goose, agy, generic_cli) egy projektben
+  - **Élő állapot** - futó/kilépett állapot, CPU, eltelt idő projektenként
+  - **Kimeneti konzol** - pufferelt ügynökkimenet (alapértelmezés 5000 sor), stdin bemenet
+  - **Kill / stop all** - folyamat leállítása és globális megállítás
+  - **Egypéldányos védelem** - csak egy alkalmazáspéldány; a második indítás újra megmutatja az ablakot
 ### 🎮 Interakció
 - **Fájlmegjelenítő** — STATE.md, BOARD.md, LOG.md olvasása és szerkesztése
   - Forrás mód (szerkeszthető) + Olvasó mód (renderelt)
@@ -83,7 +88,7 @@
 
 ### ⌨️ Gyorsbillentyűk és Ablak
 - **Megjelenítés/Elrejtés** — `Ctrl+Alt+X` (beállítható)
-- **Sarokhoz igazítás** — `Ctrl+Q` léptet: BF → JF → BA → JA
+- **Sarokhoz igazítás** - `Alt+F14` leptet: BF → JF → BA → JA
 - **Nagyítás** — `Ctrl+Egérgörgő`, `Ctrl+`+`/`-`
 - **Rendszertálca** — kicsinyítés a tálcára, indítás rejtve
 - **Mindig felül** kapcsoló
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | Szkript | Viselkedés |
 |---|---|
-| `run.vbs` | Rejtett (csak tálca) |
-| `run.bat` | Látható (konzol nyitva) |
+| `run.vbs` | Rejtett (csak tálca), csendes |
+| `run.bat` | Indítás a tálcára; konzol csak az egyszeri venv/függőség beállításkor látható |
 Mindkettő automatikusan létrehozza a `.venv`-et és telepíti a függőségeket.
 
 </td>
@@ -150,7 +155,7 @@ Hamarosan ✨
 | Művelet | Hogyan |
 |---|---|
 | **Megjelenítés / Elrejtés** | `Ctrl+Alt+X` vagy `Alt+F15` (mindkettő beállítható) |
-| **Sarokhoz igazítás** | `Ctrl+Q` — léptet: Bal-Fent → Jobb-Fent → Bal-Lent → Jobb-Lent |
+| **Sarokhoz igazítás** | `Alt+F14` - leptet: Bal-Fent → Jobb-Fent → Bal-Lent → Jobb-Lent |
 | **Kényszerített kilépés** | `Ctrl+Shift+Alt+Q` — a folyamat azonnali leállítása |
 | **Nagyítás / Kicsinyítés** | `Ctrl+Egérgörgő` vagy `Ctrl` + `+` / `-` |
 | **Nagyítás alaphelyzetbe** | `Ctrl+0` |
@@ -185,10 +190,11 @@ A SAIPENVIEW a **SAIPEN Protokollt** használó projektek kísérője — egy á
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+Az `ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` is létezik - a teljes szókincs és átmenettábla a `saipenview/protocol.py`-ben van (`BLOCKED` a legtöbb fázisból elérhető).
 Minden SAIPEN projekt három kanonikus fájlban tárolja az állapotát:
 
 | Fájl | Cél |
@@ -229,7 +235,7 @@ A konfiguráció hordozható — az alkalmazás mellett van tárolva, nem a `%AP
 saipenview/_data/config.json
 ```
 
-Főbb alapértékek:
+Fő alapértelmezett értékek (rövidítve - a teljes `DEFAULTS` szótár a `saipenview/config.py`-ben van):
 
 ```json
 {
@@ -241,16 +247,22 @@ Főbb alapértékek:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Állítsd a `scan_roots: null` értéket a helyi meghajtók automatikus felderítéséhez.  
 Állítsd útvonalak listájára (pl. `["V:\\", "D:\\projects"]`) a szkennelés korlátozásához.  
+A `default_engine` / `engine_overrides` / `agent_output_buffer_size` vezérli az Agent Engine-t (lásd Funkciók).  
 Minden beállítás módosítható az alkalmazás **Beállítások** ablakában is.
 
 <br>
@@ -261,8 +273,8 @@ Minden beállítás módosítható az alkalmazás **Beállítások** ablakában 
 
 ```
 saipenview/
-├── app.py              Belépési pont — tálca, gyorsbillentyű, ablak, api
-├── api.py              JS felé néző pywebview híd (30+ metódus)
+├── app.py              Belépési bekötés - tálca, gyorsbillentyű, ablak, api, egypéldányos védelem
+├── api.py              JS-felőli pywebview híd (66 publikus metódus)
 ├── scanner.py          Meghajtó bejárás + háttérbeli újraszkennelési ciklus
 ├── parser.py           STATE.md / BOARD.md / LOG.md feldolgozás
 ├── textio.py           Egységes olvasó minden .saipen/ fájlhoz — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             pystray rendszertálca ikon + menü
 ├── hotkey.py           Globális gyorsbillentyű regisztráció (keyboard lib)
 ├── autostart.py        Windows Registry automatikus indítás kezelése
-├── zone_picker.py      Ctrl+Q sarokhoz igazítás overlay (tkinter)
+├── zone_picker.py      Alt+F14 sarokhoz igazítás overlay (tkinter)
+├── events.py           Folyamaton belüli eseménybusz (EventBus)
+├── guard.py            Egypéldányos zár + megjelenítési kérelem átadása
+├── git_diff.py         Munkafa diff / commit / revert ügynökműveletekhez
+├── runtime.py          Agent Engine - indított ügynökök folyamatkezelője
+├── watcher.py          Watchdog fájlfigyelő a .saipen/ fájlokra
+├── engines/            Agent Engine - támogatott CLI-motorok (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       pywebview ablak — megjelenítés/elrejtés/kapcsolás/igazítás
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Klasszikus sötét-arany Win95 téma
-│       └── app.js      Frontend logika (~2600 sor)
+│       └── app.js      Frontend logika (~3300 sor)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        README képernyőképek

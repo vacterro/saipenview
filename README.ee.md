@@ -1,24 +1,24 @@
 ﻿<div align="right">
-  <a href="README.md">EN</a> | <a href="README.ru.md">RU</a> | рџЊЌ <strong>EE</strong> | <a href="README.ded.md">Р”Р•Р”</a> | <a href="README.ja.md">JA</a>
+  🌍 <a href="README.md">EN</a> | <a href="README.ru.md">RU</a> | <strong>EE</strong> | <a href="README.ded.md">ДЕД</a> | <a href="README.ja.md">JA</a>
 </div>
 
 <div align="center">
   <img src="screenshots/saipen_icon.png" alt="SAIPENVIEW" width="120" height="120">
   <h1 align="center">SAIPENVIEW</h1>
   <p align="center">
-    <strong>TГ¶Г¶laua salvevaatur iga SAIPEN projekti jaoks sinu masinas</strong>
+    <strong>Töölaua salvevaatur igale SAIPEN-projektile sinu masinas</strong>
     <br>
-    Tuvastab automaatselt <code>.saipen/</code> projektid kohalikel ketastel вЂ” reaalajas faas, Гјlesanded, blokeerijad, giti staatus, piletid ja alam-agendid.
+    Leiab automaatselt <code>.saipen/</code>-projektid kohalikelt ketastelt — elus faas, ülesanne, blokeerija, git-seisund, piletid ja alamagentid.
     <br>
-    Гњks vintage tumekuldne Win95-stiilis juhtpaneel.
+    Üks vintage tume-kuldne Win95-temaatiline armatuurlaud.
   </p>
   <p>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="Litsents"></a>
-    <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platvorm"></a>
-    <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="VГ¤ljalase"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
+    <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
+    <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
-    [рџ¤Ќ Toeta arendajat](https://buymeacoffee.com/vacuum34)
+    [🤍 Toeta arendajat](https://buymeacoffee.com/vacuum34)
   </p>
 </div>
 
@@ -28,67 +28,74 @@
 
 <br>
 
-## вњЁ Esmapilgul
+## ✨ Ühel pilgul
 
 <p align="center">
   <img src="screenshots/dashboard.png" alt="SAIPENVIEW armatuurlaua ekraanipilt" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
   <br>
-  <em>Iga SAIPEN projekt, alam-agent, pilet ja git staatus вЂ” kГµik Гјhes vaates.</em>
+  <em>Iga SAIPEN-projekt, alamagent, pilet ja git-seisund — kõik ühes vaates.</em>
 </p>
 
 <br>
 
 ---
 
-## рџљЂ Funktsioonid
+<br>
+
+## 🚀 Funktsioonid
 
 <table>
 <tr>
 <td width="50%">
 
-### рџ”Ќ Avastamine
-- **Automaatne skannimine** kohalikel ketastel `.saipen/` projektide leidmiseks
-- **Kohandatud teed** вЂ” vali kaustad vГµi terved kettad
-- **Nutikas vГ¤listamine** вЂ” jГ¤tab vahele `node_modules`, `.git`, sГјsteemikaustad
-- **Taustaskannimine** вЂ” seadistatav intervall (vaikimisi 300s)
-- **Seotud tГ¶Г¶puud** вЂ” tuvastab git tГ¶Г¶puud (worktrees)
+### 🔍 Avastamine
+- **Automaatskaneerimine** — `.saipen/`-projektide otsing kohalikelt ketastelt
+- **Kohandatud juured** — vali kaustu või terveid kettaid
+- **Nutikad erandid** — `node_modules`, `.git`, süsteemikaustad
+- **Taustaskaneerimine** — seadistatav intervall (vaikimisi 300 s)
+- **Seotud worktree'd** — tuvastab git-worktree'd lihtsaks seadistuseks
 
-### рџ“Љ Juhtpaneel
-- Reaalajas **faas**, **Гјlesanne**, **jГ¤rgmine tegevus**, **blokeerija**
-- **Giti haru** + mustade muudatuste indikaator iga projekti kohta
-- **Filtreeri** faasi jГ¤rgi (KГµik / Aktiivsed / Valmis / Blokeeritud / kohandatud)
-- **Sorteeri** вЂ” Nutikas, Hiljutised, Vanimad, AвЂ“Z, ZвЂ“A
-- **Otsi** вЂ” nime/tee filter + piletite sГјvaotsing
-- **Kinnita** projektid Гјles, **peida** ebaolulised
-- **EsiletГµstu sГ¤hvatus** вЂ” muudetud projektid hГµГµguvad 20s
-- **SoojusvГ¤rvid** вЂ” vanad projektid jahtuvad, vГ¤rsked soojenevad
+### 📊 Armatuurlaud
+- Elus **faas**, **ülesanne**, **järgmine tegevus**, **blokeerija**
+- **Git-haru** + määrdunud-seisundi indikaator projekti kohta
+- **Filter** faasi järgi (Kõik / Aktiivsed / Valmis / Kinni / oma)
+- **Sortimine** — Smart, Recent, Oldest, A–Z, Z–A
+- **Otsing** — nime/juure filter + süvaotsing piletites
+- **Kinnitamine** — projektid üles, **peitmine** — mittevajalikud
+- **Muutuse esiletõstmine** — muutunud projektid helendavad ja kustuvad 20 s jooksul
+- **Kuumusvärvid** — vanad projektid jahedad, värsked soojad
 
 </td>
 <td width="50%">
 
-### рџ§© Alam-agendid
-- **Pesastatud kuva** вЂ” `saiwiki`, `saihunt`, `saitranslate` kuvatakse emaprojekti all
-- **Outboxi loendurid** вЂ” nГ¤itab, mis on valmis, blokeeritud, mustand vГµi Гјlevaadatud
-- **Гњhe klГµpsuga kogumine** вЂ” tГµmba valmis kanded pГµhiprojekti
-- **Vananemise hoiatus** вЂ” tuvastab aegunud protokolli failid
+### 🧩 Alamagendid
+- **Pesastatud kuva** — `saiwiki`, `saihunt`, `saitranslate` taande all
+- **OUTBOX-loendurid** — ready/blocked/draft/reviewed ühe pilguga
+- **Üheklõpiline kogumine** — valmis kirjed pannakse põhiprojekti
+- **Aegumise hoiatus** — märkab aegunud protokollifaile
+- **Agent Engine** — `claude-code` (või muud mootorid: codex, aider, gemini, cline, goose, agy, generic_cli) käivitamine projektis
+  - **Elus staatus** — käivitamise/väljumise olek, CPU, kulunud aeg projekti kohta
+  - **Väljundkonsool** — puhverdatud agendi väljund (vaikimisi 5000 rida), stdin-sisend
+  - **Kill / stop all** — projekti tapmine ja globaalne peatus
+  - **Ühekordne kaitsja** — ainult üks rakenduse eksemplar; teine käivitus näitab akent
 
-### рџЋ® Suhtlus
-- **Failivaatleja** вЂ” loe ja muuda STATE.md, BOARD.md, LOG.md
-  - LГ¤htekoodi reЕѕiim (muudetav) + Lugeja reЕѕiim (renderdatud)
-- **Interaktiivsed piletid** вЂ” Start / Done nupud uuendavad BOARD.md otse
-- **Kiired tegevused** вЂ” kontekstipГµhised `npm run dev`, `cargo test` jne
-- **Kohandatud kГ¤sud** вЂ” kasutaja mГ¤Г¤ratud tegevusnupud
-- **Ahendatavad jaotised** вЂ” projektipГµhiselt salvestatud
-- **Muudetava suurusega kГјlgriba** вЂ” lohista suuruse muutmiseks
+### 🎮 Suhtlus
+- **Failivaatur** — STATE.md, BOARD.md, LOG.md lugemine ja muutmine
+  - Lähterežiim (redigeeritav) + lugemisrežiim (renderdatud)
+- **Interaktiivsed piletid** — Start / Done nupud uuendavad BOARD.md reaalajas
+- **Kiirtegevused** — kontekstuaalsed `npm run dev`, `cargo test` jne.
+- **Kohandatud käsud** — kasutaja määratud tegevusnupud
+- **Ahendatavad sektsioonid** — projekti kaupa, salvestuvad
+- **Reguleeritav külgriba** — lohistamisega
 
-### вЊЁпёЏ Kiirklahvid ja Aken
-- **NГ¤ita/Peida** вЂ” `Ctrl+Alt+X` (seadistatav)
-- **Kinnita nurka** вЂ” `Ctrl+Q` liigub ГњV в†’ ГњP в†’ AV в†’ AP
-- **Suumi** вЂ” `Ctrl+Hiirerullik`, `Ctrl+`+`/`-`
-- **SГјsteemisalv** вЂ” minimeerib salve, kГ¤ivitub peidetult
-- **Alati peal** lГјliti
-- **Automaatne kГ¤ivitus** вЂ” valikuline Windowsi sisselogimisel
-- **Raamita reЕѕiim** вЂ” peida tiitliriba minimalistliku vaate jaoks
+### ⌨️ Kiirklahvid ja aken
+- **Kuva / Peida** — `Ctrl+Alt+X` (seadistatav)
+- **Nurga klõps** — `Alt+F14` tsüklina VP → VN → AN → AP
+- **Suum** — `Ctrl+Hiireratas`, `Ctrl+`+`/`-`
+- **Süsteemsalv** — minimeerimine salve, peidetud käivitus
+- **Alati ees** — lüliti
+- **Automaatkäivitus** — valikuline Windowsi käivitumisel
+- **Raamita režiim** — pealkirjariba peitmine minimaalseks vaateks
 
 </td>
 </tr>
@@ -100,13 +107,13 @@
 
 <br>
 
-## рџЋЇ Kiire alustamine
+## 🎯 Kiirkäivitus
 
 <table>
 <tr>
-<th width="33%">рџђЌ KГ¤ivita lГ¤htekoodist</th>
-<th width="33%">рџ“њ KГ¤ivitusskriptid</th>
-<th width="33%">рџ“¦ Paigalda (tulemas)</th>
+<th width="33%">🐍 Lähtekoodist</th>
+<th width="33%">📜 Käivitusfailid</th>
+<th width="33%">📦 Install (tulevikus)</th>
 </tr>
 <tr>
 <td>
@@ -122,11 +129,11 @@ python -m venv .venv
 </td>
 <td>
 
-| Skript | KГ¤itumine |
+| Fail | Käitumine |
 |---|---|
-| `run.vbs` | Peidetud (ainult salves) |
-| `run.bat` | NГ¤htav (konsool avatud) |
-MГµlemad loovad `.venv` ja paigaldavad sГµltuvused.
+| `run.vbs` | Peidetud (ainult salv), vaikne |
+| `run.bat` | Ainult salv; konsool nähtav vaid ühekordsel venv/sõltuvuste seadistamisel |
+Mõlemad loovad `.venv` ja paigaldavad sõltuvused ise.
 
 </td>
 <td>
@@ -135,7 +142,7 @@ MГµlemad loovad `.venv` ja paigaldavad sГµltuvused.
 pip install saipenview
 saipenview
 ```
-Varsti saadaval вњЁ
+Varsti ✨
 
 </td>
 </tr>
@@ -145,114 +152,247 @@ Varsti saadaval вњЁ
 
 ---
 
-## вЊЁпёЏ Kasutamine
+<br>
+
+## ⌨️ Kasutamine
 
 | Tegevus | Kuidas |
 |---|---|
-| **NГ¤ita / Peida** | `Ctrl+Alt+X` vГµi `Alt+F15` (mГµlemad seadistatavad) |
-| **Nurka kinnitamine** | `Ctrl+Q` вЂ” liigub Гњlemine-Vasak в†’ Гњlemine-Parem в†’ Alumine-Vasak в†’ Alumine-Parem |
-| **HГ¤dapeatamine** | `Ctrl+Shift+Alt+Q` вЂ” sunnib protsessi sulgema |
-| **Suumi sisse / vГ¤lja** | `Ctrl+Hiirerullik` vГµi `Ctrl` + `+` / `-` |
-| **Suumi nullimine** | `Ctrl+0` |
-| **TГ¶Г¶riistariba lГјlitamine** | `Alt+D` вЂ” ahenda/laienda paneeli |
-| **Otsi projekte** | Kirjuta otsingukasti; mГ¤rgi `S` piletite sГјvaotsinguks |
-| **Filtreeri** | RippmenГјГј: KГµik / Aktiivsed / Valmis / Blokeeritud |
-| **Sorteeri** | Nutikas / Hiljutised / Vanimad / AвЂ“Z / ZвЂ“A |
-| **Reskanni** | KlГµpsa `Reskanni` vГµi oota taustataimerit (vaikimisi 300s) |
-| **Sirvi kausta** | KlГµpsa `Sirvi` kausta lisamiseks skannimisalasse |
-| **Seaded** | вљ™ nupp avab seadete akna |
-| **Abi ja viki** | `?` nupp avab sisseehitatud viki |
-| **ParemklГµps projektil** | Kopeeri juurtee, filtreeri faasi jГ¤rgi, ava kaust |
-| **TopeltklГµps jaotisel** | Avab seotud faili (STATE.md, BOARD.md, LOG.md) |
-| **Lohista akent** | Lohista tiitliribast (vГµi ГјkskГµik kust raamita reЕѕiimis) |
+| **Kuva / Peida** | `Ctrl+Alt+X` või `Alt+F15` (mõlemad seadistatavad) |
+| **Nurga klõps** | `Alt+F14` — tsükkel Üles-Vasak → Üles-Parem → Alla-Vasak → Alla-Parem |
+| **Hädasulge** | `Ctrl+Shift+Alt+Q` — protsessi sundlõpetamine |
+| **Suum sisse / välja** | `Ctrl+Hiireratas` või `Ctrl` + `+` / `-` |
+| **Suumi lähtestus** | `Ctrl+0` |
+| **Tööriistariba lüliti** | `Alt+D` — paneeli ahendamine/lahtivoltimine |
+| **Projektiotsing** | Otsinguväli; `D` märkige süvaotsinguks piletites |
+| **Filter** | Ripamenüü: Kõik / Elus / Valmis / Kinni, või klõps faasipillile |
+| **Sortimine** | Smart / Recent / Oldest / A–Z / Z–A |
+| **Uuesti skaneeri** | `Rescan` nupp või taustatimer (vaikimisi 300 s) |
+| **Kausta sirvimine** | `Browse` lisab kausta skaneerimishulka |
+| **Seaded** | ⚙ nupp avab seadete akna |
+| **Abi** | `?` nupp avab sisseehitatud mini-viki |
+| **Paremklõps projektil** | Juurtee kopeerimine, faasifilter, kausta avamine |
+| **Topeltklõps sektsioonil** | Avab seotud faili (STATE.md, BOARD.md, LOG.md) |
+| **Akna lohistamine** | Pealkirjaribast (või ükskõik kust raamita režiimis) |
 
-### Modaalid
+### Aknad
 
-| Modaal | Mida see teeb |
+| Aken | Mida teeb |
 |---|---|
-| **Seaded** | Suum, kiirklahvid, skannimise hГ¤Г¤lestus, automaatkГ¤ivitus, font, kohandatud kГ¤sud jne |
-| **Failivaatleja** | Loe ja muuda STATE, BOARD, LOG вЂ” Allika (toores) vГµi Lugeja (renderdatud) reЕѕiim |
-| **Abi** | Sisseehitatud miniviki kГµigi funktsioonide ja mГµistetega |
-| **Kinnitus** | Vintage-stiilis DOM dialoog |
+| **Seaded** | Suum, kiirklahvid, skaneerimise häälestus, automaatkäivitus, alati ees, font, muutuse esiletõstmine, failivaaturi vaikerežiim, kohandatud käsud, keel, skaneerimisjuured |
+| **Failivaatur** | STATE.md, BOARD.md, LOG.md lugemine ja muutmine — lähte- või renderdatud režiim |
+| **Abi** | Mini-viki iga funktsiooni, otsetee ja mõiste kohta |
+| **Kinnitus** | Vintage-stiilis DOM-dialoog (asendab natiivse `confirm()`) |
 
 <br>
 
 ---
 
-## рџ§¬ SAIPEN Protokoll
+<br>
 
-SAIPENVIEW on kaaslane projektidele, mis kasutavad **SAIPEN Protokolli** вЂ” olekumasina raamistikku, mis juhib tehisintellekti agente lГ¤bi tГ¶Г¶faaside:
+## 🧬 SAIPEN-protokoll
+
+SAIPENVIEW on kaaslane **SAIPEN-protokolli** projektidele — olekumasina raamistik, mis juhib AI-agente faaside kaupa:
 
 ```
-INIT в†’ PLAN в†’ SCOUT в†’ BUILD в†’ REVIEW в†’ VERIFY в†’ SHIP в†’ DONE
-                         в†“
-                    HUNT / CLEAN
+INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` on samuti olemas — täielik sõnavara ja üleminekutabel on `saipenview/protocol.py`-s (`BLOCKED` saavutatav enamikust faasidest).
 
-Iga projekt hoiab oma olekut kolmes failis:
+Iga SAIPEN-projekt hoiab olekut kolmes kanoonilises failis:
 
-| Fail | EesmГ¤rk |
+| Fail | Otstarve |
 |---|---|
-| `.saipen/STATE.md` | Masinloetav pГ¤is вЂ” faas, Гјlesanne, jГ¤rgmine tegevus, blokeerija |
-| `.saipen/BOARD.md` | Piletitahvel вЂ” DOING / TODO / DONE / BLOCKED jaotised |
-| `.saipen/LOG.md` | SГјndmuste logi вЂ” iga kГ¤sk ja selle tulemus |
+| `.saipen/STATE.md` | Masinloetav frontmatter — faas, ülesanne, järgmine tegevus, blokeerija |
+| `.saipen/BOARD.md` | Piletilaud — DOING / TODO / DONE / BLOCKED sektsioonid |
+| `.saipen/LOG.md` | Kronoloogiline sündmuste logi — iga käsk ja selle tulemus |
 
-**Alam-agendid** (`saiwiki`, `saihunt`, `saitranslate`) elavad `.saipen/extensions/subs/` kaustas ja suhtlevad lГ¤bi `kitchen/OUTBOX.md`. SAIPENVIEW tuvastab nad kГµik.
+**Alamagendid** (`saiwiki`, `saihunt`, `saitranslate`) elavad `.saipen/extensions/subs/`-s ja suhtlevad `kitchen/OUTBOX.md` kaudu — protokolli sisseehitatud sõnumisiin. SAIPENVIEW leiab need kõik ja kuvab ühtse armatuurlaua.
 
-### Vastavus (Conformance)
+### Vastavus protokollile
 
-See, mida projekt *Гјtleb*, on ainult pool pilti. Igal real on kohtuotsuse mГ¤rk:
+Näidata, mida projekt *ütleb*, on vaid pool asja. Projekt võib nimekirjas
+suurepäraselt lugeda — faas, ülesanne, järgmine tegevus — ja olla samal ajal
+olekus, mille protokoll tagasi lükkab, ning kuni sa käsitsi
+`tools/validate.py` ei käivitanud, polnud neil vahet.
 
-| MГ¤rk | TГ¤hendus |
+Iga rida kannab otsuse märki ja detailipaneel loetleb, mis on valesti:
+
+| Otsus | Tähendus |
 |---|---|
-| `OK` | Selles projektis pole probleeme leitud |
-| `N WARNS` | Legaalne, kuid esineb hГ¤lbeid (nГ¤iteks vana logi tegusГµna) |
-| `N FAILS` | Olek, mille protokoll tagasi lГјkkab (valed kastid, puuduvad piletid) |
+| `OK` | Projekti enda `.saipen/`-failidest midagi ei leitud |
+| `N WARNS` | Seaduslik, kuid triivib — aegunud kontrollpunkt, mittestandardne LOG-verb |
+| `N FAILS` | Olek, mille protokoll lükkab tagasi: kategooriata `WAIT:`, ruut, mis vaidleb oma sektsiooniga, `needs:` osutamas olematule piletile, UTF-16 `STATE.md`, mida ükski teine SAIPEN-tööriist ei loe |
 
-> рџ’Ў *Nimi "SAIPENVIEW" Гјtleb kГµik вЂ” see pakub **vaadet** igale **SAIPEN** projektile sinu masinas.*
+Iga leid nimetab reegli, faili ja rea ning punkti, millest see tuleneb — et
+seda saaks kontrollida, mitte uskuda.
+
+See on **teine arvamus, mitte asendus** `tools/validate.py`-le. See
+kontrollib üle vaid seda, mida projekti enda failid otsustavad, ja hindab
+protokolli sõnavarade koopia vastu — seega prinditakse SAIPEN-i versioon,
+millest see loeti, iga otsuse alla. Vaaturil on lubatud protokollist maha
+jääda. Ei ole lubatud vaikides maha jääda.
+
+> 💡 *Nimi ütleb kõik — SAIPENVIEW annab **vaate** igale **SAIPEN**-projektile sinu masinas.*
 
 <br>
 
 ---
 
-## вљ™пёЏ Konfiguratsioon
+<br>
 
-Konfiguratsioon asub rakenduse kГµrval:
+## ⚙️ Seadistamine
+
+Konfig on portatiivne — salvestatud rakenduse kõrvale, mitte `%APPDATA%`-sse:
 
 ```
 saipenview/_data/config.json
 ```
 
-Seadista `scan_roots: null` kГµigi ketaste automaatseks leidmiseks.  
-MГ¤Г¤ra loendina (nt `["V:\\", "D:\\projects"]`) skannimise piiramiseks.
+Peamised vaikimisi väärtused (lühendatud — täielik `DEFAULTS`-sõnastik on `saipenview/config.py`-s):
+
+```json
+{
+  "hotkeys":          ["ctrl+alt+x", "alt+f15"],
+  "snap_hotkey":      ["alt+f14"],
+  "zoom_level":       1.0,
+  "font_family":      "Verdana_m1",
+  "scan_roots":       null,
+  "rescan_interval":  300,
+  "scan_depth":       6,
+  "scan_delay_ms":    10,
+  "exclude_dirs":     [],
+  "auto_scan":        true,
+  "show_on_launch":   true,
+  "always_on_top":    true,
+  "frameless":        true,
+  "flash_changes":    true,
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
+}
+```
+
+`scan_roots: null` — kõigi kohalike ketaste automaatotsing.  
+Loendina (nt `["V:\\", "D:\\projects"]`) — skaneerimise piiramine.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` juhivad Agent Engine'it (vt Funktsioonid).  
+Kõik seaded on kättesaadavad ka rakenduse **Seaded**-aknast.
 
 <br>
 
 ---
 
-## рџЏ—пёЏ Arhitektuur
+<br>
 
-- **Гњks protsess** вЂ” ei mingit tausta-IPC-d, Гјks Pythoni protsess majutab nii WebView2 akent kui ka skannimistsГјklit.
-- **Aatomilised kirjutamised** вЂ” failide salvestamine on turvaline ka krahhi korral.
-- **Ajast ja arust stiil** вЂ” tumepruunid pinnad, kuldne tekst, 3D raamid, ei mingeid CSS-animatsioone, Verdana_m1 font.
+## 🏗️ Arhitektuur
+
+```
+saipenview/
+├── app.py              Sisenemispunkti ühendus — salv, kiirklahv, aken, api, ühekordne kaitsja
+├── api.py              JS-vastane pywebview sild (66 avalikku meetodit)
+├── scanner.py          Ketta läbikäik + taustal skaneerimistsükkel
+├── parser.py           STATE.md / BOARD.md / LOG.md parsimine
+├── textio.py           Üks lugeja kõikidele .saipen/-failidele — BOM, UTF-16, cp1251
+├── protocol.py         Protokolli suletud sõnavarad + BASELINE_VERSION
+├── conformance.py      Hindab projekti nende sõnavarade vastu
+├── config.py           Seadete salvestamine/laadimine (aatomilised kirjed)
+├── tray.py             pystray salveikoon + menüü
+├── hotkey.py           Globaalsete kiirklahvide registreerimine (keyboard)
+├── autostart.py        Windowsi registri automaatkäivituse haldus
+├── zone_picker.py      Alt+F14 nurga-klõpsu ülekate (tkinter)
+├── events.py           Protsisisisene sündmussiin (EventBus)
+├── guard.py            Ühekordse eksemplari lukk + näitamistaotluse edastus
+├── git_diff.py         Tööpuu diff / commit / revert agentide tegevuste jaoks
+├── runtime.py          Agent Engine — käivitatud agentide protsessihaldur
+├── watcher.py          Watchdog-failivaatur .saipen/-failidele
+├── engines/            Agent Engine — toetatud CLI-mootorid (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
+├── ui/
+│   ├── window.py       pywebview aken — kuva/peida/lülita/klõps
+│   └── static/
+│       ├── index.html
+│       ├── style.css   Vintage tume-kuldne Win95 teema
+│       └── app.js      Frontendi loogika (~3300 rida)
+├── assets/
+│   └── tray_icon.png
+├── screenshots/        README ekraanipildid
+└── _data/              Runtimikofig ja vahemälu (gitignored)
+```
+
+### Disainipõhimõtted
+
+- **Üks protsess** — pole tausta-IPC-d ega eraldi serverit; üks Python-protsess hoiab nii WebView2 akent kui ka skaneerimistsüklit `ThreadPoolExecutor`-is
+- **Aatomilised kirjed** — iga failikirje temp-faili + `os.replace` kaudu; krahh ei saa konfigi ega vahemälu kärpida
+- **Aegunud-lugemise kindlus** — 5-sekundiline UI-poll kutsub `refresh_known()` (loeb üle vaid `.saipen/`-faile, ilma kettaläbikäiguta). STATE.md muudatused ilmuvad sekunditega ilma täisskaneerimiseta
+- **CSS-üleminekuteta** — kõik visuaalsed efektid (välk, kuumus, hover) on JS-i `hexBlend`-arvutused, rangelt vintage-teema null-animatsiooni piirides
+- **Vintage-teema** — tume-pruunid pinnad, kuldne tekst/aktsendid, 3D-rahvid, null silumist, Verdana_m1 font
 
 <br>
 
 ---
 
-## рџ§Є Arendus
+<br>
 
-Vaata lisaks [CONTRIBUTING.md](CONTRIBUTING.md).
+## 🧪 Arendus
 
-### NГµuded
-- **Windows 10 / 11** вЂ” WebView2 runtime
+```bash
+# Kloonimine ja sisenemine
+git clone https://github.com/vacterro/saipenview.git
+cd saipenview
+
+# Venv loomine ja install
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+# Käivitamine
+python -m saipenview
+```
+
+Üksikasjalik seadistus, koodikonventsioonid ja PR-i töövoog: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Nõuded
+
+- **Windows 10 / 11** — WebView2 käituskeskkond (Win11-l eelinstallitud, Win10-l autoinstall)
 - **Python 3.10+**
-- S�ltuvused: \pystray\, \keyboard\, \pywebview\, \Pillow\, \watchdog\, \psutil\n
+- Sõltuvused: `pystray`, `keyboard`, `pywebview`, `Pillow`, `watchdog`, `psutil`
+
 <br>
 
 ---
 
-## рџ“„ Litsents
+<br>
 
-MIT вЂ” vaata [LICENSE](LICENSE).
+## 📄 Litsents
 
+MIT — vt [LICENSE](LICENSE).
+
+<br>
+
+---
+
+<br>
+
+<div align="center">
+  <sub>Tehtud: 🐍 Python • 🖼️ pywebview • 🎨 Vintage Win95 esteetika</sub>
+
+<br>
+
+---
+
+<br>
+
+## 📸 Rohkem ekraanipilte
+
+<p align="center">
+  <img src="screenshots/detail-pane.png" alt="SAIPENVIEW detailipaneel" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
+  <br>
+  <em>Detailipaneel: piletid, alamagendid ja failivaatur.</em>
+</p>
+
+<br>
+
+</div>

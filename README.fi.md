@@ -72,6 +72,11 @@
 - **Keräys yhdellä napsautuksella** — yhdistä valmiit merkinnät pääprojektiin
 - **Varoitus vanhentumisesta** — havaitsee vanhentuneet protokoliatiedostot
 
+- **Agent Engine** - käynnistä `claude-code` (tai muut moottorit: codex, aider, gemini, cline, goose, agy, generic_cli) projektissa
+  - **Live-tila** - käynnissä/poistunut-tila, CPU, kulunut aika projektia kohti
+  - **Tulostuskonsoli** - puskuroitu agenttitulostus (oletus 5000 riviä), stdin-syöte
+  - **Kill / stop all** - tapa prosessi ja globaali pysäytys
+  - **Yksittäisinstanssisuoja** - vain yksi sovellusinstanssi; toinen käynnistys näyttää ikkunan uudelleen
 ### 🎮 Vuorovaikutus
 - **Tiedostokatselin** — lue ja muokkaa STATE.md, BOARD.md, LOG.md
   - Lähdekooditila (muokattava) + Lukutila (renderoitu)
@@ -83,7 +88,7 @@
 
 ### ⌨️ Pikanäppäimet & Ikkuna
 - **Näytä/Piilota** — `Ctrl+Alt+X` (määritettävissä)
-- **Kiinnitä kulmiin** — `Ctrl+Q` vaihtaa YV → YO → AV → AO
+- **Kiinnitä kulmiin** - `Alt+F14` vaihtaa YV → YO → AV → AO
 - **Mittakaava** — `Ctrl+HiirenRulla`, `Ctrl+`+`/`-`
 - **Ilmoitusalue** — pienennä ilmoitusalueelle, käynnistä piilotettuna
 - **Aina päällimmäisenä** -kytkin
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | Skripti | Toiminta |
 |---|---|
-| `run.vbs` | Piilotettu (vain ilmoitusalue) |
-| `run.bat` | Näkyvä (konsoli auki) |
+| `run.vbs` | Piilotettu (vain lokero), hiljainen |
+| `run.bat` | Käynnistys lokeroon; konsoli näkyy vain kertaluonteisen venv/riippuvuuksien asetuksen aikana |
 Molemmat luovat automaattisesti `.venv`-ympäristön ja asentavat riippuvuudet.
 
 </td>
@@ -150,7 +155,7 @@ Tulossa piakkoin ✨
 | Toiminto | Miten |
 |---|---|
 | **Näytä / Piilota** | `Ctrl+Alt+X` tai `Alt+F15` (molemmat määritettävissä) |
-| **Kiinnitä kulmaan** | `Ctrl+Q` — vaihtaa Ylä-vasen → Ylä-oikea → Ala-vasen → Ala-oikea |
+| **Kiinnitä kulmaan** | `Alt+F14` - vaihtaa Ylä-vasen → Ylä-oikea → Ala-vasen → Ala-oikea |
 | **Hätäsammutus** | `Ctrl+Shift+Alt+Q` — pakkolopeta prosessi |
 | **Lähennä / Loitonna** | `Ctrl+HiirenRulla` tai `Ctrl` + `+` / `-` |
 | **Palauta mittakaava** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW on kumppaniohjelmisto projekteille, jotka käyttävät **SAIPEN-proto
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` ovat myös olemassa - täysi sanasto ja siirtymätaulukko ovat `saipenview/protocol.py`-tiedostossa (`BLOCKED` on saavutettavissa useimmista vaiheista).
 Jokainen SAIPEN-projekti tallentaa tilansa kolmeen kanoniseen tiedostoon:
 
 | Tiedosto | Käyttötarkoitus |
@@ -229,7 +235,7 @@ Asetukset ovat siirrettäviä — tallennettuna sovelluksen viereen, ei `%APPDAT
 saipenview/_data/config.json
 ```
 
-Keskeiset oletusarvot:
+Tärkeimmät oletusarvot (lyhennetty - täysi `DEFAULTS`-sanakirja on `saipenview/config.py`-tiedostossa):
 
 ```json
 {
@@ -241,16 +247,22 @@ Keskeiset oletusarvot:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "en"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Aseta `scan_roots: null` havaitaksesi kaikki paikalliset asemat automaattisesti.  
 Aseta polkuluetteloksi (esim. `["V:\\", "D:\\projects"]`) rajoittaaksesi skannausta.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` ohjaavat Agent Engineä (katso Ominaisuudet).  
 Kaikki asetukset ovat myös määritettävissä sovelluksen **Asetukset**-ikkunan kautta.
 
 <br>
@@ -261,8 +273,8 @@ Kaikki asetukset ovat myös määritettävissä sovelluksen **Asetukset**-ikkuna
 
 ```
 saipenview/
-├── app.py              Syötteiden kytkentä — ilmoitusalue, pikanäppäin, ikkuna, API
-├── api.py              JS-suuntainen pywebview-silta (30+ metodia)
+├── app.py              Sisääntulon kytkentä - lokero, pikanäppäin, ikkuna, api, yksittäisinstanssisuoja
+├── api.py              JS-puoleinen pywebview-silta (66 julkista metodia)
 ├── scanner.py          Asemakierros + taustaskannauksen silmukka
 ├── parser.py           STATE.md / BOARD.md / LOG.md -jäsennys
 ├── textio.py           Yksi lukija jokaiselle .saipen/-tiedostolle — BOM, UTF-16, cp1251
@@ -272,13 +284,20 @@ saipenview/
 ├── tray.py             pystray ilmoitusalueen kuvake + valikko
 ├── hotkey.py           Globaali pikanäppäinten rekisteröinti (keyboard-kirjasto)
 ├── autostart.py        Windows Rekisterin automaattikäynnistyksen hallinta
-├── zone_picker.py      Ctrl+Q kulmaan kiinnityksen kerrosnäyttö (tkinter)
+├── zone_picker.py      Alt+F14 kulmaan kiinnityksen kerrosnäyttö (tkinter)
+├── events.py           Prosessin sisäinen tapahtumaväylä (EventBus)
+├── guard.py            Yksittäisinstanssilukko + näyttöpyynnön välitys
+├── git_diff.py         Työpuun diff / commit / revert agenttitoimintoja varten
+├── runtime.py          Agent Engine - käynnistettyjen agenttien prosessinhallinta
+├── watcher.py          Watchdog-tiedostovalvoja .saipen/-tiedostoille
+├── engines/            Agent Engine - tuetut CLI-moottorit (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       pywebview-ikkuna — näytä/piilota/vaihda/kiinnitä
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Retro tummakultainen Win95-teema
-│       └── app.js      Frontend-logiikka (~2600 riviä)
+│       └── app.js      Frontend-logiikka (~3300 riviä)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        README-kuvakaappaukset

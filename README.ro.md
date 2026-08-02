@@ -72,6 +72,11 @@
 - **Colectare cu un singur clic** — pliază intrările gata în proiectul principal
 - **Avertisment de învechire** — detectează fișierele de protocol neactualizate
 
+- **Agent Engine** - lansare `claude-code` (sau alte motoare: codex, aider, gemini, cline, goose, agy, generic_cli) într-un proiect
+  - **Stare live** - stare de rulare/ieșire, CPU, timp scurs per proiect
+  - **Consolă de ieșire** - ieșire tamponată a agentului (implicit 5000 linii), intrare stdin
+  - **Kill / stop all** - oprirea procesului și oprire globală
+  - **Protecție instanță unică** - o singură instanță a aplicației; a doua lansare reafișează fereastra
 ### 🎮 Interacțiune
 - **Vizualizator de fișiere** — citește & editează STATE.md, BOARD.md, LOG.md
   - Mod Sursă (editabil) + Mod Cititor (rendat)
@@ -83,7 +88,7 @@
 
 ### ⌨️ Comenzi rapide & Fereastră
 - **Afișare/Ascundere** — `Ctrl+Alt+X` (configurabil)
-- **Fixare la colțuri** — `Ctrl+Q` rotește SS → SD → JS → JD
+- **Fixare la colțuri** - `Alt+F14` rotește SS → SD → JS → JD
 - **Zoom** — `Ctrl+MouseWheel`, `Ctrl+`+`/`-`
 - **Tray de sistem** — minimizare în tray, pornire ascunsă
 - **Mereu deasupra** (Always-on-top) comutator
@@ -124,8 +129,8 @@ python -m venv .venv
 
 | Script | Comportament |
 |---|---|
-| `run.vbs` | Ascuns (doar în tray) |
-| `run.bat` | Vizibil (consolă deschisă) |
+| `run.vbs` | Ascuns (doar tavă), tăcut |
+| `run.bat` | Lansare în tavă; consola vizibilă doar la configurarea unică venv/dependențe |
 Ambele creează automat `.venv` și instalează dependențele.
 
 </td>
@@ -150,7 +155,7 @@ saipenview
 | Acțiune | Cum |
 |---|---|
 | **Afișare / Ascundere** | `Ctrl+Alt+X` sau `Alt+F15` (ambele configurabile) |
-| **Fixare în colț** | `Ctrl+Q` — rotește Sus-Stânga → Sus-Dreapta → Jos-Stânga → Jos-Dreapta |
+| **Fixare în colț** | `Alt+F14` - rotește Sus-Stânga → Sus-Dreapta → Jos-Stânga → Jos-Dreapta |
 | **Oprire de urgență** | `Ctrl+Shift+Alt+Q` — închide forțat procesul |
 | **Mărire / Micșorare** | `Ctrl+MouseWheel` sau `Ctrl` + `+` / `-` |
 | **Resetare zoom** | `Ctrl+0` |
@@ -185,10 +190,11 @@ SAIPENVIEW este un companion pentru proiectele care utilizează **Protocolul SAI
 
 ```
 INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
-                         ↓
-                    HUNT / CLEAN
+                 ↓              ↓
+            HUNT / CLEAN    VALIDATE
 ```
 
+`ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` există de asemenea - vocabularul complet și tabelul de tranziții sunt în `saipenview/protocol.py` (`BLOCKED` este accesibil din majoritatea fazelor).
 Fiecare proiect SAIPEN își stochează starea în trei fișiere canonice:
 
 | Fișier | Scop |
@@ -237,7 +243,7 @@ Configurația este portabilă — stocată lângă aplicație, nu în `%APPDATA%
 saipenview/_data/config.json
 ```
 
-Setări implicite principale:
+Valori implicite principale (abreviat - dicționarul complet `DEFAULTS` este în `saipenview/config.py`):
 
 ```json
 {
@@ -249,16 +255,22 @@ Setări implicite principale:
   "rescan_interval":  300,
   "scan_depth":       6,
   "scan_delay_ms":    10,
+  "exclude_dirs":     [],
   "auto_scan":        true,
   "show_on_launch":   true,
   "always_on_top":    true,
+  "frameless":        true,
   "flash_changes":    true,
-  "locale":           "ro"
+  "locale":           "en",
+  "default_engine":   "claude-code",
+  "file_viewer_default": "source",
+  "layout_swap":      false
 }
 ```
 
 Setează `scan_roots: null` pentru a autodetecta toate unitățile locale.  
 Setează o listă de căi (de ex. `["V:\\", "D:\\proiecte"]`) pentru a limita scanarea.  
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` conduc Agent Engine (vezi Funcții).  
 Toate setările sunt de asemenea configurabile prin modalul **Setări** din aplicație.
 
 <br>
@@ -269,8 +281,8 @@ Toate setările sunt de asemenea configurabile prin modalul **Setări** din apli
 
 ```
 saipenview/
-├── app.py              Conectare componente — tray, comenzi rapide, fereastră, api
-├── api.py              Punte pywebview către JS (30+ metode)
+├── app.py              Cablaj de intrare - tavă, hotkey, fereastră, api, protecție instanță unică
+├── api.py              Pod pywebview orientat JS (66 metode publice)
 ├── scanner.py          Parcurgere unități + buclă de rescanare în fundal
 ├── parser.py           Analiză STATE.md / BOARD.md / LOG.md
 ├── textio.py           Un singur cititor pentru fiecare fișier .saipen/ — BOM, UTF-16, cp1251
@@ -280,13 +292,20 @@ saipenview/
 ├── tray.py             Iconiță de tray pystray + meniu
 ├── hotkey.py           Înregistrare comenzi rapide globale (biblioteca keyboard)
 ├── autostart.py        Gestionare pornire automată în Registrul Windows
-├── zone_picker.py      Suprapunere fixare colț Ctrl+Q (tkinter)
+├── zone_picker.py      Suprapunere fixare colț Alt+F14 (tkinter)
+├── events.py           Bus de evenimente în proces (EventBus)
+├── guard.py            Blocare instanță unică + predarea cererii de afișare
+├── git_diff.py         Diff / commit / revert al arborelui de lucru pentru acțiuni agenți
+├── runtime.py          Agent Engine - manager de procese pentru agenții lansați
+├── watcher.py          Supraveghetor de fișiere Watchdog pentru fișierele .saipen/
+├── engines/            Agent Engine - motoare CLI suportate (claude-code, codex,
+│                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
 │   ├── window.py       Fereastră pywebview — afișare/ascundere/comutare/fixare
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Temei vintage Win95 auriu-întunecat
-│       └── app.js      Logică frontend (~2600 linii)
+│       └── app.js      Logică frontend (~3300 linii)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        Capturi de ecran README
