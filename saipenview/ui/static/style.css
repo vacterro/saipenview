@@ -76,6 +76,15 @@ body { display: flex; flex-direction: column; }
 .toolbar .btn-group button { font-size: 9px; padding: 1px 3px; min-width: unset; min-height: 16px; height: 16px; }
 .quit-btn { color: #cc6666 !important; font-weight: bold; font-size: 9px !important; }
 .quit-btn:hover { background: var(--danger) !important; color: var(--textPrimary) !important; }
+/* Tip jar, not a call to action. It used to be the FIRST button in the group
+   and painted #FFDD00 through an inline style -- brighter than anything else
+   in the toolbar, including the phase pills that are supposed to carry the
+   eye. It now sits next to help, rests as muted as the hide/unhide
+   affordances, and only warms to --goldStar under the cursor. index.html:57
+   carries the class; without this rule that reference is dead and the button
+   falls back to plain toolbar styling. */
+.bmac-btn { color: var(--textMuted); cursor: pointer; }
+.bmac-btn:hover { color: var(--goldStar); }
 
 .search-input { width: 80px; height: 14px; font-size: 9px; }
 .exclude-input { width: 50px !important; height: 14px !important; font-size: 9px !important; }
