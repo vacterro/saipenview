@@ -49,12 +49,12 @@
     </label>
   </div>
   <div class="btn-group">
-    <button id="bmacBtn" title="Buy me a coffee" onclick="window.open('https://buymeacoffee.com/vacuum34', '_blank')" style="color:#FFDD00; border-color:#FFDD00; cursor:pointer;">☕</button>
     <button id="browseBtn" data-i18n="toolbar.browse.text" data-i18n-title="toolbar.browse.title" title="Select a folder to scan for SAIPEN projects">Browse</button>
     <button id="rescanBtn" data-i18n="toolbar.rescan.text" data-i18n-title="toolbar.rescan.title" title="Rescan all drives/folders now">Rescan</button>
     <button id="settingsBtn" data-i18n-title="toolbar.settings.title" title="Settings: font, hotkeys, scan tuning">⚙</button>
     <button id="swapBtn" data-i18n-title="toolbar.swap.title" title="Swap sidebar/detail pane position">⇄</button>
     <button id="helpBtn" data-i18n-title="toolbar.help.title" title="SAIPENVIEW help &amp; wiki">?</button>
+    <button id="bmacBtn" class="bmac-btn" data-i18n-title="toolbar.bmac.title" title="Buy me a coffee" onclick="window.open('https://buymeacoffee.com/vacuum34', '_blank')">☕</button>
     <button id="minimizeBtn" data-i18n-title="toolbar.minimize.title" title="Minimize window">_</button>
     <button id="maximizeBtn" data-i18n-title="toolbar.maximize.title" title="Maximize window">□</button>
     <button id="closeBtn" data-i18n-title="toolbar.close.title" title="Close to tray (SAIPENVIEW keeps running)">×</button>
@@ -113,6 +113,10 @@
         <span data-i18n="settings.alwaysOnTop.label">Always on top</span>
       </label>
       <label style="flex-direction:row; align-items:center; gap:4px; cursor:pointer;">
+        <input type="checkbox" id="setNativeTitlebar" style="width:10px;height:10px;margin:0;">
+        <span data-i18n="settings.nativeTitlebar.label">Native Windows titlebar (the toolbar already has _ □ × Exit)</span>
+      </label>
+      <label style="flex-direction:row; align-items:center; gap:4px; cursor:pointer;">
         <input type="checkbox" id="setFlashChanges" style="width:10px;height:10px;margin:0;">
         <span data-i18n="settings.flashChanges.label">Flash highlight on change</span>
       </label>
@@ -134,9 +138,9 @@
           <button id="addCustomCmdBtn" type="button" data-i18n-value="settings.customCommands.add" style="font-size:9px; padding:1px 4px; min-height:16px;">+ Add command</button>
         </div>
       </label>
-      <label data-i18n="settings.drives.label">Drives / folders to scan
+      <div class="settings-field" data-i18n="settings.drives.label">Drives / folders to scan
         <div id="drivesBar" class="drives-bar drives-bar-settings"></div>
-      </label>
+      </div>
     </div>
     <div class="modal-actions" style="display:flex; justify-content:space-between;">
       <label style="font-size:9px; color:var(--textMuted); cursor:pointer; display:flex; align-items:center; gap:4px;">

@@ -46,6 +46,12 @@ DEFAULTS = {
     "collapsed_sections": {},
     "show_on_launch": True,  # False = start hidden in tray (old default)
     "always_on_top": True,  # matches the previously-hardcoded window.py behavior
+    # No native titlebar by default: the toolbar already carries minimize,
+    # maximize, close-to-tray and Exit, so a titlebar is a second, worse copy
+    # of controls that already exist. Dragging is unaffected -- app.js moves
+    # the window from anywhere in the body. Set False to get Windows' own
+    # titlebar back.
+    "frameless": True,
     "flash_changes": True,
     # UI font (T-076). Verdana_m1 is the user's no-anti-aliasing Verdana
     # variant; the fallbacks below are appended at runtime so a machine
@@ -87,7 +93,24 @@ def load_config() -> dict:
     # Migration: snap_hotkey was a string before v2, now a list
     if isinstance(cfg.get("snap_hotkey"), str):
         cfg["snap_hotkey"] = [cfg["snap_hotkey"]]
+    # Migration: ctrl+q was freed in 4d291a0 and dropped from both DEFAULTS
+    # lists for the reason spelled out above "hotkeys" -- a GLOBAL binding
+    # hijacks the combo in every application, and ctrl+q is a ubiquitous quit
+    # accelerator. Only the defaults were cleaned then; every config.json
+    # already on disk kept shipping it under snap_hotkey, so the corner-snap
+    # kept firing from unrelated windows. Strip it on load, and never leave a
+    # slot empty -- a hotkey list with nothing in it registers nothing.
+    snap = cfg.get("snap_hotkey")
+    if isinstance(snap, list) and any(_is_ctrl_q(k) for k in snap):
+        cfg["snap_hotkey"] = [k for k in snap if not _is_ctrl_q(k)] or list(
+            DEFAULTS["snap_hotkey"]
+        )
     return cfg
+
+
+def _is_ctrl_q(combo: object) -> bool:
+    """`ctrl+q` in any of the spellings the settings field accepts."""
+    return isinstance(combo, str) and combo.replace(" ", "").lower() == "ctrl+q"
 
 
 _save_lock = threading.Lock()

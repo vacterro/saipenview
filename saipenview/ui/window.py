@@ -106,7 +106,9 @@ class MainWindow:
         self._window = webview.create_window(**kwargs)
         self._visible = show_on_launch
         self._allow_close = False
-        self._frameless = False
+        # Applied in _on_shown, not here: the style edit needs a real hwnd and
+        # there is none until the window has actually been shown.
+        self._frameless = bool(cfg.get("frameless", True))
         self._window.events.closing += self._on_closing
         self._window.events.loaded += self._set_window_icon
         self._window.events.shown += self._set_window_icon
@@ -187,6 +189,11 @@ class MainWindow:
         # so toggle() always took the show branch and the window never hid
         # again -- exactly the "works once then stops" report (T-068).
         self._visible = True
+        # First display is the earliest point a real hwnd exists, so this is
+        # where the configured frame state lands. Fires once, which is all it
+        # needs to: a window style survives every later hide/show.
+        if self._frameless:
+            self._toggle_frameless_style(True)
         self._start_geometry_thread()
 
     def _start_geometry_thread(self) -> None:
@@ -235,6 +242,26 @@ class MainWindow:
         except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: restore failed: {e}", file=sys.stderr)
 
+    def _is_minimized(self) -> bool:
+        """Ask Windows whether the window is iconic.
+
+        `_visible` only ever tracks show()/hide(). Minimizing runs no Python
+        at all when it comes from the taskbar button or Win+D, and even our
+        own minimize() is a bare ShowWindow that leaves the flag alone -- so
+        after any minimize the flag still reads True while the window sits in
+        the taskbar. The OS is the only thing that knows.
+
+        False on any failure, so a caller degrades to the old flag-only
+        behaviour rather than to a window that refuses to hide.
+        """
+        try:
+            u = ctypes.windll.user32
+            hwnd = u.FindWindowW(None, "SAIPENVIEW")
+            return bool(hwnd) and bool(u.IsIconic(hwnd))
+        except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
+            print(f"SAIPENVIEW: is_minimized failed: {e}", file=sys.stderr)
+            return False
+
     def _force_foreground(self) -> None:
         """Restore from minimized and genuinely take the foreground.
 
@@ -275,36 +302,34 @@ class MainWindow:
     def _toggle_frameless_style(self, frameless: bool) -> None:
         """Remove or restore the window titlebar via Windows API.
 
-        When frameless: strips WS_CAPTION|WS_SYSMENU for no titlebar and
-        adds WS_EX_TOOLWINDOW for a clean floating-panel look (no taskbar
-        entry — the tray icon is still the primary access point). When
-        restoring, re-adds the titlebar styles and removes TOOLWINDOW."""
+        Strips WS_CAPTION|WS_SYSMENU for no titlebar, re-adds them to restore.
+
+        It used to set WS_EX_TOOLWINDOW alongside, for a floating-panel look
+        with no taskbar entry. That was survivable while frameless was a
+        transient collapse mode; it is not now that frameless is the default,
+        because it takes the taskbar button away permanently -- and minimizing
+        from the taskbar is exactly the path T-120 fixed. A window nobody can
+        minimize is a worse trade than a taskbar entry nobody minds."""
         try:
             hwnd = ctypes.windll.user32.FindWindowW(None, "SAIPENVIEW")
             if not hwnd:
                 return
             GWL_STYLE = -16
-            GWL_EXSTYLE = -20
             WS_CAPTION = 0x00C00000  # WS_BORDER | WS_DLGFRAME
             WS_SYSMENU = 0x00080000
-            WS_EX_TOOLWINDOW = 0x00000080
             SWP_FRAMECHANGED = 0x0020
             SWP_NOMOVE = 0x0002
             SWP_NOSIZE = 0x0001
             SWP_NOZORDER = 0x0004
 
             style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
-            ex = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
 
             if frameless:
                 style &= ~(WS_CAPTION | WS_SYSMENU)
-                ex |= WS_EX_TOOLWINDOW
             else:
                 style |= WS_CAPTION | WS_SYSMENU
-                ex &= ~WS_EX_TOOLWINDOW
 
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style)
-            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
             ctypes.windll.user32.SetWindowPos(
                 hwnd,
                 0,
@@ -320,10 +345,13 @@ class MainWindow:
                 file=sys.stderr,
             )
 
-    def toggle_frameless(self) -> bool:
-        self._frameless = not self._frameless
+    def set_frameless(self, frameless: bool) -> bool:
+        self._frameless = bool(frameless)
         self._toggle_frameless_style(self._frameless)
         return self._frameless
+
+    def toggle_frameless(self) -> bool:
+        return self.set_frameless(not self._frameless)
 
     def _notify_visibility(self, visible: bool) -> None:
         """Tell the page whether anyone can actually see it.
@@ -392,6 +420,15 @@ class MainWindow:
         self._stop_geometry_thread()
 
     def toggle(self) -> None:
+        # A minimized window is not a hidden one, and `_visible` cannot tell
+        # them apart: minimize never runs hide(), so the flag still reads True
+        # and this took the hide branch -- the hotkey sent a window the user
+        # was trying to raise from the taskbar into the tray instead, and only
+        # a SECOND press brought it back. Ask the OS first; the flag decides
+        # only when there is no hwnd to ask.
+        if self._is_minimized():
+            self.show()
+            return
         self.hide() if self._visible else self.show()
 
     def set_always_on_top(self, enabled: bool) -> None:
@@ -438,7 +475,10 @@ class MainWindow:
         zone_picker.show(self, self._api)
 
     def cycle_snap_corner(self) -> None:
-        if not self._visible:
+        # Same stale-flag trap as toggle(): a minimized window reads
+        # `_visible` True, so snapping it used to move a window still sitting
+        # in the taskbar.
+        if not self._visible or self._is_minimized():
             self.show()
         left, top, right, bottom = _work_area()
         aw = right - left

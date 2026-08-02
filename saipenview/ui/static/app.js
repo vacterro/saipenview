@@ -1637,8 +1637,11 @@ function renderDrives(drives, selectedRoots) {
   const bar = document.getElementById("drivesBar");
   if (!bar) return;
 
-  const normSelected = selectedRoots && selectedRoots.length ? selectedRoots.map(normalizeDrive) : null;
-  const isAll = !normSelected || normSelected.length === 0;
+  // null = auto (scan every drive); [] = deliberately nothing selected.
+  // The two are NOT the same on the Python side (scan(None) = auto,
+  // scan([]) = no projects), so they must not both render as "all checked".
+  const isAll = selectedRoots == null;
+  const normSelected = selectedRoots && selectedRoots.length ? selectedRoots.map(normalizeDrive) : [];
 
   let html = '<span class="label">Drives:</span>';
   drives.forEach((drv) => {
@@ -2242,10 +2245,10 @@ function toggleCollapse() {
     window.pywebview.api.save_view_config({ top_panel_collapsed: isCollapsed });
   }
   showCollapseHint();
-  // Also toggle window titlebar when collapsing via button
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.toggle_frameless) {
-    window.pywebview.api.toggle_frameless();
-  }
+  // The titlebar used to be toggled from here, so collapsed mode looked like a
+  // floating panel. It is off by default now (config "frameless"), so this was
+  // a blind flip that ADDED a titlebar on collapse -- the opposite of what it
+  // was written to do, and a duplicate of the toolbar's own window buttons.
 }
 
 const togglePanelBtn = document.getElementById("togglePanelBtn");
@@ -2436,13 +2439,19 @@ function openSettings() {
   Promise.all([window.pywebview.api.get_config(), window.pywebview.api.get_autostart_enabled()]).then(([cfg, autostart]) => {
     document.getElementById("setZoomLevel").value = String(cfg.zoom_level || 1.0);
     document.getElementById("setHotkeys").value = (cfg.hotkeys || []).join(", ");
-    document.getElementById("setSnapHotkey").value = Array.isArray(cfg.snap_hotkey) ? cfg.snap_hotkey.join(", ") : (cfg.snap_hotkey || "ctrl+q");
+    // Fallback is alt+f14, NOT ctrl+q: ctrl+q was freed in 4d291a0 because a
+    // global binding hijacks it in every app. Handing it back here would put
+    // it straight back into the config the migration just cleaned.
+    document.getElementById("setSnapHotkey").value = Array.isArray(cfg.snap_hotkey) ? cfg.snap_hotkey.join(", ") : (cfg.snap_hotkey || "alt+f14");
     document.getElementById("setScanDepth").value = cfg.scan_depth || 6;
     document.getElementById("setScanDelay").value = cfg.scan_delay_ms != null ? cfg.scan_delay_ms : 10;
     document.getElementById("setRescanInterval").value = Math.round((cfg.rescan_interval || 300) / 60);
     document.getElementById("setAutostart").checked = !!autostart;
     document.getElementById("setShowOnLaunch").checked = cfg.show_on_launch !== false;
     document.getElementById("setAlwaysOnTop").checked = cfg.always_on_top !== false;
+    // Inverted on purpose: the config stores "frameless", the checkbox offers
+    // the titlebar. Default is frameless, so this starts unchecked.
+    document.getElementById("setNativeTitlebar").checked = cfg.frameless === false;
     document.getElementById("setFontFamily").value = cfg.font_family || "Verdana_m1";
     document.getElementById("setFlashChanges").checked = cfg.flash_changes !== false;
     document.getElementById("setFileViewerDefault").value = cfg.file_viewer_default || "source";
@@ -2549,6 +2558,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
   const autostart = document.getElementById("setAutostart").checked;
   const showOnLaunch = document.getElementById("setShowOnLaunch").checked;
   const alwaysOnTop = document.getElementById("setAlwaysOnTop").checked;
+  const frameless = !document.getElementById("setNativeTitlebar").checked;
   const fontFamily = document.getElementById("setFontFamily").value.trim();
   const flashChanges = document.getElementById("setFlashChanges").checked;
   const localeVal = document.getElementById("setLocale").value;
@@ -2592,6 +2602,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
       api.set_scan_tuning(scanDepth, scanDelay, rescanMinutes * 60),
       api.set_autostart_enabled(autostart),
       api.set_always_on_top(alwaysOnTop),
+      api.set_frameless(frameless),
       api.set_locale(localeVal),
       api.save_view_config({ show_on_launch: showOnLaunch, flash_changes: flashChanges, custom_commands: customCommands, file_viewer_default: fvd, locale: locale }),
     ]);

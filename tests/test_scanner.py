@@ -73,20 +73,30 @@ class TestWalkWithDepthLimit:
         results = list(_walk_with_depth_limit(tmp_path, max_depth=5, delay=0))
         assert len(results) == 1  # Within limit
 
-    def test_finds_only_first_saipen_in_nested(self, tmp_path):
-        """Once a .saipen/ is found, subfolders are not scanned."""
+    def test_finds_nested_saipen_projects(self, tmp_path):
+        """A project inside another project IS found -- the old dirnames.clear()
+        hid real nested repos (a project like V:\\...\\__CODE contains
+        _PY\\_SAIPENVIEW etc). Test fixtures are pruned by EXCLUDE_DIRS
+        (tests/) and GARBAGE_PATH_MARKERS, not by stopping the walk."""
         from saipenview.scanner import _walk_with_depth_limit
 
         outer = tmp_path / "outer-project"
         (outer / ".saipen").mkdir(parents=True)
         (outer / ".saipen" / "STATE.md").write_text("---\nphase: DONE\n---\n", encoding="utf-8")
 
-        # Nested project inside the first — should NOT be found
+        # Nested project inside the first -- SHOULD be found
         (outer / "nested" / ".saipen").mkdir(parents=True)
         (outer / "nested" / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
 
-        results = list(_walk_with_depth_limit(tmp_path, max_depth=6, delay=0))
-        assert len(results) == 1
+        # A test-fixture-style nest below a project root must stay hidden
+        (outer / "tests" / "scenarios" / "fix" / ".saipen").mkdir(parents=True)
+        (outer / "tests" / "scenarios" / "fix" / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
+
+        results = sorted(list(_walk_with_depth_limit(tmp_path, max_depth=6, delay=0)))
+        assert len(results) == 2
+        assert {r.name for r in results} == {"outer-project", "nested"}
 
     def test_extra_excludes(self, tmp_path):
         from saipenview.scanner import _walk_with_depth_limit

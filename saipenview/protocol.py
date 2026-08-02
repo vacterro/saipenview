@@ -21,7 +21,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.153.0"
+BASELINE_VERSION = "7.160.0"
 
 # RFC § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.
@@ -107,6 +107,10 @@ SAIPEN_COMMANDS: frozenset[str] = frozenset(
         "hunt",
         "markhunt",
         "prepare",
+        # RFC § 1.10 `saipen collect <producer>`: consume one named producer's
+        # already-prepared handoff. Distinct from the extension-wide
+        # `saipen sub collect`, which is `sub` plus an argument, not this verb.
+        "collect",
         "ship",
         "validate",
         "status",

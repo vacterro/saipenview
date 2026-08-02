@@ -890,6 +890,18 @@ class Api:
             self._window.set_always_on_top(enabled)
         return self.get_config()
 
+    def set_frameless(self, frameless: bool) -> dict:
+        """Persist and apply the native-titlebar setting.
+
+        Separate from toggle_frameless below because a checkbox knows the
+        state it wants; a blind flip against an unknown current state is how
+        the collapse button ended up ADDING a titlebar."""
+        self._config["frameless"] = frameless
+        save_config(self._config)
+        if self._window:
+            self._window.set_frameless(frameless)
+        return self.get_config()
+
     def toggle_frameless(self) -> bool:
         """Toggle the window titlebar on/off via Windows API."""
         if self._window:

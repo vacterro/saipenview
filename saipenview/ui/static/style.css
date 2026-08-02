@@ -287,18 +287,21 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .modal-box { width: min(90vw, 320px); padding: 6px;
   outline: 1px solid var(--borderDark);
   outline-offset: -3px;
-  position: relative; }
+  position: relative;
+  /* Small windows: cap height so the modal never grows past the screen and
+     pins its action buttons. The body scrolls instead (T-XXX). */
+  max-height: 92vh; display: flex; flex-direction: column; }
 .modal-box::before {
   content: ''; position: absolute; inset: -3px;
   border: 1px solid var(--borderDark);
   pointer-events: none;
 }
 .modal-title { font-weight: bold; font-size: 12px; padding-bottom: 4px;
-  border-bottom: 1px solid var(--borderDark); margin-bottom: 6px; }
-.modal-body { display: flex; flex-direction: column; gap: 6px; }
-.modal-body label { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--textSecondary); }
+  border-bottom: 1px solid var(--borderDark); margin-bottom: 6px; flex: 0 0 auto; }
+.modal-body { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
+.modal-body label, .modal-body .settings-field { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--textSecondary); }
 .modal-body input, .modal-body select { width: 100%; }
-.modal-actions { display: flex; gap: 4px; justify-content: flex-end; margin-top: 8px; }
+.modal-actions { display: flex; gap: 4px; justify-content: flex-end; margin-top: 8px; flex: 0 0 auto; }
 
 body.collapsed .detail-header { display: none !important; }
 

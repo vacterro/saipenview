@@ -242,10 +242,17 @@ def _walk_with_depth_limit(
             candidate = Path(dirpath) / ".saipen" / "STATE.md"
             if candidate.is_file():
                 yield Path(dirpath)
-                # Found a project root -- anything nested below is that
-                # project's own concern (test fixtures, sub-.saipen/
-                # examples), never an independent project to list.
-                dirnames.clear()
+                # Deliberately NOT clearing dirnames here. The old code did,
+                # on the theory that anything below a project root is that
+                # project's own concern (test fixtures, sub-.saipen/ examples)
+                # -- but that also hid REAL nested projects: a repo that is
+                # itself a SAIPEN project (V:\...\__CODE) routinely contains
+                # other projects beneath it (_PY\_SAIPENVIEW and friends), and
+                # the clear() made them invisible. Test fixtures no longer
+                # need the guard anyway: they live under tests/scenarios/
+                # which EXCLUDE_DIRS already prunes, and GARBAGE_PATH_MARKERS
+                # catches _TEMP_/pytest-of-/scratch nests at yield time.
+
 
 
 def find_saipen_roots(
