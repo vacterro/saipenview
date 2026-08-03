@@ -14,6 +14,9 @@ from saipenview.config import DEFAULTS
 DEFAULT_HOTKEYS: list[str] = cast(list[str], DEFAULTS["hotkeys"])
 _DEBOUNCE_SECS = 0.3
 
+# The two characters that are both hotkey syntax and real keys.
+_SEPARATORS = (",", "+")
+
 # Physical key positions on a US QWERTY keyboard, by scan code. Scan codes are
 # what the hardware sends; the letter printed on the cap is whatever the ACTIVE
 # Windows layout decides to paint on it afterwards. `keyboard.add_hotkey("ctrl+q")`
@@ -51,18 +54,43 @@ def to_layout_independent(combo: str):
     caller's per-combo error handling behaves exactly as it did before.
     """
     steps = []
-    for step in combo.lower().split(","):
+    for step in _split_outside_keys(combo.lower(), ","):
         keys = []
-        for name in step.split("+"):
+        for name in _split_outside_keys(step, "+"):
             name = name.strip()
             if not name:
-                # A literal "+" or a trailing separator: hand the whole thing
-                # back to keyboard rather than guessing at what was meant.
+                # A trailing or doubled separator: hand the whole thing back to
+                # keyboard rather than guessing at what was meant.
                 return keyboard.parse_hotkey(combo)
             scan = _US_SCAN_CODES.get(name)
             keys.append((scan,) if scan is not None else tuple(keyboard.key_to_scan_codes(name)))
         steps.append(tuple(keys))
     return tuple(steps)
+
+
+def _split_outside_keys(text: str, sep: str) -> list[str]:
+    """Split on ``sep``, except where ``sep`` IS the key being named.
+
+    ``,`` and ``+`` are both separators in a hotkey string and both real keys
+    on a keyboard, so a naive ``split`` cannot express either of them alone:
+    ``","`` split on ``","`` is two empty strings, not the comma key, and
+    ``"ctrl+,"`` loses its comma the same way. A separator only separates once
+    a key has been read, so the character immediately after any separator --
+    either separator, which is why both are named here -- is taken literally.
+    """
+    parts: list[str] = []
+    buf = ""
+    at_key_start = True
+    for ch in text:
+        if ch == sep and not at_key_start:
+            parts.append(buf)
+            buf = ""
+            at_key_start = True
+        else:
+            buf += ch
+            at_key_start = ch in _SEPARATORS
+    parts.append(buf)
+    return parts
 
 
 class HotkeyListener:

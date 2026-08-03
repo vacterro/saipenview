@@ -748,6 +748,9 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 /* One line saying what this panel launches and what happens to the output.
    Without it "Agent Control" over a row of three-letter buttons is a puzzle. */
 .agent-subtitle { font-size: 10px; color: var(--textSecondary); line-height: 1.35; }
+/* Marks where a transcript read back from disk begins, so old output is never
+   mistaken for something happening right now. */
+.agent-output-restored { color: var(--textMuted); padding-bottom: 2px; }
 .agent-status-bar { display: flex; justify-content: space-between; align-items: center; background: var(--surfaceRaised); padding: 2px 4px; border: 1px solid var(--borderHighlight); border-right-color: var(--borderDark); border-bottom-color: var(--borderDark); font-size: 11px; }
 .agent-status-info { display: flex; gap: 6px; align-items: center; color: var(--borderHighlight); font-weight: bold; }
 .agent-status-elapsed { color: var(--textSecondary); font-weight: normal; font-size: 10px; }

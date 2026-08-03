@@ -26,6 +26,7 @@ from saipenview.engines.codex import CodexEngine
 from saipenview.engines.gemini import GeminiEngine
 from saipenview.engines.generic_cli import GenericCLIEngine
 from saipenview.engines.goose import GooseEngine
+from saipenview.engines.opencode import OpenCodeEngine
 
 _REGISTRY: dict[str, AgentEngine] = {}
 
@@ -42,6 +43,7 @@ def _register_builtins() -> None:
         AgyEngine,
         CodexEngine,
         GeminiEngine,
+        OpenCodeEngine,
         GenericCLIEngine,
     ):
         eng = engine_cls()

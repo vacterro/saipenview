@@ -47,6 +47,18 @@ class TestLayoutIndependence:
         assert len(parsed) == 2
         assert _flat(parsed)[-1] == {_US_SCAN_CODES["b"]}
 
+    def test_a_separator_can_also_be_a_key(self):
+        # `,` and `+` are both hotkey syntax and real keys, so a naive split
+        # cannot express either alone: "," split on "," is two empty strings.
+        # Caught by test_every_letter_and_digit_is_pinned, but only once the
+        # `keyboard` name tables had lazily filled in enough aliases for the
+        # fallback to return something other than {51} -- i.e. intermittently,
+        # depending on what ran before it.
+        assert _flat(to_layout_independent(",")) == [{_US_SCAN_CODES[","]}]
+        assert _flat(to_layout_independent("ctrl+,"))[-1] == {_US_SCAN_CODES[","]}
+        assert len(to_layout_independent("+")) == 1
+        assert len(_flat(to_layout_independent("ctrl++"))) == 2
+
     def test_unknown_key_still_raises(self):
         # start() relies on this to report a bad combo and keep the others.
         with pytest.raises(ValueError):

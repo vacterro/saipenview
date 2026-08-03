@@ -16,6 +16,10 @@ let currentDetailRoot = null;
 let stateEditActive = false;
 let agentSinceLineNum = {};
 let availableEnginesCache = [];
+// Which engine the launcher opens on. Loaded from config.default_engine and
+// re-saved whenever the user launches with a different one, so the choice
+// survives a restart instead of resetting to registry order every time.
+let defaultEngine = "claude-code";
 let agentStatusCache = {};
 let currentAgentPanelRoot = null;
 // detail pane via innerHTML, which destroyed the open edit form (and anything
@@ -2880,6 +2884,12 @@ window.addEventListener("pywebviewready", () => {
       if (cfg.layout_swap) {
         document.body.classList.add("swapped");
       }
+      // default_engine sat in config.py's DEFAULTS since the engine layer
+      // landed and was read by nothing at all, so the dropdown always opened
+      // on whatever engine the registry happened to list first.
+      if (cfg.default_engine) {
+        defaultEngine = cfg.default_engine;
+      }
       renderDrives(drives, cfg.scan_roots);
       showCollapseHint();
     })
@@ -3193,6 +3203,10 @@ function renderAgentPanel(root, container) {
       </div>
       <div id="agentControlBottom-${escapeHtml(root)}"></div>
     </div>`;
+    // Nothing running means the console would otherwise be blank, with no
+    // sign an agent had ever been here -- the transcript used to die with the
+    // process. Pull the last stored run back in from disk.
+    if (!isRunning) restoreLastTranscript(root, container);
   } else {
     // If state hasn't changed, we just update the elapsed and meta.
     if (existingPanel.getAttribute("data-state") === stateStr) {
@@ -3258,7 +3272,13 @@ ${testBadgeHtml}
       </div>
     </div>`;
   } else {
-    const engineOptions = availableEnginesCache.filter(e => e.available).map(e => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.display_name)}</option>`).join("");
+    const available = availableEnginesCache.filter(e => e.available);
+    // Preselect the configured engine, but only when it is actually installed
+    // -- an unavailable default must not silently select nothing and leave the
+    // launcher pointing at whatever the browser picks instead.
+    const preselect = available.some(e => e.name === defaultEngine) ? defaultEngine : null;
+    const engineOptions = available.map(e =>
+      `<option value="${escapeHtml(e.name)}"${e.name === preselect ? " selected" : ""}>${escapeHtml(e.display_name)}</option>`).join("");
     const availableCount = availableEnginesCache.filter(e => e.available && e.name !== "generic-cli").length;
     let hintHtml = "";
     if (availableCount === 0) {
@@ -3345,10 +3365,19 @@ ${testBadgeHtml}
           showToast("Engine and instruction required", "warning");
           return;
         }
+        if (engine !== defaultEngine) {
+          defaultEngine = engine;
+          window.pywebview.api.save_view_config({ default_engine: engine });
+        }
         window.pywebview.api.launch_agent(root, engine, instruction.trim()).then(res => {
           if (res.ok) {
             showToast("Agent launched", "success");
             agentSinceLineNum[root] = 0;
+            // Drop the restored transcript: the console now belongs to the
+            // run that just started, not to the one before it.
+            agentRestoredRoots.delete(root);
+            const lines = document.getElementById("agentOutputLines-" + escapeHtml(root));
+            if (lines) lines.innerHTML = "";
             pollAgentOutput();
           } else {
             showToast("Launch failed: " + res.error, "error");
@@ -3395,6 +3424,52 @@ function parseTestLine(root, line) {
   
   window.agentTestState[root] = ts;
 }
+// Roots whose stored transcript has already been pulled into the panel, so a
+// re-render does not fetch and re-append it every poll tick.
+const agentRestoredRoots = new Set();
+
+function restoreLastTranscript(root, container) {
+  if (agentRestoredRoots.has(root)) return;
+  agentRestoredRoots.add(root);
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || !api.get_last_agent_transcript) return;
+  api.get_last_agent_transcript(root).then((res) => {
+    if (!res || !res.found) return;
+    // The panel may have been rebuilt, or a live run may have started, while
+    // this was in flight. Either way the stored lines are no longer wanted.
+    const linesContainer = document.getElementById("agentOutputLines-" + escapeHtml(root));
+    if (!linesContainer || linesContainer.childElementCount) return;
+    const status = agentStatusCache[root];
+    if (status && status.status === "running") return;
+
+    const run = res.run || {};
+    const head = document.createElement("div");
+    head.className = "agent-output-restored";
+    head.textContent = t("agent.restored", {
+      engine: run.engine_display || run.engine || "?",
+      status: run.status || "?",
+      when: run.started_at ? formatLocalTime(run.started_at) : "?",
+    });
+    linesContainer.appendChild(head);
+
+    (res.lines || []).forEach((line) => {
+      const div = document.createElement("div");
+      div.className = "agent-output-line";
+      div.textContent = line;
+      linesContainer.appendChild(div);
+    });
+
+    const meta = document.getElementById("agentOutputMeta-" + escapeHtml(root));
+    if (meta) {
+      meta.textContent =
+        t("agent.output.lines") + ": " + (res.total || 0) +
+        (run.truncated ? " (" + t("agent.output.truncated") + ")" : "");
+    }
+    const panel = linesContainer.parentElement;
+    if (panel) panel.scrollTop = panel.scrollHeight;
+  }).catch((e) => console.error("transcript restore failed:", e));
+}
+
 function pollAgentOutput() {
   window.pywebview.api.list_running_agents().then(agents => {
     const badge = document.getElementById("runningAgentsBadge");

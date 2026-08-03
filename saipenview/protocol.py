@@ -21,7 +21,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.171.0"
+BASELINE_VERSION = "7.175.0"
 
 # RFC § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.

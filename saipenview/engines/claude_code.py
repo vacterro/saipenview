@@ -33,14 +33,25 @@ class ClaudeCodeEngine(AgentEngine):
         *,
         extra_args: list[str] | None = None,
     ) -> list[str]:
+        # `--project-dir` is not a Claude Code flag and never was; the project
+        # directory is the process cwd, which runtime.py already sets from
+        # project_root (runtime.py:104). Passing an unknown flag is how a
+        # launch dies before it prints anything a user could read.
+        #
+        # `--output-format stream-json` also requires `--verbose` in print
+        # mode -- without it the CLI refuses the combination.
+        #
+        # NOT reproduced live: `claude` is not on PATH on this machine, so
+        # this is read-and-reason against the documented flag set, unlike the
+        # gemini/codex/opencode adapters which were checked against their own
+        # --help output.
         cmd = [
             "claude",
-            "--project-dir",
-            project_root,
             "--print",
             instruction,
             "--output-format",
             "stream-json",
+            "--verbose",
         ]
         if extra_args:
             cmd.extend(extra_args)

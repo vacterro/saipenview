@@ -278,6 +278,8 @@ const LOCALE_EN = {
   "agent.shortcut.hunt.title": "Send 'saipen hunt' — sweep the codebase for new problems",
   "agent.shortcut.clean.title": "Send 'saipen clean' — tidy the board and the repo",
   "agent.output.lines": "Lines",
+  "agent.restored": "— stored transcript — ${engine} — ${status} — ${when} —",
+  "agent.output.truncated": "transcript capped",
   "agent.output.title": "Live output from the agent process. Read-only.",
-  "agent.noEngines": "No agent CLI found on PATH (Claude, Gemini, Codex, Aider, Cline). A generic CLI is selected as a fallback.",
+  "agent.noEngines": "No agent CLI found on PATH (Claude, Gemini, Codex, OpenCode, Aider, Cline, Goose, Agy). A generic CLI is selected as a fallback.",
 };

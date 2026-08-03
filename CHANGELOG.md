@@ -4,6 +4,25 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.9] - 2026-08-03
+
+### Fixed
+- Gemini adapter never ran headless. `engines/gemini.py` built `gemini prompt <instruction>`, and Gemini CLI has no `prompt` subcommand — the string fell through to the default `gemini [query..]` positional and opened an *interactive* session whose query happened to start with the word "prompt", then waited for a human a subprocess pipe never provides. Now `--prompt <instruction> --yolo`, with `GEMINI_CLI_TRUST_WORKSPACE=true` in the launch env because the live repro then stopped on "not running in a trusted directory"
+- Claude Code adapter passed `--project-dir`, which is not a Claude Code flag; the project directory is the process cwd, which `runtime.py` already sets. Also added the `--verbose` that `--output-format stream-json` requires in print mode
+- Aider adapter used `--yes`, which only worked by argparse prefix matching; the flag is `--yes-always`
+- Agent transcripts no longer die with the process. Output lived in an in-memory `deque(maxlen=5000)` and nowhere else, so closing SAIPENVIEW erased both the transcript and any evidence a run had happened
+- Killing an agent was recorded as a crash. `kill()` set the status *after* `terminate()`, but terminate makes stdout hit EOF and the reader thread reaches its own tail first — so the stored record said `failed` while the live status said `killed`
+- Two agent runs started in the same second shared a session id and silently overwrote each other's transcript
+- Hotkey parsing lost `,` and `+` as keys. Both are hotkey syntax *and* real keys, so a naive split turned `","` into two empty strings and dropped the comma from `ctrl+,`
+- Protocol baseline 7.171.0 -> 7.175.0 (stamp-only, no vocabulary drift; the SAIPEN repo shipped four releases while this was being written)
+
+### Added
+- OpenCode adapter (`opencode run <message>`). It was installed, already owned tickets on this project's own board, and was the one agent SAIPENVIEW could not launch
+- Agent run history and stored transcripts (`saipenview/sessions.py`): one metadata + transcript pair per run under `_data/sessions/`, capped at 50 runs per project and 5 MB per transcript. New `get_agent_history`, `get_agent_transcript` and `get_last_agent_transcript` API methods; the Agent Control console reloads the last stored transcript when nothing is running, labelled so old output is never mistaken for live. A run left mid-flight by a dead SAIPENVIEW reads back as `interrupted`, not as an agent still working
+
+### Changed
+- `default_engine` had been a config key read by nothing, so the launcher always opened on whatever the registry listed first. It now preselects the configured engine when that engine is actually installed, and remembers the last one launched
+
 ## [0.1.8] - 2026-08-02
 
 ### Fixed

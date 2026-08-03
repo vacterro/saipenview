@@ -20,6 +20,7 @@ from typing import Literal
 
 from saipenview.engines.base import AgentEngine
 from saipenview.events import event_bus
+from saipenview.sessions import SessionStore
 from saipenview.watcher import SaipenWatcher
 
 # Maximum lines to keep in the per-process output buffer.
@@ -43,6 +44,10 @@ class AgentProcess:
     )
     _line_count: int = 0
     _reader_thread: threading.Thread | None = None
+    # Set once the SessionStore has a transcript open for this run. None means
+    # history could not be written (disk full, read-only _data/) -- the run
+    # still proceeds, it just leaves no record.
+    run_id: str | None = None
 
     def elapsed_seconds(self) -> float:
         """Return seconds since launch (or total if finished)."""
@@ -62,6 +67,7 @@ class ProcessManager:
         self._processes: dict[str, AgentProcess] = {}  # keyed by project_root
         self._buffer_size = buffer_size
         self.watcher = SaipenWatcher()
+        self.sessions = SessionStore()
 
     def launch(
         self,
@@ -123,6 +129,12 @@ class ProcessManager:
             output_lines=deque(maxlen=self._buffer_size),
         )
 
+        record = self.sessions.start(
+            project_root, engine.name, engine.display_name, instruction, pid=proc.pid
+        )
+        if record is not None:
+            ap.run_id = record.run_id
+
         with self._lock:
             self._processes[project_root] = ap
 
@@ -158,6 +170,13 @@ class ProcessManager:
         if ap.status != "running":
             return {"ok": False, "error": f"Agent is not running (status={ap.status})"}
 
+        # Record the INTENT before terminating, not after. terminate() makes
+        # stdout hit EOF immediately, so _read_output's tail can run and finish
+        # the session before this method gets another line -- and it read the
+        # status to decide what to store. Setting it afterwards left the disk
+        # saying "failed" while memory said "killed": a deliberate stop filed
+        # as a crash, and the two disagreeing about the same run.
+        ap.status = "killed"
         try:
             ap.process.terminate()
             # Give it 3s to die gracefully, then force kill
@@ -167,10 +186,10 @@ class ProcessManager:
                 ap.process.kill()
                 ap.process.wait(timeout=2)
         except (OSError, subprocess.SubprocessError) as exc:
+            ap.status = "running"  # still alive; the kill is what failed
             print(f"SAIPENVIEW: kill agent failed: {exc}", file=sys.stderr)
             return {"ok": False, "error": str(exc)}
 
-        ap.status = "killed"
         ap.finished_at = datetime.now(timezone.utc)
         ap.exit_code = ap.process.returncode
 
@@ -303,6 +322,10 @@ class ProcessManager:
                 line = raw_line.rstrip("\n\r")
                 ap.output_lines.append(line)
                 ap._line_count += 1
+                # The deque is a 5000-line rolling window; this is the copy
+                # that survives the window rolling over AND the app closing.
+                if ap.run_id:
+                    self.sessions.append(ap.run_id, line)
 
                 # Try structured parsing via engine
                 event = ap.engine.parse_event(line)
@@ -339,7 +362,15 @@ class ProcessManager:
 
         ap.exit_code = ap.process.returncode
         ap.finished_at = datetime.now(timezone.utc)
-        ap.status = "done" if ap.exit_code == 0 else "failed"
+        # Do not overwrite an explicit kill. terminate() makes stdout hit EOF,
+        # so this thread wakes up right after kill() has already recorded
+        # "killed" -- and a terminated process exits non-zero, so the old
+        # unconditional assignment relabelled every deliberate stop as
+        # "failed", which reads as the agent having crashed.
+        if ap.status != "killed":
+            ap.status = "done" if ap.exit_code == 0 else "failed"
+        if ap.run_id:
+            self.sessions.finish(ap.run_id, ap.status, ap.exit_code)
 
         event_bus.publish(
             "agent.finished",

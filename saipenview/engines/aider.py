@@ -26,7 +26,10 @@ class AiderEngine(AgentEngine):
         *,
         extra_args: list[str] | None = None,
     ) -> list[str]:
-        cmd = ["aider", "-m", instruction, "--yes"]
+        # `--yes-always` is the real flag name; `--yes` only worked by
+        # argparse prefix matching, which stops working the day aider adds any
+        # other option starting with "--yes".
+        cmd = ["aider", "-m", instruction, "--yes-always"]
         if extra_args:
             cmd.extend(extra_args)
         return cmd

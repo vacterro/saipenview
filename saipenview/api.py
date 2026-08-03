@@ -534,6 +534,7 @@ class Api:
             "file_viewer_default",
             "locale",
             "layout_swap",
+            "default_engine",
         ):
             if k in settings:
                 self._config[k] = settings[k]
@@ -1196,3 +1197,26 @@ class Api:
     def list_running_agents(self) -> list[dict]:
         """Return status dicts for all tracked agent processes."""
         return self._process_manager.list_running()
+
+    def get_agent_history(self, root: str, limit: int = 20) -> list[dict]:
+        """Past agent runs for a project, newest first, across restarts."""
+        return self._process_manager.sessions.history(root, limit=limit)
+
+    def get_agent_transcript(self, run_id: str, max_lines: int = 2000) -> dict:
+        """The stored output of one past run."""
+        return self._process_manager.sessions.transcript(run_id, max_lines=max_lines)
+
+    def get_last_agent_transcript(self, root: str, max_lines: int = 500) -> dict:
+        """Last run for a project plus its transcript.
+
+        This is what the panel shows when nothing is running: without it a
+        restart presents an empty console and no evidence an agent was ever
+        here, which is the whole defect this exists to close.
+        """
+        last = self._process_manager.sessions.last_run(root)
+        if not last:
+            return {"found": False}
+        body = self._process_manager.sessions.transcript(
+            last["run_id"], max_lines=max_lines
+        )
+        return {"found": bool(body.get("found")), "run": last, **body}
