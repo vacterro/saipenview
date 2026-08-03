@@ -42,30 +42,62 @@ _US_SCAN_CODES: dict[str, int] = {
 
 
 def to_layout_independent(combo: str):
-    """Turn ``"ctrl+q"`` into the parsed scan-code form ``keyboard`` accepts.
+    """Rewrite ``"ctrl+q"`` into a form ``keyboard.add_hotkey`` accepts, with
+    the character keys pinned to their US positions.
 
-    Only the character keys are pinned to their US positions. Everything else
-    -- modifiers, F-keys, ``esc``, ``space`` -- keeps going through
-    ``keyboard.key_to_scan_codes``, which is already layout-independent for
-    those and knows about left/right and numpad duplicates this table has no
-    business restating.
+    Returns one of three shapes, all of which `keyboard` parses correctly:
 
-    Raises ValueError for a combo ``keyboard`` itself cannot parse, so the
+    * an ``int`` scan code, for a single pinned character key;
+    * a ``tuple`` of key tokens -- names for modifiers and named keys, ``int``
+      scan codes for pinned characters -- for a one-step combo;
+    * the original ``str``, for a multi-step combo like ``"ctrl+a, b"``, where
+      `keyboard`'s own parsing is used unchanged.
+
+    Only character keys are pinned. Modifiers, F-keys, ``esc`` and ``space``
+    keep going through `keyboard`, which is already layout-independent for
+    those and knows about the left/right and numpad duplicates this table has
+    no business restating.
+
+    **Do not return `keyboard.parse_hotkey`'s output from here.** That was the
+    v0.1.8 shape and it is silently wrong: `add_hotkey` re-parses whatever it
+    is given with `parse_hotkey_combinations`, whose first branch is
+    ``if _is_number(hotkey) or len(hotkey) == 1``. A parsed ONE-STEP hotkey is
+    a 1-tuple, so it matched that branch and was read as a single key whose
+    "alternatives" were the modifiers -- turning ctrl+shift+alt+q into "ctrl OR
+    shift OR alt OR q". Every SAIPENVIEW hotkey then fired on a bare modifier
+    press, including the kill hotkey, whose handler is `os._exit(0)`. The app
+    shut itself down within seconds of any typing, with no crash and no log.
+    The shapes above are the ones `parse_hotkey` handles as intended.
+
+    Raises ValueError for a combo `keyboard` itself cannot parse, so the
     caller's per-combo error handling behaves exactly as it did before.
     """
-    steps = []
-    for step in _split_outside_keys(combo.lower(), ","):
-        keys = []
-        for name in _split_outside_keys(step, "+"):
-            name = name.strip()
-            if not name:
-                # A trailing or doubled separator: hand the whole thing back to
-                # keyboard rather than guessing at what was meant.
-                return keyboard.parse_hotkey(combo)
-            scan = _US_SCAN_CODES.get(name)
-            keys.append((scan,) if scan is not None else tuple(keyboard.key_to_scan_codes(name)))
-        steps.append(tuple(keys))
-    return tuple(steps)
+    steps = _split_outside_keys(combo.lower(), ",")
+    if len(steps) != 1:
+        # Multi-step ("press this, then that"). Pinning would need a shape
+        # `keyboard` has no unambiguous spelling for, and these are not
+        # SAIPENVIEW hotkeys anyway -- hand the string back untouched.
+        return combo
+
+    tokens: list[str | int] = []
+    for raw in _split_outside_keys(steps[0], "+"):
+        name = raw.strip()
+        if not name:
+            # A trailing or doubled separator: let keyboard reject it, so the
+            # error the caller sees is the one it always was.
+            return combo
+        scan = _US_SCAN_CODES.get(name)
+        if scan is not None:
+            tokens.append(scan)
+        else:
+            # Validate now rather than at registration, so a bad name raises
+            # here and start() reports THIS combo instead of a later one.
+            keyboard.key_to_scan_codes(name)
+            tokens.append(name)
+
+    # A 1-tuple would hit that same `len(hotkey) == 1` branch, so a lone key
+    # goes back as the bare scan code, which is the documented spelling.
+    return tokens[0] if len(tokens) == 1 else tuple(tokens)
 
 
 def _split_outside_keys(text: str, sep: str) -> list[str]:

@@ -4,6 +4,17 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.10] - 2026-08-03
+
+### Fixed
+- **The app shut itself down within seconds of any typing.** Regression shipped in 0.1.8. `to_layout_independent` returned `keyboard.parse_hotkey`'s output, but `add_hotkey` re-parses its argument with `parse_hotkey_combinations`, whose first branch is `if _is_number(hotkey) or len(hotkey) == 1` — and a parsed *one-step* hotkey is a 1-tuple, so it matched that branch and was read as a single key whose "alternatives" were the modifiers. `ctrl+shift+alt+q` became `ctrl OR shift OR alt OR q`: 36 four-key combinations collapsed to 8 one-key ones. That hotkey is the kill switch and its handler is `os._exit(0)`, so pressing Ctrl anywhere terminated SAIPENVIEW with no window, no dialog, no log and exit code 0. Layout pinning now returns shapes `keyboard` parses as intended, and the pinned combinations are provably a strict subset of what the plain string form would match
+- The kill switch is no longer a silent death: `force_destroy` writes a stack to `_data/force_exit.log` (and stderr) before exiting. Under `pythonw.exe` via `run.vbs`, `sys.stderr` is `None`, so this path previously left nothing at all behind
+- Protocol baseline 7.175.0 -> 7.176.0, and a real vocabulary drift with it: `ANY_FROM` gained `HUNT`, because `saipen hunt` enters HUNT from any phase (RFC § 2.1). The canary caught this rather than the stamp check alone
+
+### Notes
+- Startup was measured on the real launch path and is **not** slow: 1.6–2.3s from `run.vbs` to the window being shown (imports 0.19s, `create_window` 0.26s, `webview.start` 0.59s). WebView2 initialisation is the floor. The reported slowness is most plausibly the shutdown bug above — the app died, its socket lingered, and the next launch either exited quietly at the single-instance guard or waited out its bind retries
+- "Two instances running at once" was not real. `.venv\Scripts\pythonw.exe` is Python's venv launcher stub: it spawns the base interpreter as a child, so one launch always shows two `pythonw.exe` processes parented to each other. Port 47189 only ever had one listener
+
 ## [0.1.9] - 2026-08-03
 
 ### Fixed

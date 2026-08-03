@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
+import keyboard
 import pytest
 
 from saipenview.hotkey import _US_SCAN_CODES, HotkeyListener, to_layout_independent
 
 
-def _flat(parsed):
-    """All scan codes in a parsed hotkey, in order, as a list of sets."""
-    return [set(key) for step in parsed for key in step]
+def _combos(combo):
+    """What `keyboard` will ACTUALLY match, for our form of a combo.
+
+    This is the assertion the first version of these tests was missing. They
+    checked what `to_layout_independent` returned and never what `add_hotkey`
+    made of it -- and `add_hotkey` re-parses its argument, so the two are not
+    the same question.
+    """
+    steps = keyboard.parse_hotkey_combinations(to_layout_independent(combo))
+    return [set(c) for c in steps[0]]
+
+
+def _flat(combo):
+    """The scan codes every match of a one-step combo requires."""
+    sets = _combos(combo)
+    return [set.intersection(*sets)] if sets else []
 
 
 class TestLayoutIndependence:
@@ -24,11 +38,45 @@ class TestLayoutIndependence:
 
     def test_letter_pins_to_the_us_position(self):
         # 16 is the physical key labelled Q on a US board. Nothing else.
-        assert _flat(to_layout_independent("ctrl+q"))[-1] == {16}
+        assert all(16 in c for c in _combos("ctrl+q"))
+
+    def test_every_match_needs_the_modifier_AND_the_letter(self):
+        """The v0.1.8 regression, stated as an assertion.
+
+        `add_hotkey` re-parses with `parse_hotkey_combinations`, whose first
+        branch is `if _is_number(hotkey) or len(hotkey) == 1`. A parsed
+        one-step hotkey IS a 1-tuple, so it was read as a single key whose
+        alternatives were the modifiers: ctrl+shift+alt+q became "ctrl OR
+        shift OR alt OR q". The kill hotkey's handler is os._exit(0), so the
+        app shut itself down within seconds of any typing, no crash, no log.
+        """
+        for combo, size in (("ctrl+q", 2), ("ctrl+alt+x", 3), ("ctrl+shift+alt+q", 4)):
+            matches = _combos(combo)
+            assert matches, combo
+            for c in matches:
+                assert len(c) == size, f"{combo} matches on {len(c)} key(s): {c}"
+
+    def test_a_bare_modifier_never_matches(self):
+        # The exact firing condition that killed the process.
+        ctrl_codes = set(keyboard.key_to_scan_codes("ctrl"))
+        for c in _combos("ctrl+shift+alt+q"):
+            assert not c <= ctrl_codes, f"bare ctrl would fire the hotkey: {c}"
+
+    def test_our_matches_are_a_subset_of_the_string_form(self):
+        # Pinning may only ever NARROW what keyboard would have matched --
+        # never add a combination of its own invention.
+        for combo in ("ctrl+q", "ctrl+alt+x", "alt+f14", "ctrl+shift+alt+q"):
+            ours = {frozenset(c) for c in _combos(combo)}
+            theirs = {
+                frozenset(c)
+                for c in keyboard.parse_hotkey_combinations(combo)[0]
+            }
+            assert ours <= theirs, combo
+            assert ours, combo
 
     def test_every_letter_and_digit_is_pinned(self):
         for name, scan in _US_SCAN_CODES.items():
-            assert _flat(to_layout_independent(name)) == [{scan}], name
+            assert _flat(name) == [{scan}], name
 
     def test_case_is_irrelevant(self):
         assert to_layout_independent("Ctrl+Q") == to_layout_independent("ctrl+q")
@@ -36,16 +84,19 @@ class TestLayoutIndependence:
     def test_modifiers_still_carry_their_left_right_variants(self):
         # Pinning is only for character keys; ctrl must keep matching either
         # side of the keyboard, which the US table has no business restating.
-        assert len(_flat(to_layout_independent("ctrl+q"))[0]) > 1
+        assert len(_combos("ctrl+q")) > 1
 
     def test_function_keys_are_left_to_keyboard(self):
         # alt+f14 is the shipped snap default and has no entry in the table.
-        assert len(_flat(to_layout_independent("alt+f14"))) == 2
+        for c in _combos("alt+f14"):
+            assert len(c) == 2
 
-    def test_multi_step_combo_keeps_its_steps(self):
-        parsed = to_layout_independent("ctrl+shift+a, b")
-        assert len(parsed) == 2
-        assert _flat(parsed)[-1] == {_US_SCAN_CODES["b"]}
+    def test_multi_step_combo_is_handed_back_to_keyboard(self):
+        # Pinning a multi-step combo has no unambiguous spelling keyboard
+        # accepts, and these are not SAIPENVIEW hotkeys. The string goes back
+        # untouched, and keyboard still parses it into two steps.
+        assert to_layout_independent("ctrl+shift+a, b") == "ctrl+shift+a, b"
+        assert len(keyboard.parse_hotkey_combinations("ctrl+shift+a, b")) == 2
 
     def test_a_separator_can_also_be_a_key(self):
         # `,` and `+` are both hotkey syntax and real keys, so a naive split
@@ -54,10 +105,11 @@ class TestLayoutIndependence:
         # `keyboard` name tables had lazily filled in enough aliases for the
         # fallback to return something other than {51} -- i.e. intermittently,
         # depending on what ran before it.
-        assert _flat(to_layout_independent(",")) == [{_US_SCAN_CODES[","]}]
-        assert _flat(to_layout_independent("ctrl+,"))[-1] == {_US_SCAN_CODES[","]}
-        assert len(to_layout_independent("+")) == 1
-        assert len(_flat(to_layout_independent("ctrl++"))) == 2
+        assert _flat(",") == [{_US_SCAN_CODES[","]}]
+        assert all(_US_SCAN_CODES[","] in c for c in _combos("ctrl+,"))
+        assert _combos("+")
+        for c in _combos("ctrl++"):
+            assert len(c) == 2
 
     def test_unknown_key_still_raises(self):
         # start() relies on this to report a bad combo and keep the others.

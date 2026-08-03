@@ -21,7 +21,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.175.0"
+BASELINE_VERSION = "7.176.0"
 
 # RFC § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.
@@ -135,8 +135,13 @@ READ_ONLY_BANNED_PHASES: tuple[str, ...] = (
 # transition table's FROM row does not restrict them. SHIP is deliberately
 # absent: `saipen ship` is a command from anywhere, but `phase: SHIP` is
 # reachable only from REVIEW. A command is not a transition.
+# HUNT joined this set when `saipen hunt` became a real command: RFC § 2.1
+# says it "enters HUNT from any phase regardless of board state -- that command
+# exists precisely to run the sweep now instead of waiting for this section to
+# reach it". Read from the RFC and cross-checked against tools/validate.py's
+# own ANY_FROM before copying, per T-097's rule.
 ANY_FROM: frozenset[str] = frozenset(
-    {"VALIDATE", "MARKHUNT", "CLEAN", "TRANSLATE", "PREPARE", "PLAN"}
+    {"VALIDATE", "MARKHUNT", "CLEAN", "TRANSLATE", "PREPARE", "PLAN", "HUNT"}
 )
 
 # RFC § 1.6 transition table.

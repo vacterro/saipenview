@@ -11,6 +11,7 @@ from pathlib import Path
 import webview
 
 from saipenview import zone_picker
+from saipenview.config import config_path
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -447,8 +448,40 @@ class MainWindow:
         self._window.destroy()
 
     def force_destroy(self) -> None:
+        """Kill switch: terminate the process immediately, skipping teardown.
+
+        Leaves a trace on the way out. Without one this is a completely silent
+        death -- no window, no crash dialog, no log, exit code 0 -- and when a
+        hotkey regression started firing it spuriously, the app looked like it
+        was "just turning itself off". A single line naming the kill switch is
+        the difference between a one-minute diagnosis and an afternoon of
+        bisecting process trees.
+
+        Written to a file, not only to stderr: this runs under `pythonw.exe`,
+        launched from `run.vbs`, where there is no console attached and
+        `sys.stderr` is None -- exactly the configuration in which the silent
+        death happened.
+        """
         self._save_geometry()
         import os
+        import traceback
+        from datetime import datetime, timezone
+
+        note = (
+            f"{datetime.now(timezone.utc).isoformat()} SAIPENVIEW: kill switch "
+            f"(force_destroy) -- terminating now.\n"
+            f"{''.join(traceback.format_stack())}"
+        )
+        try:
+            print(note, file=sys.stderr)
+        except (AttributeError, OSError, ValueError):
+            pass  # no console under pythonw; the file below is the real record
+        try:
+            (config_path().parent / "force_exit.log").write_text(
+                note, encoding="utf-8"
+            )
+        except OSError:
+            pass
 
         os._exit(0)
 
