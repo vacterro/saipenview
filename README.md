@@ -26,20 +26,6 @@
 
 ---
 
-<br>
-
-## ✨ At a Glance
-
-<p align="center">
-  <img src="screenshots/dashboard.png" alt="SAIPENVIEW Dashboard Screenshot" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
-  <br>
-  <em>Every SAIPEN project, sub-agent, ticket, and git status — all in one view.</em>
-</p>
-
-<br>
-
----
-
 ## 🚀 Features
 
 <table>
