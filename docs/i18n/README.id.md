@@ -18,23 +18,8 @@
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
-    [🤍 Dukung Pengembang](https://buymeacoffee.com/vacuum34)
   </p>
 </div>
-
-<br>
-
----
-
-<br>
-
-## ✨ Sekilas Pandang
-
-<p align="center">
-  <img src="../../screenshots/dashboard.png" alt="SAIPENVIEW Dashboard Screenshot" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
-  <br>
-  <em>Setiap proyek SAIPEN, sub-agen, tiket, dan status git — semuanya dalam satu tampilan.</em>
-</p>
 
 <br>
 

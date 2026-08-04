@@ -18,23 +18,8 @@
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
-    [🤍 支持开发者](https://buymeacoffee.com/vacuum34)
   </p>
 </div>
-
-<br>
-
----
-
-<br>
-
-## ✨ 一览
-
-<p align="center">
-  <img src="../../screenshots/dashboard.png" alt="SAIPENVIEW 仪表盘截图" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
-  <br>
-  <em>每个 SAIPEN 项目、子 Agent、工单和 Git 状态 —— 尽在掌握。</em>
-</p>
 
 <br>
 

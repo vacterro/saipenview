@@ -4,6 +4,14 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.11] - 2026-08-04
+
+### Added
+- **Agent Control panel strings translated into all 33 locales.** The panel's 25 keys (added in 0.1.10's engine work, English-only with runtime fallback) now ship translated in 22 real-translation locales (ar bg da de ded el es et fi fr hu id ko nl no pt ro ru th tr uk zh-CN) and `[XX]`-tagged placeholders in the 11 stub locales (cs he hi hr it ja pl sk sv vi zh), matching the existing stub convention. `node --check` clean on all 34 locale files; exactly 25 `agent.*` keys added per file, zero removals
+
+### Changed
+- **README translation mirrors caught up with the current English README.** All 33 `docs/i18n/README.*.md` dropped the removed buy-me-a-coffee support link and the whole At-a-Glance/screenshot section (both deleted from the English README after the previous translation pass), so the mirrors again mirror the live document. Structure verified per file: 9 headings == EN, `<br> --- ## 🚀` layout identical
+
 ## [0.1.10] - 2026-08-03
 
 ### Fixed

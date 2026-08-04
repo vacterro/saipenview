@@ -18,23 +18,8 @@
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Plataforma"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Versão"></a>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
-    [🤍 Apoiar Desenvolvedor](https://buymeacoffee.com/vacuum34)
   </p>
 </div>
-
-<br>
-
----
-
-<br>
-
-## ✨ Visão Geral
-
-<p align="center">
-  <img src="../../screenshots/dashboard.png" alt="Captura de ecrã do Painel SAIPENVIEW" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
-  <br>
-  <em>Todos os projetos SAIPEN, subagentes, tickets e status git — tudo em uma única visualização.</em>
-</p>
 
 <br>
 
