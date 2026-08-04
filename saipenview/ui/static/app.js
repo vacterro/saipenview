@@ -3209,28 +3209,39 @@ function renderAgentPanel(root, container) {
   const status = agentStatusCache[root];
   const isRunning = status && status.status === "running";
 
-  if (currentAgentPanelRoot !== root) {
+  const switchedProject = currentAgentPanelRoot !== root;
+  if (switchedProject) {
     currentAgentPanelRoot = root;
     agentSinceLineNum[root] = 0;
   }
 
   const stateStr = isRunning ? "running" : "stopped";
-  let shouldBuildSkeleton = true;
   const existingPanel = container.querySelector('.agent-panel');
-  if (currentAgentPanelRoot === root && existingPanel) {
-    shouldBuildSkeleton = false;
-  }
+  // `switchedProject`, not `currentAgentPanelRoot === root` -- that comparison
+  // was made three lines after the assignment above, so it was always true and
+  // the skeleton was never rebuilt when the user moved to another project. The
+  // panel kept the previous project's output.
+  const shouldBuildSkeleton = switchedProject || !existingPanel;
 
   if (shouldBuildSkeleton) {
-    container.innerHTML = `<div class="agent-panel detail-card" style="margin-top:4px;" data-state="${stateStr}">
+    // Static ids, and the project root on a data attribute instead (T-159).
+    // These used to be `id="agentControlTop-${root}"`, which put a Windows path
+    // -- drive letter, colon, backslashes -- inside an id, and then read it
+    // back with `container.querySelector('#agentControlTop-' + root)`. That is
+    // not a valid selector, so querySelector THREW, and because
+    // renderDetailPane calls this function as its last statement the throw took
+    // the rest of the detail pane with it. There is exactly one agent panel in
+    // the document (#agentPanelContainer, one detail pane), so the path was
+    // never needed to tell instances apart.
+    container.innerHTML = `<div class="agent-panel detail-card" style="margin-top:4px;" data-state="${stateStr}" data-root="${escapeHtml(root)}">
       <div class="card-title">${escapeHtml(t("agent.title"))}</div>
-      <div class="agent-subtitle" id="agentSubtitle-${escapeHtml(root)}">${escapeHtml(t(isRunning ? "agent.subtitle.running" : "agent.subtitle.idle"))}</div>
-      <div id="agentControlTop-${escapeHtml(root)}"></div>
-      <div class="agent-output-panel sunken" id="agentOutputPanel-${escapeHtml(root)}" title="${escapeHtml(t("agent.output.title"))}">
-        <div id="agentOutputLines-${escapeHtml(root)}"></div>
-        <div class="agent-output-meta" id="agentOutputMeta-${escapeHtml(root)}">${escapeHtml(t("agent.output.lines"))}: 0</div>
+      <div class="agent-subtitle" id="agentSubtitle">${escapeHtml(t(isRunning ? "agent.subtitle.running" : "agent.subtitle.idle"))}</div>
+      <div id="agentControlTop"></div>
+      <div class="agent-output-panel sunken" id="agentOutputPanel" title="${escapeHtml(t("agent.output.title"))}">
+        <div id="agentOutputLines"></div>
+        <div class="agent-output-meta" id="agentOutputMeta">${escapeHtml(t("agent.output.lines"))}: 0</div>
       </div>
-      <div id="agentControlBottom-${escapeHtml(root)}"></div>
+      <div id="agentControlBottom"></div>
     </div>`;
     // Nothing running means the console would otherwise be blank, with no
     // sign an agent had ever been here -- the transcript used to die with the
@@ -3254,8 +3265,8 @@ function renderAgentPanel(root, container) {
     }
   }
 
-  const topEl = container.querySelector(`#agentControlTop-${escapeHtml(root)}`);
-  const bottomEl = container.querySelector(`#agentControlBottom-${escapeHtml(root)}`);
+  const topEl = container.querySelector("#agentControlTop");
+  const bottomEl = container.querySelector("#agentControlBottom");
 
   let topHtml = "";
   if (status) {
@@ -3405,7 +3416,7 @@ ${testBadgeHtml}
             // Drop the restored transcript: the console now belongs to the
             // run that just started, not to the one before it.
             agentRestoredRoots.delete(root);
-            const lines = document.getElementById("agentOutputLines-" + escapeHtml(root));
+            const lines = document.getElementById("agentOutputLines");
             if (lines) lines.innerHTML = "";
             pollAgentOutput();
           } else {
@@ -3466,7 +3477,7 @@ function restoreLastTranscript(root, container) {
     if (!res || !res.found) return;
     // The panel may have been rebuilt, or a live run may have started, while
     // this was in flight. Either way the stored lines are no longer wanted.
-    const linesContainer = document.getElementById("agentOutputLines-" + escapeHtml(root));
+    const linesContainer = document.getElementById("agentOutputLines");
     if (!linesContainer || linesContainer.childElementCount) return;
     const status = agentStatusCache[root];
     if (status && status.status === "running") return;
@@ -3488,7 +3499,7 @@ function restoreLastTranscript(root, container) {
       linesContainer.appendChild(div);
     });
 
-    const meta = document.getElementById("agentOutputMeta-" + escapeHtml(root));
+    const meta = document.getElementById("agentOutputMeta");
     if (meta) {
       meta.textContent =
         t("agent.output.lines") + ": " + (res.total || 0) +
@@ -3526,7 +3537,7 @@ function pollAgentOutput() {
       let since = agentSinceLineNum[root] || 0;
       window.pywebview.api.get_agent_output(root, since).then(res => {
         if (res && res.lines && res.lines.length > 0) {
-          const linesContainer = document.getElementById("agentOutputLines-" + escapeHtml(root));
+          const linesContainer = document.getElementById("agentOutputLines");
           if (linesContainer) {
             const panel = linesContainer.parentElement;
             const isScrolledToBottom = panel.scrollHeight - panel.clientHeight <= panel.scrollTop + 10;
