@@ -22,6 +22,21 @@
   --phase-init:#7A6A4A;  --phase-plan:#4A7A8A;  --phase-scout:#6A8A4A;
   --phase-hunt:#8A4A4A;  --phase-add:#4A8A5A;   --phase-clean:#8A5A4A;
   --phase-translate:#5A4A8A; --phase-validate:#4A8A8A;
+
+  /* Fluid metrics (T-155). One place to tune how the shell breathes.
+     `cqi` = 1% of the query container's inline size; see the container
+     declaration on `body` below for why this is not `vw`. Every one of these
+     is a clamp, so there is a floor the layout never collapses past and a
+     ceiling it never sprawls past -- fluid, not unbounded. */
+  --sidebarW: clamp(120px, 20cqi, 320px);
+  --fieldLabelW: clamp(52px, 9cqi, 96px);
+  --searchW: clamp(56px, 14cqi, 180px);
+  --excludeW: clamp(40px, 9cqi, 120px);
+  --filterW: clamp(48px, 9cqi, 110px);
+  --subNameW: clamp(48px, 8cqi, 140px);
+  /* Sub-agent rows indent to the field-label column so the two line up. Its own
+     token because the narrow band drops it to 0 while the labels keep theirs. */
+  --subIndentW: var(--fieldLabelW);
 }
 
 /* --uiFont is overridden at runtime from the font_family config key (T-076).
@@ -56,7 +71,21 @@ button:focus-visible { outline: 1px dotted var(--textPrimary); outline-offset: -
 input, select, textarea { height: 20px; padding: 1px 4px; background: var(--compareBack); color: var(--textPrimary); }
 
 html, body { height: 100%; overflow: hidden; }
-body { display: flex; flex-direction: column; }
+/* The app measures ITSELF, not the window (T-155).
+   `zoom_level` is applied as `document.body.style.zoom`, and `vw`/`vh` resolve
+   against the UNSCALED viewport: at 125% zoom a `90vw` box renders at 112.5%
+   of the window and overflows. A query container does not have that problem --
+   `cqi` is the container's own inline size, already in the same zoomed
+   coordinate space as every other length in this file. So all breakpoints and
+   fluid metrics below are container queries on `body`, and there is no `vw`
+   left in the shell.
+   Second effect, deliberate: `container-type` implies `contain: layout`, which
+   makes `body` the containing block for `position: fixed` descendants. The
+   overlays (`.modal-overlay`, `.collapse-hint`, `.context-menu`, `.toast-*`)
+   therefore size against the zoomed body box instead of the raw viewport,
+   which is what they always meant. */
+body { display: flex; flex-direction: column;
+  container-type: inline-size; container-name: app; }
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
   background: var(--surfaceRaised); padding: 1px 2px; gap: 1px; flex: 0 0 auto;
@@ -64,7 +93,7 @@ body { display: flex; flex-direction: column; }
   min-height: 20px; }
 .toolbar #status { color: var(--textMuted); font-size: 9px; white-space: nowrap; }
 .toolbar-left { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; }
-.filter-select { font-size: 9px; height: 14px; padding: 0 2px; max-width: 60px; }
+.filter-select { font-size: 9px; height: 14px; padding: 0 2px; max-width: var(--filterW); min-width: 0; }
 .error-badge { background: var(--danger); color: #fff; font-size: 8px; font-weight: bold; padding: 0 3px; min-width: 12px; text-align: center; border: 1px solid var(--borderHighlight); }
 .wt-badge { background: var(--accentTealDeep); color: var(--accentTeal); font-size: 8px; font-weight: bold; padding: 0 3px; min-width: 12px; text-align: center; border: 1px solid var(--borderMuted); cursor: pointer; }
 .wt-badge:hover { background: var(--accentTeal); color: var(--textPrimary); }
@@ -86,8 +115,11 @@ body { display: flex; flex-direction: column; }
 .bmac-btn { color: var(--textMuted); cursor: pointer; }
 .bmac-btn:hover { color: var(--goldStar); }
 
-.search-input { width: 80px; height: 14px; font-size: 9px; }
-.exclude-input { width: 50px !important; height: 14px !important; font-size: 9px !important; }
+/* `!important` on .exclude-input is load-bearing: index.html carries an inline
+   `style="width:60px"` on that field, and an important declaration is the only
+   thing in the cascade that outranks it. */
+.search-input { width: var(--searchW); min-width: 0; height: 14px; font-size: 9px; }
+.exclude-input { width: var(--excludeW) !important; min-width: 0 !important; height: 14px !important; font-size: 9px !important; }
 .toggle-btn { padding:0 2px; height:14px; line-height:10px; font-size:8px; cursor:pointer; border:2px solid; border-color:var(--borderHighlight) var(--borderDark) var(--borderDark) var(--borderHighlight); background:var(--surfaceRaised); color:var(--textPrimary); flex:0 0 auto; }
 .toolbar-left label { font-size: 8px !important; }
 .toolbar-left label input { width: 8px !important; height: 8px !important; }
@@ -112,7 +144,13 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
   padding:3px 5px; font-size:9px; white-space:nowrap; }
 .collapse-hint span { color:var(--textSecondary); }
 
-.project-list { width: 160px; flex: 0 0 auto; min-width: 100px; overflow-y: auto; background: var(--compareBack); }
+/* Fluid by default, absolute only once the user has dragged the handle -- the
+   drag writes an inline `width` (app.js applySidebarWidth), which outranks
+   this rule and is re-clamped on every window resize so it can never grow past
+   the container it lives in. */
+.project-list { width: var(--sidebarW); flex: 0 0 auto;
+  min-width: 88px; max-width: 60cqi;
+  overflow-y: auto; overflow-x: hidden; background: var(--compareBack); }
 
 .resize-handle { flex: 0 0 4px; width: 4px; cursor: col-resize; background: var(--borderMuted); }
 .resize-handle:hover, .resize-handle.dragging { background: var(--borderHighlight); }
@@ -197,12 +235,17 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .phase-dot.phase-BUILD, .phase-dot.phase-REVIEW { background: var(--accentTeal); }
 
 .sub-row { margin-left: 14px; padding: 1px 2px; display: flex; align-items: center; gap: 3px; height: 14px; overflow: hidden; color: var(--textMuted); font-size: 9px; }
-.sub-row .name { flex: 0 0 auto; max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-row .name { flex: 0 0 auto; max-width: var(--subNameW); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub-row .name::before { content: "\21B3 "; }
 .sub-row .phase { flex: 0 0 auto; font-size: 8px; }
 .sub-row .task { flex: 1 1 auto; min-width: 0; padding-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.detail-pane { flex: 1 1 auto; min-width: 100px; overflow-y: auto; background: var(--surfaceSoft); padding: 4px; display: flex; flex-direction: column; gap: 3px; }
+.detail-pane { flex: 1 1 auto; min-width: 0; overflow-y: auto; overflow-x: hidden; background: var(--surfaceSoft); padding: 4px; display: flex; flex-direction: column; gap: 3px; }
+/* renderDetailPane's wrapper. It used to carry these three properties as an
+   inline style, which meant the column stack could never be conditioned on
+   width -- an inline declaration outranks any rule here. It is a class now so
+   the wide-window band below can turn it into a grid. */
+.detail-content { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
 .detail-placeholder { color: var(--textMuted); padding: 12px; text-align: center; margin: auto; font-size: 11px; }
 
 .detail-header { display: flex; flex-direction: column; gap: 2px; padding-bottom: 4px; border-bottom: 1px solid var(--borderMuted); }
@@ -238,8 +281,26 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .detail-card.history { background: var(--compareBack); }
 .detail-card.history .card-title { color: var(--textMuted); font-weight: normal; }
 
-.detail-field { font-size: 10px; line-height: 1.6; padding: 1px 0; }
-.detail-field .label { color: var(--textMuted); font-weight: bold; display: inline-block; min-width: 76px; flex-shrink: 0; }
+/* overflow-wrap: a next_action or a blocker is arbitrary user text with no
+   guaranteed break opportunity, and without this it simply pushes the card
+   wider than the pane. */
+.detail-field { font-size: 10px; line-height: 1.6; padding: 1px 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* Sub-agent rows under State Summary. Indented to line up with the field
+   labels above them, which is why the indent is the same token. */
+.sub-detail-row { display: flex; align-items: baseline; gap: 4px; font-size: 10px;
+  min-width: 0; padding: 1px 0 1px var(--subIndentW); }
+.sub-detail-row .phase-dot { flex: 0 0 auto; }
+.sub-detail-row .sd-name { color: var(--borderHighlight); flex: 0 1 auto; max-width: var(--subNameW);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.sub-detail-row .sd-phase { font-size: 9px; min-width: 36px; flex: 0 0 auto; text-align: center; }
+.sub-detail-row .sd-task { color: var(--textSecondary); flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.sub-detail-row .sd-counts { color: var(--accentTeal); font-size: 8px; flex: 0 0 auto; margin: 0 2px; white-space: nowrap; }
+/* --fieldLabelW, not a literal 76px: the sub-agent rows in renderDetailPane
+   indent by exactly this value to line up under the fields above them, so the
+   two must move together or the alignment drifts at every width. */
+.detail-field .label { color: var(--textMuted); font-weight: bold; display: inline-block; min-width: var(--fieldLabelW); flex-shrink: 0; }
 
 .ticket-list { display: flex; flex-direction: column; gap: 1px; font-size: 9px; }
 .ticket-item { display: flex; gap: 2px; }
@@ -332,7 +393,15 @@ body.collapsed .detail-header .action-bar { display: none !important; }
 body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 
 .sub-detail-item { margin-bottom:4px; padding-bottom:4px; border-bottom:1px solid var(--borderMuted); }
-.sub-detail-item .sub-name { font-size:12px; font-weight:bold; color:var(--borderHighlight); letter-spacing:0.3px; }
+/* Name on the left, the S/B/L buttons and the phase pill on the right. It was
+   an inline `justify-content:space-between` flex with nothing allowed to
+   shrink, so at a narrow pane the button cluster pushed straight out of the
+   card. The buttons keep their size; the name gives way (T-155). */
+.sub-item-head { display: flex; justify-content: space-between; align-items: center;
+  gap: 4px; flex-wrap: wrap; min-width: 0; }
+.sub-detail-item .sub-name { font-size:12px; font-weight:bold; color:var(--borderHighlight); letter-spacing:0.3px;
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-detail-item .sub-file-btns { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
 .sub-detail-item .sub-phase { font-size:10px; }
 
 .collapsible-header { cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; }
@@ -762,3 +831,62 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .agent-launch-row select { flex: 0 0 120px; }
 .agent-launch-row textarea { flex: 1; height: 40px; resize: none; font-family: var(--uiFont); }
 .running-agents-badge { background: var(--accentTeal); color: var(--textPrimary); font-size: 9px; font-weight: bold; padding: 0 4px; height: 14px; line-height: 14px; border: 1px solid var(--borderHighlight); cursor: pointer; display: flex; align-items: center; }
+
+/* ============================================================
+   Responsive bands (T-155)
+   ------------------------------------------------------------
+   Container queries on `body`, never media queries: the app runs inside a
+   fixed-size WebView2 window under a user-set `zoom_level`, so the window's
+   pixel width is not the width the layout actually gets. `body`'s inline size
+   is. See the `container-type` declaration near the top of this file.
+
+   Three bands, each one only ever removing or shrinking the least useful
+   thing at that width. Nothing here changes what the app can do -- a control
+   that disappears in a band is one whose value is recoverable elsewhere (the
+   path is in the tooltip, the folder button opens it).
+   ============================================================ */
+
+/* --- Wide: stop stacking cards in a single narrow column ------------------ */
+@container app (min-width: 1100px) {
+  .detail-content {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    align-content: start;
+    gap: 4px;
+  }
+  /* The two things that must stay full width and stay at the top: which
+     project this is, and what it wants done next. */
+  .detail-content > .detail-header,
+  .detail-content > .next-action-banner { grid-column: 1 / -1; }
+  .detail-card { align-self: start; }
+}
+
+/* --- Narrow: the toolbar stops being able to hold everything ------------- */
+@container app (max-width: 620px) {
+  .toolbar .btn-group button { font-size: 8px; padding: 0 2px; }
+  .detail-field .label { line-height: 1.4; }
+  /* Full path is still on the header's own tooltip and one click away in
+     Folder; at this width it costs two wrapped lines to say it twice. */
+  .detail-path { display: none; }
+  .action-bar button { font-size: 8px; padding: 0 3px; }
+}
+
+/* --- Very narrow: sidebar gives ground so the detail pane stays usable --- */
+@container app (max-width: 420px) {
+  .project-list { max-width: 45cqi; }
+  .project-row { padding: 2px 3px 2px 6px; }
+  .project-row .updated { display: none; }
+  .toolbar #status { display: none; }
+  .detail-title { flex-wrap: wrap; }
+  .next-action-banner { flex-direction: column; gap: 1px; }
+  /* The label column and the matching sub-row indent are the two widest fixed
+     things left in the card; below this width the pane is worth more than the
+     alignment, so the labels sit inline and the sub rows stop indenting.
+     Not `:root { --subIndentW: 0 }` -- `html` is an ANCESTOR of the query
+     container, and `body` is the container itself; neither can be matched by a
+     rule inside `@container app`, so the override has to land on a descendant
+     that actually uses the value. */
+  .detail-field .label { min-width: 0; margin-right: 4px; }
+  .sub-detail-row { --subIndentW: 0px; }
+  .sub-detail-row .sd-counts { display: none; }
+}

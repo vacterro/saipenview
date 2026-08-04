@@ -793,7 +793,10 @@ function renderDetailPane(detail) {
 
   let contentDiv = document.getElementById("detailPaneContent");
   if (!contentDiv) {
-    pane.innerHTML = '<div id="detailPaneContent" style="display:flex; flex-direction:column; gap:3px; flex:1 1 auto;"></div><div id="agentPanelContainer"></div>';
+    // .detail-content, not an inline style: the layout has to be able to
+    // change with the pane's width (style.css responsive bands, T-155), and an
+    // inline declaration outranks every rule that would do that.
+    pane.innerHTML = '<div id="detailPaneContent" class="detail-content"></div><div id="agentPanelContainer"></div>';
     contentDiv = document.getElementById("detailPaneContent");
   }
 
@@ -892,7 +895,7 @@ function renderDetailPane(detail) {
               const sp = escapeHtml(s.path || '');
               return `
               <div class="sub-detail-item" data-sub-path="${sp}">
-                <div style="display:flex; justify-content:space-between;align-items:center;">
+                <div class="sub-item-head">
                   <span class="sub-name">${escapeHtml(s.name)}</span>
                   <span class="sub-file-btns">
                     <button class="sub-file-btn" data-sub-path="${sp}" data-file="STATE.md" title="Open STATE.md">S</button>
@@ -1000,12 +1003,17 @@ function renderDetailPane(detail) {
                   if (bc.blocked) counts.push(bc.blocked + ' BLOCKED');
                   if (bc.done) counts.push(bc.done + ' DONE');
                   const bcText = counts.length ? counts.join(', ') : '';
-                  return '<div style="display:flex; align-items:baseline; gap:4px; font-size:10px; padding:1px 0 1px 76px;">' +
-                    '<span class="phase-dot phase-' + escapeHtml(s.phase) + '" style="flex:0 0 auto;"></span>' +
-                    '<span style="color:var(--borderHighlight); flex:0 0 auto; max-width:60px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:9px;">' + escapeHtml(s.name || '') + '</span>' +
-                    '<span class="phase phase-' + escapeHtml(s.phase) + '" style="font-size:9px; min-width:36px; flex:0 0 auto; text-align:center;">' + escapeHtml(s.phase) + '</span>' +
-                    '<span style="color:var(--textSecondary); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:9px;" title="' + escapeHtml(s.task || '') + '">' + escapeHtml(s.task || '') + '</span>' +
-                    (bcText ? '<span style="color:var(--accentTeal); font-size:8px; flex:0 0 auto; margin:0 2px;">' + escapeHtml(bcText) + '</span>' : '') +
+                  // Classes, not inline styles (T-155): this row was the widest
+                  // fixed thing in the pane -- a hard 76px indent plus a 60px
+                  // name plus a 36px pill plus counts -- and at a narrow width
+                  // it overflowed the card by up to 100px. style.css can only
+                  // shrink it in the narrow band if the values live there.
+                  return '<div class="sub-detail-row">' +
+                    '<span class="phase-dot phase-' + escapeHtml(s.phase) + '"></span>' +
+                    '<span class="sd-name">' + escapeHtml(s.name || '') + '</span>' +
+                    '<span class="phase sd-phase phase-' + escapeHtml(s.phase) + '">' + escapeHtml(s.phase) + '</span>' +
+                    '<span class="sd-task" title="' + escapeHtml(s.task || '') + '">' + escapeHtml(s.task || '') + '</span>' +
+                    (bcText ? '<span class="sd-counts">' + escapeHtml(bcText) + '</span>' : '') +
                     (s.updated ? timeWithHeat(s.updated) : '') +
                     '</div>';
                 }).join('')}
@@ -2671,15 +2679,36 @@ const resizeHandle = document.getElementById("resizeHandle");
 const projectListEl = document.getElementById("projectList");
 let resizing = false;
 
-function applySidebarWidth(px) {
+// The width the user last chose, in CSS px. Kept in memory because a window
+// resize has to re-clamp against the ORIGINAL choice, not against whatever the
+// previous resize already squeezed it down to -- otherwise narrowing the window
+// and widening it again leaves the sidebar permanently thin (T-155).
+let preferredSidebarWidth = null;
+
+// Floor and ceiling here mirror .project-list's `min-width: 88px` and
+// `max-width: 60cqi` in style.css. Two copies of one rule is a drift risk, so
+// if either moves, move both.
+const SIDEBAR_MIN = 88;
+const SIDEBAR_MAX_FRACTION = 0.6;
+
+function applySidebarWidth(px, remember) {
   const container = document.querySelector(".main-container");
   const containerWidth = container ? container.clientWidth : 800;
-  const min = 100;
-  const max = Math.max(min, containerWidth - min - 4);
-  const clamped = Math.min(max, Math.max(min, px));
+  if (remember !== false) preferredSidebarWidth = px;
+  const max = Math.max(SIDEBAR_MIN, Math.min(containerWidth * SIDEBAR_MAX_FRACTION,
+                                             containerWidth - SIDEBAR_MIN - 4));
+  const clamped = Math.min(max, Math.max(SIDEBAR_MIN, px));
   projectListEl.style.width = clamped + "px";
   return clamped;
 }
+
+// Nothing re-ran the clamp when the window changed size, so a sidebar sized on
+// a wide window kept its absolute pixels on a narrow one and ate the detail
+// pane. Re-clamp the user's preference against the new container instead.
+window.addEventListener("resize", () => {
+  if (preferredSidebarWidth === null || !projectListEl) return;
+  applySidebarWidth(preferredSidebarWidth, false);
+});
 
 if (resizeHandle && projectListEl) {
   resizeHandle.addEventListener("mousedown", (e) => {
