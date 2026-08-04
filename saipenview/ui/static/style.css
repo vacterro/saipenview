@@ -364,13 +364,22 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .modal-overlay { position: fixed; inset: 0;
   background: var(--background);
   display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal-box { width: min(90vw, 320px); padding: 6px;
+/* `cqi`, not `vw`, and a percentage height rather than `vh` (T-156).
+   Both units resolved against the unscaled viewport, so under `body { zoom }`
+   the height cap was simply wrong: `max-height: 92vh` let the Settings dialog
+   render 176px TALLER than the window at 1280x720/150%, pinning its own Save
+   and Close buttons off-screen. The percentage resolves against .modal-overlay,
+   which is exactly the app box.
+   The 320px ceiling is gone too: it was the same 320px column whether the
+   window was 400px or 1920px wide, which is what made Settings a stack of
+   two-line wrapped labels with empty screen either side. */
+.modal-box { width: min(92cqi, 520px); padding: 6px;
   outline: 1px solid var(--borderDark);
   outline-offset: -3px;
   position: relative;
-  /* Small windows: cap height so the modal never grows past the screen and
-     pins its action buttons. The body scrolls instead (T-XXX). */
-  max-height: 92vh; display: flex; flex-direction: column; }
+  /* Cap height so the modal never grows past the app and pins its action
+     buttons off-screen. The body scrolls instead. */
+  max-height: 92%; display: flex; flex-direction: column; }
 .modal-box::before {
   content: ''; position: absolute; inset: -3px;
   border: 1px solid var(--borderDark);
@@ -379,9 +388,43 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .modal-title { font-weight: bold; font-size: 12px; padding-bottom: 4px;
   border-bottom: 1px solid var(--borderDark); margin-bottom: 6px; flex: 0 0 auto; }
 .modal-body { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
-.modal-body label, .modal-body .settings-field { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--textSecondary); }
-.modal-body input, .modal-body select { width: 100%; }
-.modal-actions { display: flex; gap: 4px; justify-content: flex-end; margin-top: 8px; flex: 0 0 auto; }
+.modal-body label, .modal-body .settings-field { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--textSecondary); min-width: 0; }
+.modal-body input, .modal-body select { width: 100%; min-width: 0; }
+.modal-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; align-items: center; margin-top: 8px; flex: 0 0 auto; }
+
+/* --- Settings: the one dialog with enough fields to need columns ---------
+   Eighteen labelled fields in a single 320px column is what the screenshot
+   showed: every label wrapped to two lines and the dialog scrolled, on a
+   1920px screen. `auto-fit` + `minmax` is the whole rule -- one column when
+   there is room for one, four when there is room for four, and no breakpoint
+   list to keep in sync with the field count. */
+#settingsModal .modal-box { width: min(94cqi, 940px); }
+#settingsModal .modal-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  align-content: start;
+  gap: 6px 12px;
+}
+/* Two fields are lists, not values, and read badly in a narrow cell. */
+#settingsModal .settings-wide { grid-column: 1 / -1; }
+
+/* --- The document-shaped modals: file viewer, diff, fleet ----------------
+   These carried their geometry as an inline `style="max-width:800px; width:90%;
+   height:80%; display:flex; flex-direction:column"`, repeated three times. Same
+   sizes, expressed once and in the same fluid vocabulary as everything else, so
+   the narrow bands can reach them. */
+.modal-box-lg, .modal-box-xl { display: flex; flex-direction: column; height: 80%; }
+.modal-box-lg { width: min(94cqi, 800px); }
+.modal-box-xl { width: min(94cqi, 900px); height: 60%; }
+.help-box-quick { max-width: 460px; }
+/* Status on the left, buttons on the right -- until there is no room for both
+   on one line, at which point they stack instead of pushing out of the box. */
+.modal-footer-row { display: flex; flex-wrap: wrap; justify-content: space-between;
+  gap: 4px; align-items: center; min-width: 0; }
+/* The button cluster is itself a nested flex row; three buttons that refuse to
+   wrap put the box 8px over its own edge at the smallest size we support. */
+.modal-footer-row > div { flex-wrap: wrap; min-width: 0; }
+.modal-actions > div { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 
 /* Collapsed mode hid the whole header, and the project name went with it --
    so the one thing a shrunken panel still has to say, which project this is,
@@ -528,7 +571,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   display: flex; align-items: flex-start; justify-content: center;
   z-index: 90; padding-top: 32px;
 }
-.search-overlay-box { width: min(90vw, 520px); max-height: 75vh;
+.search-overlay-box { width: min(92cqi, 620px); max-height: 78%;
   display: flex; flex-direction: column;
 }
 .search-overlay-header { display: flex; justify-content: space-between;
@@ -540,7 +583,10 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .search-overlay-cycle { font-size: 9px; color: var(--borderHighlight); font-weight: bold; }
 .search-overlay-header button { font-size: 9px; padding: 0 4px; min-width: 20px; height: 16px; }
 .search-overlay-body { flex: 1; overflow-y: auto;
-  max-height: calc(75vh - 40px);
+  /* flex, not a calc against a viewport unit: the header and footer are
+     variable-height, and `75vh - 40px` was both a guess at their size and
+     wrong under body zoom. */
+  min-height: 0;
 }
 .search-overlay-footer { padding: 2px 6px;
   border-top: 1px solid var(--borderDark);
@@ -549,9 +595,8 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 
 /* --- Help modal styles --- */
 .help-box {
-  max-width: 600px;
-  width: 90%;
-  max-height: 80vh;
+  width: min(92cqi, 760px);
+  max-height: 88%;
   display: flex;
   flex-direction: column;
 }
@@ -603,7 +648,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   white-space: nowrap;
   font-family: monospace;
   color: var(--accentTeal);
-  width: 200px;
+  width: clamp(88px, 20cqi, 220px);
 }
 .help-section code {
   font-family: monospace;
@@ -619,9 +664,8 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 
 /* --- Wiki modal styles --- */
 .wiki-box {
-  max-width: 800px;
-  width: 92%;
-  max-height: 85vh;
+  width: min(94cqi, 1040px);
+  max-height: 90%;
   display: flex;
   flex-direction: column;
 }
@@ -632,7 +676,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   overflow: hidden;
 }
 .wiki-toc {
-  width: 180px;
+  width: clamp(104px, 22cqi, 220px);
   flex-shrink: 0;
   border-right: 1px solid var(--borderDark);
   padding: 6px;
@@ -781,7 +825,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 
 /* --- DOM-based confirm dialog (replaces native confirm()) --- */
 .confirm-overlay { position: fixed; inset: 0; background: var(--background); display: flex; align-items: center; justify-content: center; z-index: 200; }
-.confirm-box { width: min(80vw, 300px); padding: 8px; }
+.confirm-box { width: min(88cqi, 340px); padding: 8px; }
 .confirm-message { font-size: 11px; color: var(--textPrimary); padding: 4px 0 8px 0; line-height: 1.4; white-space: pre-wrap; }
 .confirm-actions { display: flex; gap: 4px; justify-content: flex-end; margin-top: 4px; }
 .confirm-ok-btn { color: var(--accentTeal); font-weight: bold; }
@@ -869,6 +913,9 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
      Folder; at this width it costs two wrapped lines to say it twice. */
   .detail-path { display: none; }
   .action-bar button { font-size: 8px; padding: 0 3px; }
+  /* A 104px table of contents beside a 250px article is not a table of
+     contents, it is a second scrollbar. The article wins at this width. */
+  .wiki-toc { display: none; }
 }
 
 /* --- Very narrow: sidebar gives ground so the detail pane stays usable --- */

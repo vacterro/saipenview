@@ -94,27 +94,55 @@ def test_shell_geometry_reads_the_tokens(css: str) -> None:
         assert token in block.group(0), f"{selector!r} no longer uses {token}"
 
 
-def test_no_viewport_units_left_in_the_shell(css: str) -> None:
+def _without_comments(source: str) -> str:
+    """The comments quote the removed `90vw`/`92vh` on purpose; skip them."""
+    return re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+
+
+def test_no_viewport_units_anywhere(css: str) -> None:
     """`vw`/`vh` resolve against the UNSCALED viewport under `body { zoom }`.
 
-    At 125% a `90vw` box renders at 112.5% of the window. The shell is free of
-    them; the overlays are not yet (T-156 owns those), so this checks the shell
-    rules by name rather than the whole file, and will tighten to the whole
-    file once the overlays are converted.
+    At 125% a `90vw` box renders at 112.5% of the window, and `max-height:
+    92vh` let the Settings dialog render 176px taller than the window at
+    1280x720/150% -- pinning its own Save and Close buttons off-screen. There
+    is no correct use of either unit in this file while `zoom_level` is applied
+    the way it is, so the rule is the whole file, not a list of selectors.
     """
-    shell_selectors = [
-        r"\.project-list \{[^}]*\}",
-        r"\.detail-pane \{[^}]*\}",
-        r"\.detail-content \{[^}]*\}",
-        r"\.toolbar \{[^}]*\}",
-        r"\.main-container \{[^}]*\}",
-    ]
-    for pattern in shell_selectors:
-        block = re.search(pattern, css)
-        assert block, f"rule {pattern!r} is gone"
-        assert not re.search(r"\d(vw|vh)\b", block.group(0)), (
-            f"{pattern!r} uses a viewport unit, which is wrong under body zoom"
-        )
+    offenders = []
+    for match in re.finditer(r"[\d.]+(vw|vh|vmin|vmax)\b", _without_comments(css)):
+        line = css[: match.start()].count("\n") + 1
+        offenders.append(f"style.css:{line}: {match.group(0)}")
+    assert not offenders, (
+        "viewport units are wrong under body zoom; use cqi or a percentage:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_settings_is_a_grid_that_finds_its_own_column_count(css: str) -> None:
+    """One `auto-fit` rule, not a list of breakpoints per field count.
+
+    Eighteen fields in the old fixed 320px column meant every label wrapped to
+    two lines and the dialog scrolled -- on a 1920px screen, with the space for
+    three columns sitting empty either side of it.
+    """
+    block = re.search(r"#settingsModal \.modal-body \{[^}]*\}", css)
+    assert block, "the Settings grid rule is gone"
+    assert "grid" in block.group(0)
+    assert "auto-fit" in block.group(0), (
+        "a fixed column count goes wrong at some width; auto-fit cannot"
+    )
+
+
+def test_modal_geometry_is_not_inline_in_the_markup() -> None:
+    """Three dialogs carried the same inline `max-width/width/height` triple.
+
+    Inline geometry outranks every rule in the stylesheet, so the narrow bands
+    could not reach those dialogs at all.
+    """
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert not re.search(r'class="modal-box[^"]*"[^>]*style="[^"]*width', html), (
+        "a modal box is sizing itself inline again"
+    )
 
 
 def test_detail_content_is_a_class_not_an_inline_style() -> None:
