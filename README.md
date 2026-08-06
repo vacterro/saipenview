@@ -266,6 +266,32 @@ is never rewritten to change a colour. `goldendefault` reproduces the
 stylesheet's own defaults exactly, and an unknown slug falls back to it.  
 All settings are also configurable through the **Settings** modal in the app.
 
+### Path safety & dry-run
+
+Paths the app stores — `scan_roots`, `pinned_roots`, `hidden_roots`,
+`selected_root` — are kept in a **canonical form**: absolute, case-normalised,
+symlink-resolved, with a single trailing separator on drive roots and nowhere
+else. A folder added as `v:\projects/` is stored and compared as
+`V:\projects`, so slash/case/duplicate spellings of the same path never appear
+as two entries.
+
+Scan roots that point at a missing drive or folder are **quarantined, not
+dropped**: they are reported in the scan error log and stay in the list, so
+when the drive comes back the next scan picks it up automatically.
+
+The built-in file viewer only opens `.md`/`.json` files that sit inside a
+known project root — a path that escapes every root or carries another
+extension is rejected on the Python side, not just hidden in the UI.
+
+Validate the config and path layers without starting the app:
+
+```
+python -m saipenview --dry-run
+```
+
+Exit code `0` = config clean, `1` = missing/quarantined roots or a canonical
+mismatch, each named on stdout.
+
 <br>
 
 ---

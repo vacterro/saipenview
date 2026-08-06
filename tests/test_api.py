@@ -559,26 +559,58 @@ class TestOpenEditor:
 
 
 class TestReadWriteFile:
-    """read_file_text and write_file_text work with real files."""
+    """read_file_text and write_file_text are contained to known roots (T-138)."""
+
+    def _seed_root(self, api, tmp_path):
+        api._config["scan_roots"] = [str(tmp_path)]
+        return tmp_path
 
     def test_read_existing_file(self, api, tmp_path):
-        f = tmp_path / "test.txt"
+        self._seed_root(api, tmp_path)
+        f = tmp_path / "STATE.md"
         f.write_text("hello\n", encoding="utf-8")
         result = api.read_file_text(str(f))
         assert result == "hello\n"
 
-    def test_read_nonexistent_file(self, api):
-        assert api.read_file_text("Z:\\nonexistent.txt") is None
+    def test_read_nonexistent_file(self, api, tmp_path):
+        self._seed_root(api, tmp_path)
+        assert api.read_file_text(str(tmp_path / "missing.md")) is None
 
     def test_write_file(self, api, tmp_path):
-        f = tmp_path / "out.txt"
+        self._seed_root(api, tmp_path)
+        f = tmp_path / "STATE.md"
         result = api.write_file_text(str(f), "written\n")
         assert result is True
         assert f.read_text(encoding="utf-8") == "written\n"
 
-    def test_write_fails_on_bad_path(self, api):
-        result = api.write_file_text("Z:\\nonexistent\\out.txt", "data")
+    def test_write_fails_on_bad_path(self, api, tmp_path):
+        self._seed_root(api, tmp_path)
+        result = api.write_file_text(str(tmp_path / "missing" / "out.md"), "data")
         assert result is False
+
+    def test_read_outside_root_rejected(self, api, tmp_path):
+        """A path that escapes every known root is rejected, not read."""
+        self._seed_root(api, tmp_path)
+        outside = tmp_path.parent / "outside.md"
+        outside.write_text("secret\n", encoding="utf-8")
+        assert api.read_file_text(str(outside)) is None
+
+    def test_write_non_markdown_rejected(self, api, tmp_path):
+        """Only .md/.json may be written; .txt is a boundary violation."""
+        self._seed_root(api, tmp_path)
+        f = tmp_path / "evil.txt"
+        assert api.write_file_text(str(f), "pwned") is False
+        assert not f.exists()
+
+    def test_read_unknown_extension_rejected(self, api, tmp_path):
+        self._seed_root(api, tmp_path)
+        f = tmp_path / "secret.bin"
+        f.write_bytes(b"\x00\x01")
+        assert api.read_file_text(str(f)) is None
+
+    def test_dot_dot_escape_rejected(self, api, tmp_path):
+        self._seed_root(api, tmp_path)
+        assert api.read_file_text(str(tmp_path / ".." / "etc" / "passwd.md")) is None
 
 
 class TestUpdateProjectState:

@@ -234,6 +234,33 @@ class TestScan:
         assert results[0].name == "real-project"
         assert results[0].phase == "BUILD"
 
+    def test_case_and_slash_dupes_collapse(self, tmp_path, monkeypatch):
+        """The same root typed as `c:\foo` and `C:/FOO/` scans once, not twice."""
+        from saipenview.scanner import scan
+
+        monkeypatch.setattr("saipenview.scanner._is_garbage_root", lambda root: False)
+        proj = tmp_path / "dup-root"
+        (proj / ".saipen").mkdir(parents=True)
+        (proj / ".saipen" / "STATE.md").write_text("---\nphase: DONE\n---\n", encoding="utf-8")
+
+        # Only on Windows are these two spellings the same path.
+        path_str = str(tmp_path)
+        results = scan(
+            scan_roots=[path_str, path_str.replace("\\", "/").upper()],
+            max_depth=3,
+            delay=0,
+        )
+        assert len(results) == 1
+
+    def test_missing_root_is_quarantined_not_silently_dropped(self, tmp_path):
+        """A scan root that doesn't exist produces a scan error entry."""
+        from saipenview.scanner import get_scan_error_log, scan
+
+        missing = str(tmp_path / "gone-drive")
+        scan(scan_roots=[missing, str(tmp_path)], max_depth=3, delay=0)
+        messages = [e["message"] for e in get_scan_error_log()]
+        assert any("missing" in m and "gone-drive" in m for m in messages)
+
 
 class TestBackgroundScanner:
     def test_create_and_stop_no_crash(self):

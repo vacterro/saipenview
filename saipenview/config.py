@@ -9,6 +9,8 @@ import sys
 import threading
 from pathlib import Path
 
+from saipenview.paths import canonical, dedupe
+
 DEFAULTS = {
     # Exactly two slots, matching FastPrompter's binding pair. ctrl+q used to
     # sit here as a third: a global hotkey hijacks the combo in EVERY app, and
@@ -99,6 +101,17 @@ def load_config() -> dict:
     # Migration: snap_hotkey was a string before v2, now a list
     if isinstance(cfg.get("snap_hotkey"), str):
         cfg["snap_hotkey"] = [cfg["snap_hotkey"]]
+    # Path canonicalization (T-138 layer 1): every persisted path is stored
+    # once, in canonical form, so a comparison later never has to wonder about
+    # slash/case/duplication drift. scan_roots=None (auto mode) stays None, and
+    # an explicit empty list (scan nothing) must NOT become None -- the two are
+    # different answers, and None would silently re-enable auto-scan.
+    if isinstance(cfg.get("scan_roots"), list):
+        cfg["scan_roots"] = dedupe(cfg["scan_roots"])
+    for key in ("pinned_roots", "hidden_roots"):
+        cfg[key] = dedupe(cfg.get(key))
+    if cfg.get("selected_root"):
+        cfg["selected_root"] = canonical(cfg["selected_root"])
     # Migration: ctrl+q was freed in 4d291a0 and dropped from both DEFAULTS
     # lists for the reason spelled out above "hotkeys" -- a GLOBAL binding
     # hijacks the combo in every application, and ctrl+q is a ubiquitous quit
@@ -128,6 +141,16 @@ def save_config(cfg: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         merged = dict(DEFAULTS)
         merged.update({k: v for k, v in cfg.items() if k in DEFAULTS})
+        # Canonicalize path fields on save too, so a hand-edited config or a
+        # browser-typed path that slipped past a setter is cleaned on write.
+        # An explicit empty scan_roots list stays an empty list (scan nothing);
+        # None stays None (auto).
+        if isinstance(merged.get("scan_roots"), list):
+            merged["scan_roots"] = dedupe(merged["scan_roots"])
+        for key in ("pinned_roots", "hidden_roots"):
+            merged[key] = dedupe(merged.get(key))
+        if merged.get("selected_root"):
+            merged["selected_root"] = canonical(merged["selected_root"])
         # Atomic write (temp + replace) -- a crash/kill mid plain write leaves
         # truncated JSON, and load_config()'s JSONDecodeError fallback would
         # then silently reset every user preference to DEFAULTS.

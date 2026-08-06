@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from saipenview.parser import ProjectStatus, load_project
+from saipenview.paths import canonical, canonical_key
 
 _scan_errors: collections.deque[dict] = collections.deque(maxlen=20)
 _scan_progress: dict = {"pct": 0, "root": "", "roots_done": 0, "roots_total": 0}
@@ -322,16 +323,21 @@ def scan(
 ) -> list[ProjectStatus]:
     """Scans every root in parallel so one slow/hung drive can't starve the rest."""
     raw_roots = scan_roots if scan_roots is not None else _auto_roots()
-    roots = [
-        r + "\\" if r.endswith(":") else (r if r.endswith(("\\", "/")) else r + "\\")
-        for r in raw_roots
-    ]
-    # Deduplicate roots before parallel submission -- same path scanned
-    # twice wastes a thread and can race on _scan_progress counters.
-    seen_roots = set()
-    unique_roots = []
+    # Canonical forms: absolute, case-normalised, symlink-resolved, drive
+    # roots carry a single trailing separator (T-138 layer 1).
+    roots = [canonical(r) for r in raw_roots]
+    # Stale-root quarantine (T-138 layer 2): a missing drive/root is surfaced,
+    # never silently dropped from the scan set -- and it stays in the set, so
+    # when the drive returns the next scan picks it up again automatically.
     for r in roots:
-        key = r.upper()
+        if not Path(r).exists():
+            _push_error(f"scan root missing, quarantined until it returns: {r}")
+    # Deduplicate roots by canonical key before parallel submission -- same
+    # path scanned twice wastes a thread and can race on _scan_progress.
+    seen_roots: set[str] = set()
+    unique_roots: list[str] = []
+    for r in roots:
+        key = canonical_key(r)
         if key not in seen_roots:
             seen_roots.add(key)
             unique_roots.append(r)
@@ -369,7 +375,7 @@ def scan(
     for p in projects:
         if _is_garbage_root(p.root):
             continue
-        k = str(p.root).lower()
+        k = canonical_key(str(p.root))
         if k not in seen:
             seen.add(k)
             deduped.append(p)

@@ -29,6 +29,7 @@ from saipenview.parser import (
     parse_board,
     update_state,
 )
+from saipenview.paths import dedupe, validate_file_path
 from saipenview.runtime import ProcessManager
 from saipenview.scanner import (
     BackgroundScanner,
@@ -664,6 +665,13 @@ class Api:
         return False
 
     def read_file_text(self, file_path: str) -> str | None:
+        ok, reason = validate_file_path(file_path, self._known_roots())
+        if not ok:
+            print(
+                f"SAIPENVIEW: read_file_text rejected {file_path!r}: {reason}",
+                file=sys.stderr,
+            )
+            return None
         try:
             if os.path.exists(file_path):
                 # read_doc, not open(encoding="utf-8"): the file viewer opened
@@ -677,6 +685,13 @@ class Api:
         return None
 
     def write_file_text(self, file_path: str, content: str) -> bool:
+        ok, reason = validate_file_path(file_path, self._known_roots())
+        if not ok:
+            print(
+                f"SAIPENVIEW: write_file_text rejected {file_path!r}: {reason}",
+                file=sys.stderr,
+            )
+            return False
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -686,6 +701,22 @@ class Api:
                 f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr
             )
         return False
+
+    def _known_roots(self) -> list[str]:
+        """Canonical set of roots the file viewer may open files under.
+
+        Everything currently scanned, everything pinned/hidden, and any
+        browse/scan config roots -- all canonicalised, deduplicated. The
+        frontend file viewer only ever opens STATE/BOARD/LOG/MANIFEST.md and
+        OUTBOX.md under one of these; anything else is a rejection, fail-closed.
+        """
+        roots: list[str] = []
+        with self._lock:
+            roots.extend(str(p["root"]) for p in self._projects)
+        roots.extend(self._config.get("pinned_roots") or [])
+        roots.extend(self._config.get("hidden_roots") or [])
+        roots.extend(self._config.get("scan_roots") or [])
+        return dedupe(roots)
 
     def get_project_detail(self, root_str: str) -> dict | None:
         p = Path(root_str)

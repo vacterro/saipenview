@@ -50,12 +50,29 @@ class TestMainModule:
     def test_main_returns_int(self):
         """main() should return an int (exit code) — mock run() to avoid side effects."""
         _ensure_mock("webview")
-        with patch("saipenview.__main__.run", return_value=0):
+        with patch("saipenview.app.run", return_value=0), patch.object(
+            sys, "argv", ["saipenview"]
+        ):
             from saipenview.__main__ import main
 
             result = main()
             assert isinstance(result, int)
             assert result == 0
+
+    def test_dry_run_exits_zero_on_clean_config(self, tmp_config_path):
+        """--dry-run returns 0 when config paths are clean (no GUI touched)."""
+        from saipenview.__main__ import _dry_run
+
+        assert _dry_run() == 0
+
+    def test_dry_run_exits_one_on_missing_root(self, tmp_config_path):
+        """--dry-run returns 1 when a scan root is missing/quarantined."""
+        from saipenview.__main__ import _dry_run
+        from saipenview.config import load_config, save_config
+
+        save_config({"scan_roots": [str(tmp_config_path.parent / "no-such-drive-root")]})
+        _ = load_config()  # canonicalizes; path won't exist
+        assert _dry_run() == 1
 
 
 # ── app.py ──

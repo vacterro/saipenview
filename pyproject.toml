@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saipenview"
-version = "0.1.12"
+version = "0.1.13"
 description = "Desktop tray viewer for SAIPEN projects — live dashboard with vintage Win95 aesthetic"
 readme = "README.md"
 requires-python = ">=3.10"

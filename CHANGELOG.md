@@ -4,6 +4,14 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.13] - 2026-08-06
+
+### Added
+- **Path-safety layers (T-138).** A canonical path layer (`saipenview/paths.py`) turns every stored path into one true spelling — absolute, case-normalised, symlink-resolved, a single trailing separator on drive roots and nowhere else — applied at config load/save, scan, and every comparison, so slash/case/duplicate spellings of the same folder never drift apart. Scan roots pointing at a missing drive are **quarantined, not silently dropped**: they surface in the scan error log and stay in the list, so the drive comes back and the next scan picks it up automatically. The built-in file viewer is now boundary-hardened: it opens only `.md`/`.json` files that sit inside a known project root, and a path that escapes every root (including a `..` climb) or carries another extension is rejected on the Python side, not just hidden in the UI. New `python -m saipenview --dry-run` validates the config and path layers without starting a window — exit `0` on a clean config, `1` naming every missing/quarantined root or canonical mismatch.
+
+### Fixed
+- An explicit empty `scan_roots: []` ("scan nothing") is no longer promoted to `None` ("auto-scan all drives") during config canonicalization — the two are different answers and the promotion silently re-enabled auto-scan.
+
 ## [0.1.12] - 2026-08-06
 
 ### Added

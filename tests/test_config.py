@@ -133,6 +133,36 @@ class TestLoadConfig:
         cfg = load_config()
         assert cfg["locale"] == "en"  # fell back to defaults
 
+    def test_canonicalizes_scan_roots_on_load(self, tmp_config_path):
+        """Slash/case variants of the same root collapse to one canonical entry."""
+        from saipenview.config import load_config, save_config
+
+        save_config({"scan_roots": [r"C:\Foo", "c:/foo", r"C:\Bar"]})
+        cfg = load_config()
+        assert cfg["scan_roots"] == [r"c:\foo", r"c:\bar"]
+
+    def test_canonicalizes_pinned_and_hidden_on_load(self, tmp_config_path):
+        from saipenview.config import load_config, save_config
+
+        save_config({"pinned_roots": ["C:\\Foo", "c:/foo"]})
+        cfg = load_config()
+        assert cfg["pinned_roots"] == [r"c:\foo"]
+
+    def test_canonicalizes_selected_root_on_load(self, tmp_config_path):
+        from saipenview.config import load_config, save_config
+
+        save_config({"selected_root": r"C:\Foo\Bar" + "\\"})
+        cfg = load_config()
+        assert cfg["selected_root"] == r"c:\foo\bar"
+
+    def test_empty_scan_roots_stays_empty_not_auto(self, tmp_config_path):
+        """An explicit `scan_roots: []` means "scan nothing", and must not be
+        promoted to None (auto-scan all drives) by canonicalization."""
+        from saipenview.config import load_config, save_config
+
+        save_config({"scan_roots": []})
+        assert load_config()["scan_roots"] == []
+
 
 class TestSaveConfig:
     """save_config() writes correctly and atomically."""
