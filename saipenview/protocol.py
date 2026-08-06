@@ -21,7 +21,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.176.0"
+BASELINE_VERSION = "7.201.0"
 
 # RFC § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.
@@ -113,6 +113,11 @@ SAIPEN_COMMANDS: frozenset[str] = frozenset(
         "collect",
         "ship",
         "validate",
+        # Added by SAIPEN 7.191.0/7.194.0: `saipen test` runs a project's
+        # declared suite (read-only, reports PASS/FAIL, never fixes) and
+        # `saipen crew` walks the whole factory circuit in order.
+        "test",
+        "crew",
         "status",
         "stop",
         "sub",
