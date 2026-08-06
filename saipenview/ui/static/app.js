@@ -3323,7 +3323,7 @@ function renderAgentPanel(root, container) {
     if (ts && ts.status !== 'none') {
       let color = ts.status === 'fail' ? 'var(--danger)' : (ts.status === 'pass' ? 'var(--success)' : 'var(--accentTeal)');
       let label = ts.status === 'running' ? 'Tests: RUN' : (ts.status === 'fail' ? 'Tests: FAIL' : 'Tests: PASS');
-      testBadgeHtml = `<span style="color:${color}; font-size:10px; padding:2px 4px; margin-right:4px; font-weight:bold; border: 1px inset var(--borderDark); background: var(--surfaceBase);">${label}</span>`;
+      testBadgeHtml = `<span style="color:${color}; font-size:10px; padding:2px 4px; margin-right:4px; font-weight:bold; border: 1px inset var(--borderDark); background: var(--surfaceRaised);">${label}</span>`;
     }
 topHtml = `<div class="agent-status-bar raised">
       <div class="agent-status-info">
@@ -3627,9 +3627,9 @@ let currentDiffRoot = null;
 function colorizeDiff(diffText) {
   if (!diffText.trim()) return "<div style='color:var(--textMuted);'>No changes.</div>";
   return diffText.split('\n').map(line => {
-    let color = "var(--text)";
+    let color = "var(--textPrimary)";
     if (line.startsWith("+")) color = "var(--success)";
-    else if (line.startsWith("-")) color = "var(--danger)";
+    else if (line.startsWith("-")) color = "var(--dangerText)";
     else if (line.startsWith("@@")) color = "var(--accentTeal)";
     return `<div style="color:${color};">${escapeHtml(line)}</div>`;
   }).join("");

@@ -4,6 +4,20 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.12] - 2026-08-06
+
+### Added
+- **All 16 Wintage colour palettes ship inside the app**, with a picker in Settings that switches live and needs no restart. They previously existed only as inputs to an external PowerShell installer that applied a palette by *rewriting* `saipenview/ui/static/style.css` on disk — the mechanism that destroyed the stylesheet twice (0.1.x, tickets T-096 and T-142) in a way that survived review both times, because the file it produced still parsed and still looked like itself. A theme is data now: `saipenview/assets/themes/*.json`, a `theme` config key, and CSS custom properties set on the root element at runtime. `goldendefault` reproduces the stylesheet's own `:root` token for token, so the app with themes and the app without them are identical until you pick something else. Palettes are validated before use, because the failure mode is silent — an undefined custom property renders as the initial value with no error anywhere
+
+### Fixed
+- **The UI is fluid at any window size and zoom.** Two root causes, neither visible without measuring. `zoom_level` is applied as `body.style.zoom`, but `vw`/`vh` resolve against the *unscaled* viewport — so at 125% a `90vw` box rendered at 112.5% of the window, and `max-height: 92vh` let the Settings dialog render 176px **taller** than the window at 1280x720/150%, pinning its own Save and Close buttons off-screen. Every viewport unit is gone; the app measures itself with a container query on `body`. Separately, the sidebar wrote an absolute pixel width and only ever recomputed it at boot and on drag, so a width chosen on a wide window ate the detail pane on a narrow one
+- **Settings is no longer a 320px column on a 1920px screen.** `.modal-box` was capped at 320px regardless of window size, so eighteen fields stacked in one column with every label wrapped to two lines. Its body is a grid that finds its own column count — one narrow, three wide. Measured across 6 dialogs x 15 size/zoom combinations: 0/90 out of bounds, against 14/90 before
+- **Agent Control was dead on every Windows project, silently.** `renderAgentPanel` built an element id by concatenating the project root and read it back with `querySelector('#agentControlTop-' + root)`. A drive letter and backslashes are not a valid selector, so `querySelector` threw — and since `renderDetailPane` calls that function as its last statement with no guard, the throw took the tail of the detail render with it. Also fixed in the same function: switching project kept the previous project's output, because the state variable was assigned three lines above the comparison that gates the rebuild
+- **Four CSS custom properties were referenced but never declared** — `--bgRaised` (4 sites), `--surfaceBase` and `--text` — so the wiki article body, its active table-of-contents row, the file viewer's editor and the diff pane had been rendering with a fully transparent background since they shipped. Confirmed by measuring: `rgba(0, 0, 0, 0)` at all four before, real colours after. The audit now runs as a test over `style.css`, `index.html` and `app.js`, since two of the three dead tokens lived in inline styles
+
+### Notes
+- `tests/test_protocol_sync.py` is **red on purpose**: the SAIPEN repo moved 7.176.0 → 7.198.0 and `SAIPEN_COMMANDS` gained `crew` and `test`. Per the rule set in T-097, the vocabularies are re-read per release before the baseline stamp moves — a blind bump marks the grader conformant while it quietly stops checking whatever those releases changed. Tracked as T-160
+
 ## [0.1.11] - 2026-08-04
 
 ### Added

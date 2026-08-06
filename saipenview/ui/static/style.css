@@ -665,7 +665,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .help-section code {
   font-family: monospace;
   color: var(--accentTeal);
-  background: var(--bgRaised);
+  background: var(--compareBack);
   padding: 0 2px;
   border-radius: 1px;
   font-size: 10px;
@@ -716,11 +716,11 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   text-overflow: ellipsis;
 }
 .wiki-toc-item:hover {
-  background: var(--bgRaised);
+  background: var(--surfaceRaised);
   color: var(--borderHighlight);
 }
 .wiki-toc-item.active {
-  background: var(--bgRaised);
+  background: var(--surfaceRaised);
   color: var(--accentTeal);
   font-weight: bold;
   border-left: 2px solid var(--accentTeal);
@@ -730,7 +730,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   flex: 1;
   padding: 8px 12px;
   overflow-y: auto;
-  background: var(--bgRaised);
+  background: var(--compareBack);
 }
 .wiki-loading {
   color: var(--textMuted);

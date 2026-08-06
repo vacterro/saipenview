@@ -131,3 +131,36 @@ def test_a_partial_palette_is_rejected_not_half_applied(tmp_path: Path) -> None:
     with pytest.raises(themes.ThemeError) as excinfo:
         themes._read(malformed)
     assert "borderHighlight" in str(excinfo.value)
+
+
+def _strip_css_comments(source: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+
+
+@pytest.mark.parametrize("filename", ["style.css", "index.html", "app.js"])
+def test_every_var_reference_resolves(filename: str) -> None:
+    """No `var(--x)` may name a token nothing declares (T-158).
+
+    This is the audit that found four dead references living in the shipped app
+    across two releases: `--bgRaised` (a misremembering of `--surfaceRaised`,
+    4 sites), plus `--surfaceBase` and `--text`, which never existed at all.
+    None of them produced an error. An undefined custom property with no
+    fallback computes to the initial value, so `background: var(--bgRaised)`
+    rendered transparent and `color: var(--text)` rendered as the inherited
+    colour -- both of which look like a design choice.
+
+    Checked across all three files, not just the stylesheet: two of the three
+    dead tokens were in inline styles in `index.html` and `app.js`, which is
+    exactly where nobody looks for a colour bug.
+    """
+    static = REPO / "saipenview" / "ui" / "static"
+    declared = set(_declared_in_root()) | {"uiFont"}
+    body = _strip_css_comments((static / filename).read_text(encoding="utf-8"))
+    used = {}
+    for match in re.finditer(r"var\(\s*--([\w-]+)", body):
+        used.setdefault(match.group(1), body[: match.start()].count("\n") + 1)
+    unknown = {name: line for name, line in used.items() if name not in declared}
+    assert not unknown, (
+        f"{filename} references tokens nothing declares (they render as the "
+        f"initial value, silently): {unknown}"
+    )
