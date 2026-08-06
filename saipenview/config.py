@@ -58,6 +58,12 @@ DEFAULTS = {
     # without it still renders in the same family.
     "font_family": "Verdana_m1",
     "custom_commands": [],  # [{label: string, command: string}, ...]
+    # Colour palette (T-157). The value is a slug from saipenview/assets/themes;
+    # "goldendefault" reproduces style.css's own :root token for token, so the
+    # default config renders exactly what the app rendered before themes
+    # existed. An unknown slug falls back to that default rather than failing --
+    # see themes.resolve().
+    "theme": "goldendefault",
     "locale": "en",  # UI language: en | 33 more (see api.get_locales)
     "layout_swap": False,  # Swap sidebar/detail pane position
     "top_panel_collapsed": False,  # Toolbar collapsed state

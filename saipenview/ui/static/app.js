@@ -564,6 +564,29 @@ function applyFontFamily(fam) {
   document.documentElement.style.setProperty("--uiFont", stack);
 }
 
+// The theme currently on screen. Not read from the config object, because the
+// slug that was asked for and the slug that applied are not always the same:
+// an unknown one resolves to the default (themes.resolve).
+let currentTheme = "";
+// What to restore if the Settings dialog is closed without saving.
+let themeBeforeSettings = "";
+
+// Setting custom properties on the root element, rather than rewriting
+// style.css on disk the way the external Wintage installer did. That script
+// destroyed the stylesheet twice (T-096, T-142). style.css's own :root stays
+// as the fallback, so a failed theme load renders the shipped look rather than
+// a half-painted one.
+function applyTheme(payload) {
+  if (!payload || !payload.tokens) return;
+  const root = document.documentElement;
+  Object.keys(payload.tokens).forEach(function (name) {
+    root.style.setProperty("--" + name, payload.tokens[name]);
+  });
+  currentTheme = payload.slug || "";
+  const picker = document.getElementById("setTheme");
+  if (picker && currentTheme) picker.value = currentTheme;
+}
+
 function relativeTime(isoStr) {
   if (!isoStr) return "";
   const ts = new Date(_ensureTz(isoStr)).getTime();
@@ -2506,6 +2529,19 @@ function openSettings() {
     document.getElementById("setFlashChanges").checked = cfg.flash_changes !== false;
     document.getElementById("setFileViewerDefault").value = cfg.file_viewer_default || "source";
     document.getElementById("setLocale").value = cfg.locale || "en";
+    // Remember what is on screen so closing without saving puts it back --
+    // the picker previews live, and a preview that survives Cancel is not a
+    // preview, it is an unannounced save.
+    themeBeforeSettings = currentTheme || cfg.theme || "";
+    const themePicker = document.getElementById("setTheme");
+    if (themePicker) {
+      window.pywebview.api.get_themes().then((list) => {
+        themePicker.innerHTML = (list || []).map((th) =>
+          '<option value="' + escapeHtml(th.slug) + '">' + escapeHtml(th.label) + '</option>'
+        ).join("");
+        themePicker.value = themeBeforeSettings || "goldendefault";
+      });
+    }
     hydrateDOM(cfg.locale || "en");
     // Render custom commands
     const cmdList = document.getElementById("customCommandsList");
@@ -2553,6 +2589,10 @@ function openSettings() {
 
 function closeSettings() {
   settingsModal.style.display = "none";
+  // Undo a live preview the user did not save.
+  if (themeBeforeSettings && themeBeforeSettings !== currentTheme) {
+    window.pywebview.api.get_theme_tokens(themeBeforeSettings).then(applyTheme);
+  }
 }
 
 if (settingsBtn) settingsBtn.addEventListener("click", openSettings);
@@ -2614,6 +2654,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
   const localeVal = document.getElementById("setLocale").value;
   const locale = document.getElementById("setLocale").value;
   const fvd = document.getElementById("setFileViewerDefault").value;
+  const themeSlug = document.getElementById("setTheme")?.value || currentTheme;
 
   // Read custom commands from UI
   const customCommands = [];
@@ -2654,7 +2695,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
       api.set_always_on_top(alwaysOnTop),
       api.set_frameless(frameless),
       api.set_locale(localeVal),
-      api.save_view_config({ show_on_launch: showOnLaunch, flash_changes: flashChanges, custom_commands: customCommands, file_viewer_default: fvd, locale: locale }),
+      api.save_view_config({ show_on_launch: showOnLaunch, flash_changes: flashChanges, custom_commands: customCommands, file_viewer_default: fvd, locale: locale, theme: themeSlug }),
     ]);
   }).then(() => {
     if (saveTimedOut) return;
@@ -2663,6 +2704,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
     applyFontFamily(fontFamily);
     flashChangesEnabled = flashChanges;
     fileViewerDefault = fvd;
+    themeBeforeSettings = themeSlug;
     closeSettings();
   }).catch((err) => {
     clearTimeout(saveTimeout);
@@ -2864,6 +2906,7 @@ window.addEventListener("pywebviewready", () => {
   Promise.all([window.pywebview.api.get_config(), window.pywebview.api.get_local_drives()])
     .then(([cfg, drives]) => {
       applyFontFamily(cfg.font_family);
+      window.pywebview.api.get_theme_tokens(cfg.theme).then(applyTheme);
       if (cfg.zoom_level) {
         document.body.style.zoom = cfg.zoom_level;
       }

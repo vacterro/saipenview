@@ -69,6 +69,7 @@ const LOCALE_EN = {
   "settings.zoom.150": "150%",
   "settings.zoom.175": "175%",
   "settings.zoom.200": "200%",
+  "settings.theme.label": "Colour theme",
   "settings.fontFamily.label": "UI font family (Verdana_m1 = no anti-aliasing)",
   "settings.fontFamily.placeholder": "Verdana_m1",
   "settings.hotkeys.label": "Show/hide hotkeys — comma-separated, 2 bindings supported",

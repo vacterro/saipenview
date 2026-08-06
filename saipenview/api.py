@@ -14,6 +14,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
 
+from saipenview import themes
 from saipenview.config import config_path, load_config, save_config
 from saipenview.conformance import check_project
 from saipenview.engines import get_engine, list_engines
@@ -508,6 +509,28 @@ class Api:
         save_config(self._config)
         return self.get_config()
 
+    def get_themes(self) -> list[dict]:
+        """Available colour palettes as [{slug, label, order}, ...], menu order."""
+        return themes.list_themes()
+
+    def get_theme_tokens(self, slug: str | None = None) -> dict:
+        """The custom-property values to apply, plus the slug they came from.
+
+        The slug is returned because it may not be the one asked for: an
+        unknown slug resolves to the default. The UI needs to know which theme
+        is actually on screen, or the Settings picker shows a lie.
+        """
+        resolved, tokens = themes.resolve(slug or self._config.get("theme"))
+        return {"slug": resolved, "tokens": tokens}
+
+    def set_theme(self, slug: str) -> dict:
+        """Persist the chosen palette and return the tokens to apply now."""
+        resolved, tokens = themes.resolve(slug)
+        if resolved:
+            self._config["theme"] = resolved
+            save_config(self._config)
+        return {"slug": resolved, "tokens": tokens}
+
     def get_config(self) -> dict:
         return dict(self._config)
 
@@ -535,6 +558,7 @@ class Api:
             "locale",
             "layout_swap",
             "default_engine",
+            "theme",
         ):
             if k in settings:
                 self._config[k] = settings[k]

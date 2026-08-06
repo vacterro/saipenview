@@ -236,6 +236,7 @@ Key defaults (abridged — the full `DEFAULTS` dict lives in `saipenview/config.
   "snap_hotkey":      ["alt+f14"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
+  "theme":            "goldendefault",
   "scan_roots":       null,
   "rescan_interval":  300,
   "scan_depth":       6,
@@ -256,6 +257,13 @@ Key defaults (abridged — the full `DEFAULTS` dict lives in `saipenview/config.
 Set `scan_roots: null` to autodetect all local drives.  
 Set to a list of paths (e.g. `["V:\\", "D:\\projects"]`) to limit scanning.  
 `default_engine` / `engine_overrides` / `agent_output_buffer_size` drive the Agent Engine (see Features).  
+`theme` is a slug from `saipenview/assets/themes/` — 16 palettes ship with the app
+(Dark Golden, Claude Code, Antigravity, K-Lite, FreeBuff, CodeNomad, Default,
+Golden Vintage, Golden Default, Vintage Dark, Vintage Classic, OLED, Dracula,
+Nord, Solarized Dark, Custom). Switching is live and needs no restart; the
+palette is applied by setting CSS custom properties at runtime, so `style.css`
+is never rewritten to change a colour. `goldendefault` reproduces the
+stylesheet's own defaults exactly, and an unknown slug falls back to it.  
 All settings are also configurable through the **Settings** modal in the app.
 
 <br>

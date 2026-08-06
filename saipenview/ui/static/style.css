@@ -1,3 +1,15 @@
+/* These values are the FALLBACK, not the theme (T-157).
+   A theme is applied at runtime by setting these same custom properties on the
+   root element (saipenview/themes.py -> api.get_theme_tokens -> applyTheme in
+   app.js), which is why nothing outside this repo has to edit this file to
+   change a colour. The external Wintage installer used to do exactly that --
+   rewrite this stylesheet from PowerShell -- and destroyed it twice (T-096,
+   T-142) in a way that survived review both times, because the result still
+   parsed and still looked like itself.
+   The `goldendefault` theme reproduces this block token for token, so a
+   machine that cannot read assets/themes/ renders precisely what the app
+   rendered before themes existed. Keep the two in step: tests/test_themes.py
+   compares them. */
 :root {
   --background:#1A1810; --backgroundSoft:#232018; --surface:#332E22;
   --surfaceRaised:#3D372A; --surfaceAlt:#453D30; --surfaceSoft:#422D18;
@@ -15,9 +27,9 @@
      5.26:1 on --surface, 5.04:1 on --surfaceSoft, 6.91:1 on --background.
      Deliberately its own token, not a lightened --danger: UI.md's rule is that
      a semantic token is never used as text colour, and the two jobs want
-     different values. Not part of the Wintage palette JSON, so the installer's
-     token rewrite leaves it alone -- if a future palette changes --danger, this
-     needs re-checking by hand. */
+     different values. Every shipped theme now carries its own `dangerText`;
+     the default theme pins THIS value rather than the Wintage palette's
+     #D66464, which measures below AA on --surface. */
   --dangerText:#E08A8A;
   --phase-init:#7A6A4A;  --phase-plan:#4A7A8A;  --phase-scout:#6A8A4A;
   --phase-hunt:#8A4A4A;  --phase-add:#4A8A5A;   --phase-clean:#8A5A4A;
@@ -547,12 +559,12 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .search-item-active { outline: 2px solid var(--borderHighlight); outline-offset: 0; background: var(--surfaceAlt); }
 
 /* Scan errors card — danger-tinted, sits above ticket cards */
-.error-card { border-color: var(--danger); }
+.error-card { border-color: var(--dangerText); }
 .error-card .card-title { color: var(--dangerText); }
-.error-item { display: flex; gap: 6px; align-items: baseline; font-size: 10px; padding: 2px 4px; border-bottom: 1px solid var(--borderDark); }
+.error-item { display: flex; gap: 6px; align-items: flex-start; font-size: 10px; padding: 2px 4px; border-bottom: 1px solid var(--borderDark); }
 .error-item:last-child { border-bottom: none; }
 .error-time { color: var(--textMuted); font-family: monospace; font-size: 9px; flex-shrink: 0; min-width: 110px; }
-.error-message { color: var(--textPrimary); word-break: break-word; }
+.error-message { min-width: 0; color: var(--textPrimary); word-break: break-word; }
 
 /* Sub-agent detail card enhancements */
 .sub-file-btns { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
@@ -818,7 +830,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .toast { pointer-events: auto; min-width: 100px; max-width: 240px; padding: 4px 8px; font-size: 10px; display: flex; align-items: center; gap: 6px; }
 .toast.toast-info { color: var(--accentTeal); border-color: var(--accentTeal); background: var(--surface); }
 .toast.toast-success { color: var(--success); border-color: var(--success); background: var(--surface); }
-.toast.toast-error { color: var(--dangerText); border-color: var(--danger); background: var(--surface); font-weight: bold; }
+.toast.toast-error { color: var(--dangerText); border-color: var(--dangerText); background: var(--surface); font-weight: bold; }
 .toast.toast-warning { color: var(--warning); border-color: var(--warning); background: var(--surface); }
 .toast .toast-close { margin-left: auto; cursor: pointer; font-size: 9px; padding: 0 2px; color: var(--textMuted); border: none; background: none; font-weight: bold; }
 .toast .toast-close:hover { color: var(--textPrimary); }
@@ -842,7 +854,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .conf-badge.unknown { color: var(--textMuted); border-color: var(--borderMuted); }
 
 .conf-list { display: flex; flex-direction: column; gap: 2px; }
-.conf-item { display: flex; align-items: baseline; gap: 5px; padding: 2px 0;
+.conf-item { display: flex; align-items: flex-start; gap: 5px; padding: 2px 0;
   border-bottom: 1px solid var(--surfaceSoft); font-size: 10px; }
 .conf-item:last-child { border-bottom: none; }
 .conf-sev { flex: 0 0 auto; font-size: 8px; font-weight: bold; padding: 0 3px;
@@ -850,7 +862,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .conf-sev.fail { color: var(--dangerText); }
 .conf-sev.warn { color: var(--warning); }
 .conf-rule { flex: 0 0 auto; color: var(--textMuted); font-size: 9px; }
-.conf-msg { flex: 1 1 auto; color: var(--textSecondary); word-break: break-word; }
+.conf-msg { flex: 1 1 auto; min-width: 0; color: var(--textSecondary); word-break: break-word; }
 .conf-where { flex: 0 0 auto; color: var(--textMuted); font-size: 9px; }
 .conf-cite { flex: 0 0 auto; color: var(--accentTeal); font-size: 9px; }
 .conf-baseline { color: var(--textMuted); font-size: 9px; font-style: italic;
