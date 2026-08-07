@@ -552,10 +552,22 @@ function restoreCollapseState(root) {
 }
 
 // If an ISO timestamp has no timezone info (no Z, no +HH:MM), treat it as UTC.
-// The Python backend writes UTC with Z, but STATE.md files created before this
-// app or edited manually may lack the Z suffix. Without this, JS interprets
-// timezone-naive strings as LOCAL time, making relativeTime() and heatColor()
-// off by the timezone offset (user report: "updated time 1-2 hours ahead").
+// The Python backend now classifies every `updated` stamp (T-123): explicit
+// UTC (kind "utc"), converted offset ("offset"), timezone-naive ("naive"),
+// unparseable ("invalid") or absent ("missing"). A naive value is AMBIGUOUS --
+// a hand-edited file may actually be local time, so the UI must not silently
+// assume UTC (that silent +Z was the 1-2h "timing is wrong" report). `_ensureTz`
+// survives only as the SORT fallback, where a comparable value is needed and
+// the offset error cancels out between two naive stamps.
+function timestampKind(s) {
+  const t = (s || "").trim();
+  if (!t) return "missing";
+  if (t.endsWith("Z")) return "utc";
+  if (/[+-]\d{2}:\d{2}$/.test(t)) return "offset";
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(t)) return "naive";
+  return "invalid";
+}
+
 function _ensureTz(s) {
   if (!s) return s;
   const t = s.trim();
@@ -563,10 +575,13 @@ function _ensureTz(s) {
   return t + 'Z';
 }
 
-function formatLocalTime(isoStr) {
+function formatLocalTime(isoStr, kind) {
   if (!isoStr) return "";
+  kind = kind || timestampKind(isoStr);
+  if (kind === "naive") return isoStr.trim() + " (naive)";
+  if (kind === "invalid") return isoStr.trim();
   try {
-    const d = new Date(_ensureTz(isoStr));
+    const d = new Date(isoStr);
     if (isNaN(d.getTime())) return isoStr;
     const pad = (n) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -612,26 +627,32 @@ function applyTheme(payload) {
   if (picker && currentTheme) picker.value = currentTheme;
 }
 
-function relativeTime(isoStr) {
+function relativeTime(isoStr, kind) {
   if (!isoStr) return "";
-  const ts = new Date(_ensureTz(isoStr)).getTime();
+  kind = kind || timestampKind(isoStr);
+  // A naive or invalid stamp carries no trustworthy age; claiming one would
+  // be exactly the "timing is wrong" defect. Show nothing rather than a guess.
+  if (kind === "naive" || kind === "invalid" || kind === "missing") return "";
+  const ts = new Date(isoStr).getTime();
   if (isNaN(ts)) return "";
   // FLOOR, not round: "2h ago" must mean at least 2 hours have passed. Rounding
   // claimed MORE elapsed time than actually had (90min showed as "2h ago"),
   // which is part of what read as "the timing is wrong" (T-072).
-  let diff = Math.max(0, (Date.now() - ts) / 1000);
+  const diff = (Date.now() - ts) / 1000;
+  if (diff < 0) return t("time.clockAhead");   // future / clock skew -- never "just now"
   if (diff < 5) return t("time.justNow");
-  if (diff < 60) return t("time.secondsAgo", { n: Math.floor(diff) });
-  diff /= 60;
-  if (diff < 60) return t("time.minutesAgo", { n: Math.floor(diff) });
-  diff /= 60;
-  if (diff < 24) return t("time.hoursAgo", { n: Math.floor(diff) });
-  diff /= 24;
-  if (diff < 30) return t("time.daysAgo", { n: Math.floor(diff) });
-  diff /= 30;
-  if (diff < 12) return t("time.monthsAgo", { n: Math.floor(diff) });
-  diff /= 12;
-  return t("time.yearsAgo", { n: Math.floor(diff) });
+  let d = diff;
+  if (d < 60) return t("time.secondsAgo", { n: Math.floor(d) });
+  d /= 60;
+  if (d < 60) return t("time.minutesAgo", { n: Math.floor(d) });
+  d /= 60;
+  if (d < 24) return t("time.hoursAgo", { n: Math.floor(d) });
+  d /= 24;
+  if (d < 30) return t("time.daysAgo", { n: Math.floor(d) });
+  d /= 30;
+  if (d < 12) return t("time.monthsAgo", { n: Math.floor(d) });
+  d /= 12;
+  return t("time.yearsAgo", { n: Math.floor(d) });
 }
 
 function hexBlend(hexA, hexB, t) {
@@ -665,17 +686,20 @@ const HEAT_WINDOW_SECONDS = 86400; // fully cooled after 1 day, matches FastProm
 const HEAT_HOT = "#C0A060";  // --borderHighlight
 const HEAT_COLD = "#7A6838"; // --textMuted
 
-function heatColorFor(isoStr) {
-  const t = isoStr ? new Date(_ensureTz(isoStr)).getTime() : NaN;
+function heatColorFor(isoStr, kind) {
+  kind = kind || timestampKind(isoStr);
+  if (kind === "naive" || kind === "invalid" || kind === "missing") return HEAT_COLD;
+  const t = new Date(isoStr).getTime();
   if (isNaN(t)) return HEAT_COLD;
-  const ageSec = Math.max(0, (Date.now() - t) / 1000);
+  const ageSec = (Date.now() - t) / 1000;
+  if (ageSec < 0) return HEAT_COLD;  // future stamp: no heat claim
   return hexBlend(HEAT_HOT, HEAT_COLD, Math.min(1, ageSec / HEAT_WINDOW_SECONDS));
 }
 
-function timeWithHeat(isoStr) {
+function timeWithHeat(isoStr, kind) {
   if (!isoStr) return "";
-  const color = heatColorFor(isoStr);
-  return ` <span class="time-heat" style="color:${color}" title="${escapeHtml(formatLocalTime(isoStr))}">(${relativeTime(isoStr)})</span>`;
+  const color = heatColorFor(isoStr, kind);
+  return ` <span class="time-heat" style="color:${color}" title="${escapeHtml(formatLocalTime(isoStr, kind))}">(${relativeTime(isoStr, kind)})</span>`;
 }
 
 function subRowHtml(sub) {
@@ -799,7 +823,7 @@ function projectRowHtml(project) {
       ${gitHtml}
       ${conformanceBadgeHtml(project)}
       <span class="phase phase-${escapeHtml(project.phase)}">${escapeHtml(project.phase)}</span>
-      <span class="updated" title="${escapeHtml(formatLocalTime(project.updated))}">${timeWithHeat(project.updated)}</span>
+      <span class="updated" title="${escapeHtml(formatLocalTime(project.updated, project.updated_kind))}">${timeWithHeat(project.updated, project.updated_kind)}</span>
       <span class="hide-btn" data-hide-root="${escapeHtml(project.root)}" title="Hide project from list">✕</span>
     </div>
     <div class="task">${escapeHtml(project.task)}</div>
@@ -958,7 +982,7 @@ function renderDetailPane(detail) {
                 ${nextActionHtml}
                 ${logTailHtml}
                 ${s.phase === 'BLOCKED' && s.blocker && s.blocker !== 'none' ? '<div style="font-size:11px; margin-top:2px; color:var(--danger)"><span style="color:var(--textMuted)">Blocker:</span> ' + escapeHtml(s.blocker) + '</div>' : ''}
-                <div style="font-size:10px; color:var(--textMuted); margin-top:2px;">Updated: ${escapeHtml(formatLocalTime(s.updated))}${timeWithHeat(s.updated)} <span class="now-clock" style="font-size:10px;margin-left:4px;">(now: ${nowStr()})</span></div>
+                <div style="font-size:10px; color:var(--textMuted); margin-top:2px;">Updated: ${escapeHtml(formatLocalTime(s.updated))}${timeWithHeat(s.updated, s.updated_kind)} <span class="now-clock" style="font-size:10px;margin-left:4px;">(now: ${nowStr()})</span></div>
                 ${subOutboxHtml(s)}
               </div>`;
             }).join("")}
@@ -1036,7 +1060,7 @@ function renderDetailPane(detail) {
               <div class="detail-field"><span class="label">Current Task:</span> ${escapeHtml(detail.task)}</div>
               <div class="detail-field"><span class="label">Next:</span> ${escapeHtml(detail.next_action || "none")}</div>
               ${detail.phase === "BLOCKED" ? `<div class="detail-field"><span class="label" style="color:var(--danger)">Blocker:</span> ${escapeHtml(detail.blocker)}</div>` : ""}
-              <div class="detail-field"><span class="label">Updated:</span> ${escapeHtml(formatLocalTime(detail.updated))}${timeWithHeat(detail.updated)}</div>
+              <div class="detail-field"><span class="label">Updated:</span> ${escapeHtml(formatLocalTime(detail.updated, detail.updated_kind))}${timeWithHeat(detail.updated, detail.updated_kind)}</div>
               ${detail.subs && detail.subs.length ? `<div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--borderMuted);">
                 <div class="detail-field" style="margin-bottom:1px;"><span class="label">Sub-agents:</span> ${detail.subs.length}</div>
                 ${detail.subs.slice().sort(function(a, b) {
@@ -1062,7 +1086,7 @@ function renderDetailPane(detail) {
                     '<span class="phase sd-phase phase-' + escapeHtml(s.phase) + '">' + escapeHtml(s.phase) + '</span>' +
                     '<span class="sd-task" title="' + escapeHtml(s.task || '') + '">' + escapeHtml(s.task || '') + '</span>' +
                     (bcText ? '<span class="sd-counts">' + escapeHtml(bcText) + '</span>' : '') +
-                    (s.updated ? timeWithHeat(s.updated) : '') +
+                    (s.updated ? timeWithHeat(s.updated, s.updated_kind) : '') +
                     '</div>';
                 }).join('')}
               </div>` : ""}
@@ -1555,7 +1579,7 @@ function hiddenRowHtml(project) {
     <div class="head">
       <span class="name" title="${escapeHtml(project.root)}">${escapeHtml(project.name)}</span>
       <span class="phase phase-${escapeHtml(project.phase)}">${escapeHtml(project.phase)}</span>
-      <span class="updated" title="${escapeHtml(formatLocalTime(project.updated))}">${timeWithHeat(project.updated)}</span>
+      <span class="updated" title="${escapeHtml(formatLocalTime(project.updated, project.updated_kind))}">${timeWithHeat(project.updated, project.updated_kind)}</span>
       <span class="unhide-btn" data-unhide-root="${escapeHtml(project.root)}" title="Unhide project">&#x21A9;</span>
     </div>
     <div class="task" style="color:var(--textMuted);">${escapeHtml(project.task)}</div>

@@ -238,6 +238,7 @@ const LOCALE_EN = {
   "time.daysAgo": "${n}d ago",
   "time.monthsAgo": "${n}mo ago",
   "time.yearsAgo": "${n}y ago",
+  "time.clockAhead": "clock ahead (future timestamp)",
 
   // ── Collect / outbox ──
   "outbox.collect.title": "Collect this entry into main project",

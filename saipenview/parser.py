@@ -7,12 +7,52 @@ sidesteps YAML's backslash-escape traps on Windows paths.
 
 from __future__ import annotations
 
+import datetime as _dt
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from saipenview.textio import read_doc, read_doc_meta, write_doc
+
+# T-123: `updated` stamps. A valid protocol timestamp is explicit UTC (Z) or
+# carries an offset; a timezone-naive value is AMBIGUOUS -- never silently
+# treated as UTC, because a hand-edited naive stamp may actually be local and
+# a wrong assumption is exactly the 1-2h "timing is wrong" report this ticket
+# closed. The backend normalizes valid stamps to explicit UTC so the frontend
+# receives one unambiguous value; naive/invalid stay raw and are marked.
+_TS_UTC_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?Z$")
+_TS_OFFSET_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?([+-]\d{2}:\d{2})$"
+)
+_TS_NAIVE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?$")
+
+
+def classify_timestamp(raw: str) -> tuple[str, str]:
+    """Normalize one `updated` stamp.
+
+    Returns ``(normalized, kind)`` where kind is one of ``utc`` (explicit Z,
+    kept as-is), ``offset`` (explicit offset, converted to UTC Z), ``naive``
+    (no timezone -- kept raw, ambiguous), ``invalid`` (not a timestamp), or
+    ``missing`` (empty).
+    """
+    s = (raw or "").strip()
+    if not s:
+        return "", "missing"
+    if _TS_UTC_RE.match(s):
+        return s, "utc"
+    m = _TS_OFFSET_RE.match(s)
+    if m:
+        try:
+            parsed = _dt.datetime.fromisoformat(s)
+        except ValueError:
+            return s, "invalid"
+        utc = parsed.astimezone(_dt.timezone.utc)
+        return utc.strftime("%Y-%m-%dT%H:%M:%S") + "Z", "offset"
+    if _TS_NAIVE_RE.match(s):
+        return s, "naive"
+    return s, "invalid"
+
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*", re.DOTALL)
 TICKET_RE = re.compile(r"^-\s*\[( |x|/)\]\s*(\S+)\s+(.*)$")
@@ -375,6 +415,10 @@ class SubStatus:
         return self.state.get("updated", "")
 
     @property
+    def updated_kind(self) -> str:
+        return classify_timestamp(self.updated)[1]
+
+    @property
     def outbox_counts(self) -> dict[str, int]:
         counts = {status: 0 for status in _OUTBOX_STATUS_COUNTS}
         for e in self.outbox:
@@ -524,6 +568,10 @@ class ProjectStatus:
     @property
     def updated(self) -> str:
         return self.state.get("updated", "")
+
+    @property
+    def updated_kind(self) -> str:
+        return classify_timestamp(self.updated)[1]
 
 
 # --- Protocol staleness check ---
