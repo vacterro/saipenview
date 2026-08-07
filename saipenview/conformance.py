@@ -620,6 +620,7 @@ def check_cross(
     next_action = state.get("next_action", "")
 
     task_ids = re.findall(r"T-\d+", task)
+    doing = [t for t in tickets.values() if t.section == "DOING"]
     for tid in task_ids:
         if tid not in tickets:
             c.fail(
@@ -628,14 +629,58 @@ def check_cross(
                 "RFC § 1.5",
                 _STATE_FILE,
             )
-        elif phase in protocol.TICKET_PHASES and tickets[tid].section != "DOING":
-            c.warn(
-                "cross.task.not_doing",
-                f"phase {phase} is working {tid} but the ticket sits under "
-                f"## {tickets[tid].section}, not ## DOING",
+            continue
+        t = tickets[tid]
+        # A finished ticket cannot be the active task (the stale-state class
+        # the wave started from: STATE.task naming a ticket that SHIP already
+        # pushed). Recovery has no way to know the work was done otherwise.
+        if t.section == "DONE":
+            c.fail(
+                "cross.task.done",
+                f"STATE names task {tid}, which is DONE -- a finished ticket "
+                f"cannot be the active task; the state is stale",
                 "RFC § 1.5",
                 _BOARD_FILE,
-                tickets[tid].line_no,
+                t.line_no,
+            )
+        # In a ticket-working phase the named task MUST sit in ## DOING,
+        # exactly once. A ticket anywhere else means the state and the board
+        # are describing different work.
+        elif phase in protocol.TICKET_PHASES and t.section != "DOING":
+            c.fail(
+                "cross.task.doing.once",
+                f"phase {phase} is working {tid} but the ticket sits under "
+                f"## {t.section}, not ## DOING -- STATE.task must exist "
+                f"exactly once in DOING",
+                "RFC § 1.5",
+                _BOARD_FILE,
+                t.line_no,
+            )
+
+    # An active task with an empty ## DOING is the same stale-state class
+    # seen from the board side: nothing is claimed, yet the state claims work
+    # is in flight.
+    if phase in protocol.TICKET_PHASES and task_ids and not doing:
+        c.fail(
+            "cross.task.doing.empty",
+            f"phase {phase} names task {task!r} but ## DOING is empty",
+            "RFC § 1.5",
+            _STATE_FILE,
+        )
+
+    # SHIP must reference work, never a ticket that is already finished.
+    # `PHASE SHIP T-###` (or `RESUME: T-### SHIP`) naming a DONE ticket would
+    # re-ship a release that already exists.
+    m = re.match(r"^(?:PHASE SHIP (T-\d+)|RESUME: (T-\d+) SHIP)$", next_action.strip())
+    if m:
+        tid = m.group(1) or m.group(2)
+        if tid in tickets and tickets[tid].section == "DONE":
+            c.fail(
+                "cross.ship.done",
+                f"next_action {next_action!r} would re-ship {tid}, which is "
+                f"already DONE -- SHIP must reference new scope",
+                "RFC § 1.6",
+                _STATE_FILE,
             )
 
     # RFC § 2.1 zero-prompt auto-transition. At DONE with nothing open, the

@@ -446,11 +446,40 @@ class TestCross:
         set_state(project, task="T-777")
         assert "cross.task.unknown" in rules(grade(project))
 
-    def test_task_not_in_doing_is_a_warning(self, project):
+    def test_task_not_in_doing_is_a_failure(self, project):
         set_state(project, task="T-002")
         report = grade(project)
-        assert "cross.task.not_doing" in rules(report)
-        assert report.verdict == "warn"
+        assert "cross.task.doing.once" in rules(report)
+        assert report.verdict == "fail"
+
+    def test_done_ticket_as_active_task_is_a_failure(self, project):
+        set_state(project, task="T-000")
+        report = grade(project)
+        assert "cross.task.done" in rules(report)
+        assert report.verdict == "fail"
+
+    def test_empty_doing_with_active_task_is_a_failure(self, project):
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n\n## DONE\n\n## BLOCKED\n",
+            encoding="utf-8",
+        )
+        report = grade(project)
+        assert "cross.task.doing.empty" in rules(report)
+        assert report.verdict == "fail"
+
+    def test_ship_naming_a_done_ticket_is_a_failure(self, project):
+        set_state(project, phase="REVIEW", transition_from="VERIFY")
+        set_state(project, next_action='"PHASE SHIP T-000"')
+        report = grade(project)
+        assert "cross.ship.done" in rules(report)
+        assert report.verdict == "fail"
+
+    def test_ship_naming_a_claimed_ticket_is_clean(self, project):
+        set_state(project, phase="REVIEW", transition_from="VERIFY")
+        set_state(project, next_action='"PHASE SHIP T-001"')
+        report = grade(project)
+        assert "cross.ship.done" not in rules(report)
 
     def test_done_with_empty_todo_must_not_wait(self, project):
         board = project / ".saipen" / "BOARD.md"
