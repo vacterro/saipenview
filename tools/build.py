@@ -9,9 +9,11 @@ def main():
     os.chdir(repo_root)
 
     print("Building SAIPENVIEW with Nuitka...")
-    
+
     cmd = [
-        sys.executable, "-m", "nuitka",
+        sys.executable,
+        "-m",
+        "nuitka",
         "--standalone",
         "--onefile",
         "--windows-disable-console",
@@ -20,12 +22,14 @@ def main():
         "--include-data-dir=saipenview/assets=saipenview/assets",
         "--enable-plugin=pywebview",
         "saipenview/__main__.py",
-        "-o", "SAIPENVIEW.exe"
+        "-o",
+        "SAIPENVIEW.exe",
     ]
 
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
     print("Build complete: SAIPENVIEW.exe")
+
 
 if __name__ == "__main__":
     main()
