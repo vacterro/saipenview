@@ -74,7 +74,7 @@ const LOCALE_ZH = {
   "settings.hotkeys.label": "[ZH] Show/hide hotkeys — comma-separated, 2 bindings supported",
   "settings.hotkeys.placeholder": "[ZH] ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "[ZH] Snap-to-corner hotkeys — comma-separated, 2 bindings supported",
-  "settings.snapHotkey.placeholder": "[ZH] alt+f14",
+  "settings.snapHotkey.placeholder": "[ZH] ctrl+q",
   "settings.scanDepth.label": "[ZH] Scan depth (1-8 levels)",
   "settings.scanDelay.label": "[ZH] Scan delay (ms per 100 dirs, throttles disk I/O)",
   "settings.rescanInterval.label": "[ZH] Background rescan interval (minutes)",

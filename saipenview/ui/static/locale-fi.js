@@ -73,7 +73,7 @@ const LOCALE_FI = {
   "settings.hotkeys.label": "Näytä/piilota -pikanäppäimet — pilkulla eroteltu, 2 näppäinyhdistelmää tuettu",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Kulmaan kiinnityksen pikanäppäimet — pilkulla eroteltu, 2 näppäinyhdistelmää tuettu",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Skannaussyvyys (1-8 tasoa)",
   "settings.scanDelay.label": "Skannausviive (ms / 100 kansiota, rajoittaa levyn I/O-rasitusta)",
   "settings.rescanInterval.label": "Taustaskannauksen aikaväli (minuutteina)",

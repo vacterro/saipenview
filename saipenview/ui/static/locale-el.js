@@ -74,7 +74,7 @@ const LOCALE_EL = {
   "settings.hotkeys.label": "Συντομεύσεις εμφάνισης/απόκρυψης — χωρισμένες με κόμμα, υποστηρίζονται 2 συνδυασμοί",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Συντομεύσεις προσκόλλησης σε γωνία — χωρισμένες με κόμμα, υποστηρίζονται 2 συνδυασμοί",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Βάθος σάρωσης (1-8 επίπεδα)",
   "settings.scanDelay.label": "Καθυστέρηση σάρωσης (ms ανά 100 φακέλους, περιορίζει το I/O δίσκου)",
   "settings.rescanInterval.label": "Διάστημα επανασάρωσης παρασκηνίου (λεπτά)",

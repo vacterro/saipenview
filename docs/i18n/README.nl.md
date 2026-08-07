@@ -73,7 +73,7 @@
 
 ### ⌨️ Sneltoetsen & Venster
 - **Tonen/Verbergen** — `Ctrl+Alt+X` (instelbaar)
-- **Hoek-snapping** - `Alt+F14` wisselt LB → RB → LO → RO
+- **Hoek-snapping** - `Ctrl+Q` wisselt LB → RB → LO → RO
 - **Zoom** — `Ctrl+Muiswiel`, `Ctrl+`+`/`-`
 - **Systeemvak (Tray)** — minimaliseren naar systeemvak, verborgen starten
 - **Altijd op voorgrond** schakelaar
@@ -140,7 +140,7 @@ Binnenkort beschikbaar ✨
 | Actie | Hoe |
 |---|---|
 | **Tonen / Verbergen** | `Ctrl+Alt+X` of `Alt+F15` (beide instelbaar) |
-| **Hoek-snapping** | `Alt+F14` - wisselt Links-Boven → Rechts-Boven → Links-Onder → Rechts-Onder |
+| **Hoek-snapping** | `Ctrl+Q` - wisselt Links-Boven → Rechts-Boven → Links-Onder → Rechts-Onder |
 | **Noodstop (Kill switch)** | `Ctrl+Shift+Alt+Q` — proces geforceerd beëindigen |
 | **In- / uitzoomen** | `Ctrl+Muiswiel` of `Ctrl` + `+` / `-` |
 | **Zoom herstellen** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Belangrijkste standaardwaarden (verkort - het volledige `DEFAULTS`-woordenboek s
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray systeemvak-icoon + menu
 ├── hotkey.py           Globale sneltoetsregistratie (keyboard lib)
 ├── autostart.py        Windows Registry automatische opstartbeheer
-├── zone_picker.py      Alt+F14 hoek-snap overlay (tkinter)
+├── zone_picker.py      Ctrl+Q hoek-snap overlay (tkinter)
 ├── events.py           In-process gebeurtenisbus (EventBus)
 ├── guard.py            Enkelvoudige-instantieslot + tonen-verzoek overdracht
 ├── git_diff.py         Werkboom diff / commit / revert voor agentacties

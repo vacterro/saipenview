@@ -73,7 +73,7 @@ const LOCALE_DA = {
   "settings.hotkeys.label": "Vis/skjul genvejstaster — kommasepareret, 2 bindinger understøttes",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Hjørne-fastgørelsesgenveje — kommasepareret, 2 bindinger understøttes",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Scanningsdybde (1-8 niveauer)",
   "settings.scanDelay.label": "Scanningsforsinkelse (ms pr. 100 mapper, begrænser disk-I/O)",
   "settings.rescanInterval.label": "Interval for baggrundsscanning (minutter)",

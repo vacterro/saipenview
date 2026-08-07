@@ -73,7 +73,7 @@
 
 ### ⌨️ Tombol Pintas & Jendela
 - **Tampilkan/Sembunyikan** — `Ctrl+Alt+X` (dapat dikonfigurasi)
-- **Jepret sudut** - `Alt+F14` berganti Kiri-Atas → Kanan-Atas → Kiri-Bawah → Kanan-Bawah
+- **Jepret sudut** - `Ctrl+Q` berganti Kiri-Atas → Kanan-Atas → Kiri-Bawah → Kanan-Bawah
 - **Perbesar/Perkecil** — `Ctrl+RodaTetikus`, `Ctrl+`+`/`-`
 - **Baki sistem** — minimalkan ke baki, mulai tersembunyi
 - Sakelar **Selalu di atas**
@@ -140,7 +140,7 @@ Segera hadir ✨
 | Tindakan | Cara |
 |---|---|
 | **Tampilkan / Sembunyikan** | `Ctrl+Alt+X` atau `Alt+F15` (keduanya dapat dikonfigurasi) |
-| **Jepret sudut** | `Alt+F14` - berganti Kiri-Atas → Kanan-Atas → Kiri-Bawah → Kanan-Bawah |
+| **Jepret sudut** | `Ctrl+Q` - berganti Kiri-Atas → Kanan-Atas → Kiri-Bawah → Kanan-Bawah |
 | **Sakelar darurat** | `Ctrl+Shift+Alt+Q` — menghentikan paksa proses |
 | **Perbesar / Perkecil** | `Ctrl+RodaTetikus` atau `Ctrl` + `+` / `-` |
 | **Reset zoom** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Nilai default utama (diringkas - kamus lengkap `DEFAULTS` ada di `saipenview/con
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             Ikon baki sistem pystray + menu
 ├── hotkey.py           Pendaftaran tombol pintas global (pustaka keyboard)
 ├── autostart.py        Manajemen mulai otomatis Windows Registry
-├── zone_picker.py      Hamparan penjepretan sudut Alt+F14 (tkinter)
+├── zone_picker.py      Hamparan penjepretan sudut Ctrl+Q (tkinter)
 ├── events.py           Bus peristiwa dalam proses (EventBus)
 ├── guard.py            Kunci instansi tunggal + penyerahan permintaan tampil
 ├── git_diff.py         Diff / commit / revert pohon kerja untuk tindakan agen

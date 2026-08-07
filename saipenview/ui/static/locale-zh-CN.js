@@ -73,7 +73,7 @@ const LOCALE_ZH_CN = {
   "settings.hotkeys.label": "显示/隐藏快捷键 —— 逗号分隔，支持 2 个快捷键",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "窗口角落吸附快捷键 —— 逗号分隔，支持 2 个快捷键",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "扫描深度 (1-8 层)",
   "settings.scanDelay.label": "扫描延迟 (每 100 个目录的毫秒数，限制磁盘 I/O)",
   "settings.rescanInterval.label": "后台重新扫描间隔 (分钟)",

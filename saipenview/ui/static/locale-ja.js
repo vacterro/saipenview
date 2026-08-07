@@ -74,7 +74,7 @@ const LOCALE_JA = {
   "settings.hotkeys.label": "[JA] Show/hide hotkeys — comma-separated, 2 bindings supported",
   "settings.hotkeys.placeholder": "[JA] ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "[JA] Snap-to-corner hotkeys — comma-separated, 2 bindings supported",
-  "settings.snapHotkey.placeholder": "[JA] alt+f14",
+  "settings.snapHotkey.placeholder": "[JA] ctrl+q",
   "settings.scanDepth.label": "[JA] Scan depth (1-8 levels)",
   "settings.scanDelay.label": "[JA] Scan delay (ms per 100 dirs, throttles disk I/O)",
   "settings.rescanInterval.label": "[JA] Background rescan interval (minutes)",

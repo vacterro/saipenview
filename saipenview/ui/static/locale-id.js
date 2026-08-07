@@ -73,7 +73,7 @@ const LOCALE_ID = {
   "settings.hotkeys.label": "Tombol pintas tampilkan/sembunyikan — dipisahkan koma, mendukung 2 pemetaan",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Tombol pintas jepret ke sudut — dipisahkan koma, mendukung 2 pemetaan",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Kedalaman pemindaian (1-8 tingkat)",
   "settings.scanDelay.label": "Penundaan pemindaian (ms per 100 dir, membatasi I/O disk)",
   "settings.rescanInterval.label": "Interval pemindaian ulang latar belakang (menit)",

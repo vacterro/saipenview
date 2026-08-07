@@ -73,7 +73,7 @@
 
 ### ⌨️ Atajos de teclado y Ventana
 - **Mostrar/Ocultar** — `Ctrl+Alt+X` (configurable)
-- **Ajuste a esquinas** - `Alt+F14` alterna SI → SD → II → ID
+- **Ajuste a esquinas** - `Ctrl+Q` alterna SI → SD → II → ID
 - **Zoom** — `Ctrl+RuedaDelRatón`, `Ctrl+`+`/`-`
 - **Bandeja del sistema** — minimizar a la bandeja, iniciar oculto
 - **Siempre visible** — conmutador
@@ -140,7 +140,7 @@ Próximamente ✨
 | Acción | Cómo |
 |---|---|
 | **Mostrar / Ocultar** | `Ctrl+Alt+X` o `Alt+F15` (ambos configurables) |
-| **Ajuste a esquina** | `Alt+F14` - alterna Superior-Izquierda → Superior-Derecha → Inferior-Izquierda → Inferior-Derecha |
+| **Ajuste a esquina** | `Ctrl+Q` - alterna Superior-Izquierda → Superior-Derecha → Inferior-Izquierda → Inferior-Derecha |
 | **Interruptor de apagado** | `Ctrl+Shift+Alt+Q` — fuerza el cierre del proceso |
 | **Acercar / Alejar zoom** | `Ctrl+RuedaDelRatón` o `Ctrl` + `+` / `-` |
 | **Restablecer zoom** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Valores por defecto clave (resumido - el diccionario completo `DEFAULTS` está e
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             Icono de bandeja del sistema pystray + menú
 ├── hotkey.py           Registro global de atajos de teclado (librería keyboard)
 ├── autostart.py        Gestión de inicio automático en el Registro de Windows
-├── zone_picker.py      Superposición de ajuste a esquina Alt+F14 (tkinter)
+├── zone_picker.py      Superposición de ajuste a esquina Ctrl+Q (tkinter)
 ├── events.py           Bus de eventos en proceso (EventBus)
 ├── guard.py            Bloqueo de instancia única + entrega de solicitud de mostrar
 ├── git_diff.py         Diff / commit / revert del árbol de trabajo para acciones de agentes

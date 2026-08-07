@@ -72,7 +72,7 @@ const LOCALE_UK = {
   "settings.hotkeys.label": "Гарячі клавіші показати/сховати — через кому, підтримується 2 комбінації",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Гарячі клавіші прив'язки до кута — через кому, підтримується 2 комбінації",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Глибина сканування (1-8 рівнів)",
   "settings.scanDelay.label": "Затримка сканування (мс на 100 директорій, обмежує навантаження на диск)",
   "settings.rescanInterval.label": "Інтервал фонового пересканування (хвилини)",

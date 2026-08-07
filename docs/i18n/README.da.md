@@ -73,7 +73,7 @@
 
 ### ⌨️ Genvejstaster & Vindue
 - **Vis/Skjul** — `Ctrl+Alt+X` (konfigurerbar)
-- **Fastgør til hjørner** - `Alt+F14` skifter OV → OH → NV → NH
+- **Fastgør til hjørner** - `Ctrl+Q` skifter OV → OH → NV → NH
 - **Zoom** — `Ctrl+Musehjul`, `Ctrl+`+`/`-`
 - **Systembakke** — minimer til bakke, start skjult
 - **Altid øverst**-skift
@@ -140,7 +140,7 @@ Kommer snart ✨
 | Handling | Hvordan |
 |---|---|
 | **Vis / Skjul** | `Ctrl+Alt+X` eller `Alt+F15` (begge kan konfigureres) |
-| **Fastgør til hjørne** | `Alt+F14` - skifter Øverst-venstre → Øverst-højre → Nederst-venstre → Nederst-højre |
+| **Fastgør til hjørne** | `Ctrl+Q` - skifter Øverst-venstre → Øverst-højre → Nederst-venstre → Nederst-højre |
 | **Nødstop (Kill switch)** | `Ctrl+Shift+Alt+Q` — tving afslutning af processen |
 | **Zoom ind / ud** | `Ctrl+Musehjul` eller `Ctrl` + `+` / `-` |
 | **Nulstil zoom** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Vigtigste standardværdier (forkortet - den fulde `DEFAULTS`-ordbog ligger i `sa
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray-systembakkeikon + menu
 ├── hotkey.py           Global registrering af genvejstaster (keyboard lib)
 ├── autostart.py        Håndtering af Windows Registreringsdatabase autostart
-├── zone_picker.py      Alt+F14 hjørne-fastgørelsesoverlejring (tkinter)
+├── zone_picker.py      Ctrl+Q hjørne-fastgørelsesoverlejring (tkinter)
 ├── events.py           In-process hændelsesbus (EventBus)
 ├── guard.py            Enkeltinstans-lås + visning-anmodning overlevering
 ├── git_diff.py         Arbejdstræets diff / commit / revert for agenthandlinger

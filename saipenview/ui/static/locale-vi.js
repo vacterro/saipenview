@@ -74,7 +74,7 @@ const LOCALE_VI = {
   "settings.hotkeys.label": "[VI] Show/hide hotkeys — comma-separated, 2 bindings supported",
   "settings.hotkeys.placeholder": "[VI] ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "[VI] Snap-to-corner hotkeys — comma-separated, 2 bindings supported",
-  "settings.snapHotkey.placeholder": "[VI] alt+f14",
+  "settings.snapHotkey.placeholder": "[VI] ctrl+q",
   "settings.scanDepth.label": "[VI] Scan depth (1-8 levels)",
   "settings.scanDelay.label": "[VI] Scan delay (ms per 100 dirs, throttles disk I/O)",
   "settings.rescanInterval.label": "[VI] Background rescan interval (minutes)",

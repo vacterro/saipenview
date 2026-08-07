@@ -74,7 +74,7 @@ const LOCALE_HU = {
   "settings.hotkeys.label": "Megjelenítés/elrejtés gyorsbillentyűk — vesszővel elválasztva, 2 kötés támogatott",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Sarokhoz igazítás gyorsbillentyűk — vesszővel elválasztva, 2 kötés támogatott",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Szkennelési mélység (1-8 szint)",
   "settings.scanDelay.label": "Szkennelési késleltetés (ms / 100 könyvtár, lemez I/O korlátozása)",
   "settings.rescanInterval.label": "Háttérbeli újraszkennelési időköz (perc)",

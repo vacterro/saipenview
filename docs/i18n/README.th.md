@@ -73,7 +73,7 @@
 
 ### ⌨️ คีย์ลัดและหน้าต่าง (Hotkeys & Window)
 - **แสดง/ซ่อน** — `Ctrl+Alt+X` (ตั้งค่าได้)
-- **ติดมุม** - `Alt+F14` สลับ บน-ซ้าย → บน-ขวา → ล่าง-ซ้าย → ล่าง-ขวา
+- **ติดมุม** - `Ctrl+Q` สลับ บน-ซ้าย → บน-ขวา → ล่าง-ซ้าย → ล่าง-ขวา
 - **ย่อ/ขยาย (Zoom)** — `Ctrl+MouseWheel`, `Ctrl+`+`/`-`
 - **ถาดระบบ (System tray)** — ย่อลงถาดระบบ, เริ่มต้นแบบซ่อน
 - **อยู่บนสุดเสมอ (Always-on-top)** — สลับโหมด
@@ -140,7 +140,7 @@ saipenview
 | การดำเนินการ | วิธีการ |
 |---|---|
 | **แสดง / ซ่อน** | `Ctrl+Alt+X` หรือ `Alt+F15` (ตั้งค่าได้ทั้งคู่) |
-| **ติดมุม** | `Alt+F14` - สลับ บน-ซ้าย → บน-ขวา → ล่าง-ซ้าย → ล่าง-ขวา |
+| **ติดมุม** | `Ctrl+Q` - สลับ บน-ซ้าย → บน-ขวา → ล่าง-ซ้าย → ล่าง-ขวา |
 | **ปุ่มบังคับปิด** | `Ctrl+Shift+Alt+Q` — บังคับปิดโปรเซสทันที |
 | **ขยาย / ย่อ** | `Ctrl+MouseWheel` หรือ `Ctrl` + `+` / `-` |
 | **รีเซ็ตการขยาย** | `Ctrl+0` |
@@ -225,7 +225,7 @@ saipenview/_data/config.json
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             ไอคอนถาดระบบ pystray + เมนู
 ├── hotkey.py           การลงทะเบียนคีย์ลัดระดับโกลบอล (ไลบรารี keyboard)
 ├── autostart.py        การจัดการการเริ่มทำงานอัตโนมัติของ Windows Registry
-├── zone_picker.py      โอเวอร์เลย์ติดมุม Alt+F14 (tkinter)
+├── zone_picker.py      โอเวอร์เลย์ติดมุม Ctrl+Q (tkinter)
 ├── events.py           บัสเหตุการณ์ภายในกระบวนการ (EventBus)
 ├── guard.py            ล็อกอินสแตนซ์เดียว + ส่งต่อคำขอแสดง
 ├── git_diff.py         diff / commit / revert ทรีทำงานสำหรับการกระทำของเอเจนต์

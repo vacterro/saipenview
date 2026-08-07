@@ -73,7 +73,7 @@
 
 ### ⌨️ 快捷键与窗口
 - **显示/隐藏** —— `Ctrl+Alt+X`（可配置）
-- **贴靠角落** - `Alt+F14` 循环：左上 → 右上 → 左下 → 右下
+- **贴靠角落** - `Ctrl+Q` 循环：左上 → 右上 → 左下 → 右下
 - **缩放** —— `Ctrl+鼠标滚轮`，`Ctrl` + `+` / `-`
 - **系统托盘** —— 最小化至托盘，支持静默启动
 - **窗口置顶** 切换
@@ -140,7 +140,7 @@ saipenview
 | 操作 | 方式 |
 |---|---|
 | **显示 / 隐藏** | `Ctrl+Alt+X` 或 `Alt+F15`（均可配置） |
-| **贴靠角落** | `Alt+F14` - 循环：左上 → 右上 → 左下 → 右下 |
+| **贴靠角落** | `Ctrl+Q` - 循环：左上 → 右上 → 左下 → 右下 |
 | **紧急强退** | `Ctrl+Shift+Alt+Q` —— 强制退出程序进程 |
 | **放大 / 缩小** | `Ctrl+鼠标滚轮` 或 `Ctrl` + `+` / `-` |
 | **重置缩放** | `Ctrl+0` |
@@ -225,7 +225,7 @@ saipenview/_data/config.json
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray 系统托盘图标与菜单
 ├── hotkey.py           全局快捷键注册 (keyboard 库)
 ├── autostart.py        Windows 注册表开机自启管理
-├── zone_picker.py      Alt+F14 贴靠角落覆盖层（tkinter）
+├── zone_picker.py      Ctrl+Q 贴靠角落覆盖层（tkinter）
 ├── events.py           进程内事件总线（EventBus）
 ├── guard.py            单实例锁 + 显示请求交接
 ├── git_diff.py         用于代理操作的工作树 diff / commit / revert

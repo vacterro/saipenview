@@ -73,7 +73,7 @@
 
 ### ⌨️ Pikanäppäimet & Ikkuna
 - **Näytä/Piilota** — `Ctrl+Alt+X` (määritettävissä)
-- **Kiinnitä kulmiin** - `Alt+F14` vaihtaa YV → YO → AV → AO
+- **Kiinnitä kulmiin** - `Ctrl+Q` vaihtaa YV → YO → AV → AO
 - **Mittakaava** — `Ctrl+HiirenRulla`, `Ctrl+`+`/`-`
 - **Ilmoitusalue** — pienennä ilmoitusalueelle, käynnistä piilotettuna
 - **Aina päällimmäisenä** -kytkin
@@ -140,7 +140,7 @@ Tulossa piakkoin ✨
 | Toiminto | Miten |
 |---|---|
 | **Näytä / Piilota** | `Ctrl+Alt+X` tai `Alt+F15` (molemmat määritettävissä) |
-| **Kiinnitä kulmaan** | `Alt+F14` - vaihtaa Ylä-vasen → Ylä-oikea → Ala-vasen → Ala-oikea |
+| **Kiinnitä kulmaan** | `Ctrl+Q` - vaihtaa Ylä-vasen → Ylä-oikea → Ala-vasen → Ala-oikea |
 | **Hätäsammutus** | `Ctrl+Shift+Alt+Q` — pakkolopeta prosessi |
 | **Lähennä / Loitonna** | `Ctrl+HiirenRulla` tai `Ctrl` + `+` / `-` |
 | **Palauta mittakaava** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Tärkeimmät oletusarvot (lyhennetty - täysi `DEFAULTS`-sanakirja on `saipenvie
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray ilmoitusalueen kuvake + valikko
 ├── hotkey.py           Globaali pikanäppäinten rekisteröinti (keyboard-kirjasto)
 ├── autostart.py        Windows Rekisterin automaattikäynnistyksen hallinta
-├── zone_picker.py      Alt+F14 kulmaan kiinnityksen kerrosnäyttö (tkinter)
+├── zone_picker.py      Ctrl+Q kulmaan kiinnityksen kerrosnäyttö (tkinter)
 ├── events.py           Prosessin sisäinen tapahtumaväylä (EventBus)
 ├── guard.py            Yksittäisinstanssilukko + näyttöpyynnön välitys
 ├── git_diff.py         Työpuun diff / commit / revert agenttitoimintoja varten

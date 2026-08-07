@@ -74,7 +74,7 @@ const LOCALE_DE = {
   "settings.hotkeys.label": "Fenster anzeigen/verstecken — kommagetrennt, 2 Belegungen unterstützt",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Ecken-Einrasten — kommagetrennt, 2 Belegungen unterstützt",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Scantiefe (1-8 Ebenen)",
   "settings.scanDelay.label": "Scan-Verzögerung (ms pro 100 Verzeichnisse, drosselt Festplatten-I/O)",
   "settings.rescanInterval.label": "Intervall für Hintergrund-Neuscan (Minuten)",

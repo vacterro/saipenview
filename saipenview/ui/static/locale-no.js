@@ -72,7 +72,7 @@ const LOCALE_NO = {
   "settings.hotkeys.label": "Vis/skjul-snarveier — kommaseparert, 2 bindinger støttet",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Hjørnefestings-snarveier — kommaseparert, 2 bindinger støttet",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Skannedybde (1-8 nivåer)",
   "settings.scanDelay.label": "Skannedelay (ms per 100 mapper, begrenser disk-I/O)",
   "settings.rescanInterval.label": "Intervall for bakgrunnsskanning (minutter)",

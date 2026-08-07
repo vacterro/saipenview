@@ -86,7 +86,8 @@ class TestLayoutIndependence:
         assert len(_combos("ctrl+q")) > 1
 
     def test_function_keys_are_left_to_keyboard(self):
-        # alt+f14 is the shipped snap default and has no entry in the table.
+        # alt+f14 still maps through keyboard (no entry in the table); the
+        # shipped snap default is ctrl+q (T-180), which is pinned instead.
         for c in _combos("alt+f14"):
             assert len(c) == 2
 

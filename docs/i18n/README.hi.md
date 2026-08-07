@@ -74,7 +74,7 @@
 
 ### ⌨️ Hotkeys & Window
 - **Show/Hide** — `Ctrl+Alt+X` (configurable)
-- **Snap corners** — `Alt+F14` cycles TL → TR → BL → BR
+- **Snap corners** — `Ctrl+Q` cycles TL → TR → BL → BR
 - **Zoom** — `Ctrl+MouseWheel`, `Ctrl+`+`/`-`
 - **System tray** — minimize to tray, start hidden
 - **Always-on-top** toggle
@@ -141,7 +141,7 @@ Coming soon ✨
 | Action | How |
 |---|---|
 | **Show / Hide** | `Ctrl+Alt+X` or `Alt+F15` (both configurable) |
-| **Snap corner** | `Alt+F14` — cycles Top-Left → Top-Right → Bottom-Left → Bottom-Right |
+| **Snap corner** | `Ctrl+Q` — cycles Top-Left → Top-Right → Bottom-Left → Bottom-Right |
 | **Kill switch** | `Ctrl+Shift+Alt+Q` — force-quit the process |
 | **Zoom in / out** | `Ctrl+MouseWheel` or `Ctrl` + `+` / `-` |
 | **Zoom reset** | `Ctrl+0` |
@@ -234,7 +234,7 @@ Key defaults (abridged — the full `DEFAULTS` dict lives in `saipenview/config.
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -278,7 +278,7 @@ saipenview/
 ├── tray.py             pystray system-tray icon + menu
 ├── hotkey.py           Global hotkey registration (keyboard lib)
 ├── autostart.py        Windows Registry autostart management
-├── zone_picker.py      Alt+F14 corner-snap overlay (tkinter)
+├── zone_picker.py      Ctrl+Q corner-snap overlay (tkinter)
 ├── events.py           In-process event bus (EventBus)
 ├── guard.py            Single-instance lock + show-request handoff
 ├── git_diff.py         Working-tree diff / commit / revert for agent actions

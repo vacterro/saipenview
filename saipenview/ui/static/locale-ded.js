@@ -73,7 +73,7 @@ const LOCALE_DED = {
   "settings.hotkeys.label": "Кнопки Показать/Скрыть — через запятую, максимум 2",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Кнопки прыжка по углам — через запятую, максимум 2",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Глубина рытья (1-8 уровней)",
   "settings.scanDelay.label": "Тормоз скана (мс на 100 папок, чтоб диск не сдох)",
   "settings.rescanInterval.label": "Тихий скан каждые (минут)",

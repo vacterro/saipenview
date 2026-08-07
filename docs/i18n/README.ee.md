@@ -73,7 +73,7 @@
 
 ### ⌨️ Kiirklahvid ja aken
 - **Kuva / Peida** — `Ctrl+Alt+X` (seadistatav)
-- **Nurga klõps** — `Alt+F14` tsüklina VP → VN → AN → AP
+- **Nurga klõps** — `Ctrl+Q` tsüklina VP → VN → AN → AP
 - **Suum** — `Ctrl+Hiireratas`, `Ctrl+`+`/`-`
 - **Süsteemsalv** — minimeerimine salve, peidetud käivitus
 - **Alati ees** — lüliti
@@ -142,7 +142,7 @@ Varsti ✨
 | Tegevus | Kuidas |
 |---|---|
 | **Kuva / Peida** | `Ctrl+Alt+X` või `Alt+F15` (mõlemad seadistatavad) |
-| **Nurga klõps** | `Alt+F14` — tsükkel Üles-Vasak → Üles-Parem → Alla-Vasak → Alla-Parem |
+| **Nurga klõps** | `Ctrl+Q` — tsükkel Üles-Vasak → Üles-Parem → Alla-Vasak → Alla-Parem |
 | **Hädasulge** | `Ctrl+Shift+Alt+Q` — protsessi sundlõpetamine |
 | **Suum sisse / välja** | `Ctrl+Hiireratas` või `Ctrl` + `+` / `-` |
 | **Suumi lähtestus** | `Ctrl+0` |
@@ -239,7 +239,7 @@ Peamised vaikimisi väärtused (lühendatud — täielik `DEFAULTS`-sõnastik on
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -285,7 +285,7 @@ saipenview/
 ├── tray.py             pystray salveikoon + menüü
 ├── hotkey.py           Globaalsete kiirklahvide registreerimine (keyboard)
 ├── autostart.py        Windowsi registri automaatkäivituse haldus
-├── zone_picker.py      Alt+F14 nurga-klõpsu ülekate (tkinter)
+├── zone_picker.py      Ctrl+Q nurga-klõpsu ülekate (tkinter)
 ├── events.py           Protsisisisene sündmussiin (EventBus)
 ├── guard.py            Ühekordse eksemplari lukk + näitamistaotluse edastus
 ├── git_diff.py         Tööpuu diff / commit / revert agentide tegevuste jaoks

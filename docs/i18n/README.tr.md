@@ -73,7 +73,7 @@
 
 ### ⌨️ Kısayollar ve Pencere
 - **Göster/Gizle** — `Ctrl+Alt+X` (yapılandırılabilir)
-- **Köşelere hizala** - `Alt+F14` SolÜst → SağÜst → SolAlt → SağAlt arasında geçiş yapar
+- **Köşelere hizala** - `Ctrl+Q` SolÜst → SağÜst → SolAlt → SağAlt arasında geçiş yapar
 - **Yakınlaştırma** — `Ctrl+FareTekerleği`, `Ctrl+`+`/`-`
 - **Sistem tepsisi** — tepsiye küçült, gizli başlat
 - **Her zaman üstte** geçişi
@@ -140,7 +140,7 @@ Yakında geliyor ✨
 | Eylem | Nasıl |
 |---|---|
 | **Göster / Gizle** | `Ctrl+Alt+X` veya `Alt+F15` (her ikisi de yapılandırılabilir) |
-| **Köşeye hizala** | `Alt+F14` - Sol-Üst → Sağ-Üst → Sol-Alt → Sağ-Alt arasında geçiş yapar |
+| **Köşeye hizala** | `Ctrl+Q` - Sol-Üst → Sağ-Üst → Sol-Alt → Sağ-Alt arasında geçiş yapar |
 | **Acil kapatma** | `Ctrl+Shift+Alt+Q` — işlemi zorla kapatır |
 | **Yakınlaştır / Uzaklaştır** | `Ctrl+FareTekerleği` veya `Ctrl` + `+` / `-` |
 | **Yakınlaştırmayı sıfırla** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Ana varsayılan değerler (kısaltılmış - tam `DEFAULTS` sözlüğü `saipenv
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray sistem tepsisi simgesi + menüsü
 ├── hotkey.py           Genel kısayol kaydı (keyboard kütüphanesi)
 ├── autostart.py        Windows Kayıt Defteri otomatik başlatma yönetimi
-├── zone_picker.py      Alt+F14 köşe hizalama katmanı (tkinter)
+├── zone_picker.py      Ctrl+Q köşe hizalama katmanı (tkinter)
 ├── events.py           İşlem içi olay veriyolu (EventBus)
 ├── guard.py            Tek örnek kilidi + görüntüleme isteği iletimi
 ├── git_diff.py         Ajan eylemleri için çalışma ağacı diff / commit / revert

@@ -73,7 +73,7 @@ const LOCALE_RU = {
   "settings.hotkeys.label": "Горячие клавиши Показать/Скрыть — через запятую, до 2 штук",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Горячие клавиши привязки к углу — через запятую, до 2 штук",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Глубина сканирования (1-8 уровней)",
   "settings.scanDelay.label": "Задержка сканирования (мс на 100 папок, снижает нагрузку на диск)",
   "settings.rescanInterval.label": "Интервал фонового сканирования (минуты)",

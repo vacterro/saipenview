@@ -73,7 +73,7 @@
 
 ### ⌨️ Tastenkombinationen & Fenster
 - **Anzeigen/Ausblenden** — `Strg+Alt+X` (konfigurierbar)
-- **Ecken-Einrasten** - `Alt+F14` wechselt OL → OR → UL → UR
+- **Ecken-Einrasten** - `Ctrl+Q` wechselt OL → OR → UL → UR
 - **Zoom** — `Strg+Mausrad`, `Strg+`+`/`-`
 - **System-Tray** — in den Tray minimieren, versteckt starten
 - **Immer im Vordergrund**-Umschalter
@@ -140,7 +140,7 @@ Demnächst verfügbar ✨
 | Aktion | Wie |
 |---|---|
 | **Anzeigen / Ausblenden** | `Strg+Alt+X` oder `Alt+F15` (beide konfigurierbar) |
-| **Ecke einrasten** | `Alt+F14` - wechselt Oben-Links → Oben-Rechts → Unten-Links → Unten-Rechts |
+| **Ecke einrasten** | `Ctrl+Q` - wechselt Oben-Links → Oben-Rechts → Unten-Links → Unten-Rechts |
 | **Not-Aus (Kill Switch)** | `Strg+Umschalt+Alt+Q` — Prozess sofort beenden |
 | **Vergrößern / Verkleinern** | `Strg+Mausrad` oder `Strg` + `+` / `-` |
 | **Zoom zurücksetzen** | `Strg+0` |
@@ -225,7 +225,7 @@ Wichtige Standardwerte (gekurzt - das vollstandige `DEFAULTS`-Worterbuch befinde
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray System-Tray-Symbol + Menü
 ├── hotkey.py           Globale Hotkey-Registrierung (keyboard-Bibliothek)
 ├── autostart.py        Windows-Registrierungs-Autostart-Verwaltung
-├── zone_picker.py      Alt+F14 Ecken-Einrast-Overlay (tkinter)
+├── zone_picker.py      Ctrl+Q Ecken-Einrast-Overlay (tkinter)
 ├── events.py           Prozessinterner Ereignisbus (EventBus)
 ├── guard.py            Einzelinstanz-Sperre + Anzeige-Anfrage-Ubergabe
 ├── git_diff.py         Arbeitsbaum-Diff / Commit / Revert fur Agent-Aktionen

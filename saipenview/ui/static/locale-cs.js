@@ -74,7 +74,7 @@ const LOCALE_CS = {
   "settings.hotkeys.label": "[CS] Show/hide hotkeys — comma-separated, 2 bindings supported",
   "settings.hotkeys.placeholder": "[CS] ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "[CS] Snap-to-corner hotkeys — comma-separated, 2 bindings supported",
-  "settings.snapHotkey.placeholder": "[CS] alt+f14",
+  "settings.snapHotkey.placeholder": "[CS] ctrl+q",
   "settings.scanDepth.label": "[CS] Scan depth (1-8 levels)",
   "settings.scanDelay.label": "[CS] Scan delay (ms per 100 dirs, throttles disk I/O)",
   "settings.rescanInterval.label": "[CS] Background rescan interval (minutes)",

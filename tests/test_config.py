@@ -80,11 +80,7 @@ class TestLoadConfig:
         assert cfg["zoom_level"] == 0.75
 
     def test_migrates_string_snap_hotkey(self, tmp_config_path):
-        """Old string snap_hotkey is auto-migrated to list.
-
-        Deliberately NOT ctrl+q: that combo now has a migration of its own
-        (below), and using it here would make this test pass or fail for the
-        wrong reason."""
+        """Old string snap_hotkey is auto-migrated to list."""
         from saipenview.config import load_config, save_config
 
         save_config({"snap_hotkey": "alt+f13"})
@@ -92,37 +88,37 @@ class TestLoadConfig:
         assert isinstance(cfg["snap_hotkey"], list)
         assert cfg["snap_hotkey"] == ["alt+f13"]
 
-    def test_strips_ctrl_q_from_snap_hotkey(self, tmp_config_path):
-        """ctrl+q was freed in 4d291a0 but stayed in configs already on disk,
-        where it kept firing the corner-snap globally from unrelated apps."""
+    def test_default_snap_hotkey_is_ctrl_q(self):
+        """T-180: the user's requested snap default is ctrl+q, not alt+f14."""
+        from saipenview.config import DEFAULTS
+
+        assert DEFAULTS["snap_hotkey"] == ["ctrl+q"]
+
+    def test_saved_ctrl_q_survives_load(self, tmp_config_path):
+        """The 4d291a0 load-time strip that purged ctrl+q from snap_hotkey is
+        gone (T-180 reverts that decision) -- a saved ctrl+q must come back
+        unchanged instead of round-tripping through the default fallback."""
+        from saipenview.config import load_config, save_config
+
+        save_config({"snap_hotkey": ["ctrl+q"]})
+        assert load_config()["snap_hotkey"] == ["ctrl+q"]
+
+    def test_mixed_ctrl_q_and_legacy_binding_survive_load(self, tmp_config_path):
+        """No stripping of any kind anymore: a config carrying ctrl+q beside
+        the old alt+f14 default loads both, in order."""
         from saipenview.config import load_config, save_config
 
         save_config({"snap_hotkey": ["ctrl+q", "alt+f14"]})
-        assert load_config()["snap_hotkey"] == ["alt+f14"]
+        assert load_config()["snap_hotkey"] == ["ctrl+q", "alt+f14"]
 
-    def test_stripping_ctrl_q_never_leaves_an_empty_list(self, tmp_config_path):
-        """A hotkey list with nothing in it registers nothing, so the last
-        slot falls back to the default rather than to silence."""
-        from saipenview.config import DEFAULTS, load_config, save_config
-
-        save_config({"snap_hotkey": ["ctrl+q"]})
-        assert load_config()["snap_hotkey"] == list(DEFAULTS["snap_hotkey"])
-
-    def test_ctrl_q_is_matched_regardless_of_spacing_or_case(self, tmp_config_path):
-        """The settings field is free text and splits on commas, so the value
-        that reaches disk can carry stray spacing or capitals."""
+    def test_legacy_alt_f14_config_still_loads(self, tmp_config_path):
+        """A config written before T-180 (alt+f14 as the saved snap binding)
+        keeps its explicit value -- the default changed, existing choices do
+        not."""
         from saipenview.config import load_config, save_config
 
-        save_config({"snap_hotkey": ["Ctrl + Q", "alt+f14"]})
+        save_config({"snap_hotkey": ["alt+f14"]})
         assert load_config()["snap_hotkey"] == ["alt+f14"]
-
-    def test_leaves_other_hotkeys_alone(self, tmp_config_path):
-        """Only ctrl+q is stripped -- this is a targeted migration, not a
-        filter that second-guesses whatever else the user has bound."""
-        from saipenview.config import load_config, save_config
-
-        save_config({"snap_hotkey": ["ctrl+alt+q", "alt+f14"]})
-        assert load_config()["snap_hotkey"] == ["ctrl+alt+q", "alt+f14"]
 
     def test_handles_corrupt_json(self, tmp_config_path):
         """Corrupt JSON falls back to defaults with a stderr message (not crash)."""

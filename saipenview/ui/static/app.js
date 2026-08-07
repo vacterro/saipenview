@@ -2754,10 +2754,7 @@ function openSettings() {
   Promise.all([window.pywebview.api.get_config(), window.pywebview.api.get_autostart_enabled()]).then(([cfg, autostart]) => {
     document.getElementById("setZoomLevel").value = String(cfg.zoom_level || 1.0);
     document.getElementById("setHotkeys").value = (cfg.hotkeys || []).join(", ");
-    // Fallback is alt+f14, NOT ctrl+q: ctrl+q was freed in 4d291a0 because a
-    // global binding hijacks it in every app. Handing it back here would put
-    // it straight back into the config the migration just cleaned.
-    document.getElementById("setSnapHotkey").value = Array.isArray(cfg.snap_hotkey) ? cfg.snap_hotkey.join(", ") : (cfg.snap_hotkey || "alt+f14");
+    document.getElementById("setSnapHotkey").value = Array.isArray(cfg.snap_hotkey) ? cfg.snap_hotkey.join(", ") : (cfg.snap_hotkey || "ctrl+q");
     document.getElementById("setScanDepth").value = cfg.scan_depth || 6;
     document.getElementById("setScanDelay").value = cfg.scan_delay_ms != null ? cfg.scan_delay_ms : 10;
     document.getElementById("setRescanInterval").value = Math.round((cfg.rescan_interval || 300) / 60);

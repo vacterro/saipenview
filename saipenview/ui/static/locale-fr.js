@@ -73,7 +73,7 @@ const LOCALE_FR = {
   "settings.hotkeys.label": "Raccourcis afficher/masquer — séparés par des virgules, 2 associations prises en charge",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Raccourcis d'ancrage au coin — séparés par des virgules, 2 associations prises en charge",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Profondeur d'analyse (1-8 niveaux)",
   "settings.scanDelay.label": "Délai d'analyse (ms par 100 dossiers, limite les E/S disque)",
   "settings.rescanInterval.label": "Intervalle de re-analyse en arrière-plan (minutes)",

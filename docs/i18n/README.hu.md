@@ -73,7 +73,7 @@
 
 ### ⌨️ Gyorsbillentyűk és Ablak
 - **Megjelenítés/Elrejtés** — `Ctrl+Alt+X` (beállítható)
-- **Sarokhoz igazítás** - `Alt+F14` leptet: BF → JF → BA → JA
+- **Sarokhoz igazítás** - `Ctrl+Q` leptet: BF → JF → BA → JA
 - **Nagyítás** — `Ctrl+Egérgörgő`, `Ctrl+`+`/`-`
 - **Rendszertálca** — kicsinyítés a tálcára, indítás rejtve
 - **Mindig felül** kapcsoló
@@ -140,7 +140,7 @@ Hamarosan ✨
 | Művelet | Hogyan |
 |---|---|
 | **Megjelenítés / Elrejtés** | `Ctrl+Alt+X` vagy `Alt+F15` (mindkettő beállítható) |
-| **Sarokhoz igazítás** | `Alt+F14` - leptet: Bal-Fent → Jobb-Fent → Bal-Lent → Jobb-Lent |
+| **Sarokhoz igazítás** | `Ctrl+Q` - leptet: Bal-Fent → Jobb-Fent → Bal-Lent → Jobb-Lent |
 | **Kényszerített kilépés** | `Ctrl+Shift+Alt+Q` — a folyamat azonnali leállítása |
 | **Nagyítás / Kicsinyítés** | `Ctrl+Egérgörgő` vagy `Ctrl` + `+` / `-` |
 | **Nagyítás alaphelyzetbe** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Fő alapértelmezett értékek (rövidítve - a teljes `DEFAULTS` szótár a `sa
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray rendszertálca ikon + menü
 ├── hotkey.py           Globális gyorsbillentyű regisztráció (keyboard lib)
 ├── autostart.py        Windows Registry automatikus indítás kezelése
-├── zone_picker.py      Alt+F14 sarokhoz igazítás overlay (tkinter)
+├── zone_picker.py      Ctrl+Q sarokhoz igazítás overlay (tkinter)
 ├── events.py           Folyamaton belüli eseménybusz (EventBus)
 ├── guard.py            Egypéldányos zár + megjelenítési kérelem átadása
 ├── git_diff.py         Munkafa diff / commit / revert ügynökműveletekhez

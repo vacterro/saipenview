@@ -74,7 +74,7 @@ const LOCALE_KO = {
   "settings.hotkeys.label": "표시/숨기기 단축키 — 쉼표로 구분, 최대 2개 단축키 지원",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "모서리 스냅 단축키 — 쉼표로 구분, 최대 2개 단축키 지원",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "스캔 깊이 (1-8 단계)",
   "settings.scanDelay.label": "스캔 지연 (100개 디렉터리당 ms, 디스크 I/O 제한)",
   "settings.rescanInterval.label": "백그라운드 재스캔 간격 (분)",

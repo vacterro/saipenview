@@ -74,7 +74,7 @@ const LOCALE_SV = {
   "settings.hotkeys.label": "[SV] Show/hide hotkeys — comma-separated, 2 bindings supported",
   "settings.hotkeys.placeholder": "[SV] ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "[SV] Snap-to-corner hotkeys — comma-separated, 2 bindings supported",
-  "settings.snapHotkey.placeholder": "[SV] alt+f14",
+  "settings.snapHotkey.placeholder": "[SV] ctrl+q",
   "settings.scanDepth.label": "[SV] Scan depth (1-8 levels)",
   "settings.scanDelay.label": "[SV] Scan delay (ms per 100 dirs, throttles disk I/O)",
   "settings.rescanInterval.label": "[SV] Background rescan interval (minutes)",

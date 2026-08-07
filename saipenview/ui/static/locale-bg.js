@@ -72,7 +72,7 @@ const LOCALE_BG = {
   "settings.hotkeys.label": "Бързи клавиши за показване/скриване — разделени със запетая, поддържат се 2 комбинации",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Бързи клавиши за прилепване в ъгъл — разделени със запетая, поддържат се 2 комбинации",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Дълбочина на сканиране (1-8 нива)",
   "settings.scanDelay.label": "Забавяне при сканиране (ms на 100 директории, ограничава дисковия I/O)",
   "settings.rescanInterval.label": "Интервал на повторно фоново сканиране (минути)",

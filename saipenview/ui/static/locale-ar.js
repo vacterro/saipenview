@@ -74,7 +74,7 @@ const LOCALE_AR = {
   "settings.hotkeys.label": "اختصارات الإظهار/الإخفاء — مفصولة بفواصل، يدعم اختصارين",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "اختصارات المحاذاة للزاوية — مفصولة بفواصل، يدعم اختصارين",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "عمق الفحص (1-8 مستويات)",
   "settings.scanDelay.label": "تأخير الفحص (مللي ثانية لكل 100 مجلد، لتقليل إجهاد القرص)",
   "settings.rescanInterval.label": "الفاصل الزمني لإعادة الفحص في الخلفية (بالدقائق)",

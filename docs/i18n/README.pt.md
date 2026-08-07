@@ -73,7 +73,7 @@
 
 ### ⌨️ Atalhos e Janela
 - **Mostrar/Ocultar** — `Ctrl+Alt+X` (configurável)
-- **Fixar nos cantos** - `Alt+F14` alterna SE → SD → IE → ID
+- **Fixar nos cantos** - `Ctrl+Q` alterna SE → SD → IE → ID
 - **Zoom** — `Ctrl+RodaDoRato`, `Ctrl`+`+`/`-`
 - **Bandeja do sistema** — minimizar para a bandeja, iniciar oculto
 - Alternar **Sempre no topo**
@@ -140,7 +140,7 @@ Em breve ✨
 | Ação | Como |
 |---|---|
 | **Mostrar / Ocultar** | `Ctrl+Alt+X` ou `Alt+F15` (ambos configuráveis) |
-| **Fixar no canto** | `Alt+F14` - alterna Sup. Esquerdo → Sup. Direito → Inf. Esquerdo → Inf. Direito |
+| **Fixar no canto** | `Ctrl+Q` - alterna Sup. Esquerdo → Sup. Direito → Inf. Esquerdo → Inf. Direito |
 | **Interrupção de emergência** | `Ctrl+Shift+Alt+Q` — forçar o encerramento do processo |
 | **Aumentar / reduzir zoom** | `Ctrl+RodaDoRato` ou `Ctrl` + `+` / `-` |
 | **Redefinir zoom** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Valores padrão principais (abreviado - o dicionário completo `DEFAULTS` está 
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             Ícone de bandeja do sistema pystray + menu
 ├── hotkey.py           Registo global de atalhos (biblioteca keyboard)
 ├── autostart.py        Gestão de início automático no Registo do Windows
-├── zone_picker.py      Sobreposição de fixação no canto Alt+F14 (tkinter)
+├── zone_picker.py      Sobreposição de fixação no canto Ctrl+Q (tkinter)
 ├── events.py           Barramento de eventos no processo (EventBus)
 ├── guard.py            Trava de instância única + entrega de solicitação de exibição
 ├── git_diff.py         Diff / commit / revert da árvore de trabalho para ações de agentes

@@ -72,7 +72,7 @@ const LOCALE_PT = {
   "settings.hotkeys.label": "Atalhos para mostrar/ocultar — separados por vírgulas, suporte para 2 atalhos",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Atalhos para fixar no canto — separados por vírgulas, suporte para 2 atalhos",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Profundidade de verificação (1-8 níveis)",
   "settings.scanDelay.label": "Atraso de verificação (ms por 100 dirs, limita I/O do disco)",
   "settings.rescanInterval.label": "Intervalo de reverificação em segundo plano (minutos)",

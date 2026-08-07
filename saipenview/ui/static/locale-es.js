@@ -73,7 +73,7 @@ const LOCALE_ES = {
   "settings.hotkeys.label": "Atajos para mostrar/ocultar — separados por comas, admite 2 combinaciones",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Atajos para ajustar a esquina — separados por comas, admite 2 combinaciones",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Profundidad de escaneo (1-8 niveles)",
   "settings.scanDelay.label": "Retraso de escaneo (ms por cada 100 dirs, limita E/S de disco)",
   "settings.rescanInterval.label": "Intervalo de reescaneo en segundo plano (minutos)",

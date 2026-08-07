@@ -73,7 +73,7 @@
 
 ### ⌨️ Raccourcis & Fenêtre
 - **Afficher/Masquer** — `Ctrl+Alt+X` (configurable)
-- **Ancrage aux coins** - `Alt+F14` fait défiler HG → HD → BG → BD
+- **Ancrage aux coins** - `Ctrl+Q` fait défiler HG → HD → BG → BD
 - **Zoom** — `Ctrl+Molette`, `Ctrl+`+`/`-`
 - **Barre des tâches** — réduire dans la barre, démarrer masqué
 - Bascule **Toujours au premier plan**
@@ -140,7 +140,7 @@ Bientôt disponible ✨
 | Action | Comment |
 |---|---|
 | **Afficher / Masquer** | `Ctrl+Alt+X` ou `Alt+F15` (les deux configurables) |
-| **Ancrer au coin** | `Alt+F14` - défile Haut-Gauche → Haut-Droit → Bas-Gauche → Bas-Droit |
+| **Ancrer au coin** | `Ctrl+Q` - défile Haut-Gauche → Haut-Droit → Bas-Gauche → Bas-Droit |
 | **Arrêt d'urgence** | `Ctrl+Shift+Alt+Q` — quitte forcé du processus |
 | **Zoom avant / arrière** | `Ctrl+Molette` ou `Ctrl` + `+` / `-` |
 | **Réinitialiser le zoom** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Valeurs par défaut principales (abrégé - le dictionnaire complet `DEFAULTS` s
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             Icône + menu dans la barre des tâches pystray
 ├── hotkey.py           Enregistrement global des raccourcis (bibliothèque keyboard)
 ├── autostart.py        Gestion du démarrage automatique du Registre Windows
-├── zone_picker.py      Superposition d'ancrage de coin Alt+F14 (tkinter)
+├── zone_picker.py      Superposition d'ancrage de coin Ctrl+Q (tkinter)
 ├── events.py           Bus d'événements intra-processus (EventBus)
 ├── guard.py            Verrou d'instance unique + remise de demande d'affichage
 ├── git_diff.py         Diff / commit / revert de l'arbre de travail pour les actions des agents

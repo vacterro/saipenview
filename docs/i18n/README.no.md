@@ -73,7 +73,7 @@
 
 ### ⌨️ Snarveier og vindu
 - **Vis/skjul** — `Ctrl+Alt+X` (konfigurerbar)
-- **Fest til hjorner** - `Alt+F14` veksler OV → OH → NV → NH
+- **Fest til hjorner** - `Ctrl+Q` veksler OV → OH → NV → NH
 - **Zoom** — `Ctrl+Mushjul`, `Ctrl`+`+`/`-`
 - **Systemfelt** — minimer til systemfelt, start skjult
 - **Alltid øverst**-bryter
@@ -140,7 +140,7 @@ Kommer snart ✨
 | Handling | Hvordan |
 |---|---|
 | **Vis / Skjul** | `Ctrl+Alt+X` eller `Alt+F15` (begge konfigurerbare) |
-| **Fest til hjorne** | `Alt+F14` - veksler Overst-venstre → Overst-hoyre → Nederst-venstre → Nederst-hoyre |
+| **Fest til hjorne** | `Ctrl+Q` - veksler Overst-venstre → Overst-hoyre → Nederst-venstre → Nederst-hoyre |
 | **Nødstopp** | `Ctrl+Shift+Alt+Q` — tving avslutning av prosessen |
 | **Zoom inn / ut** | `Ctrl+Mushjul` eller `Ctrl` + `+` / `-` |
 | **Tilbakestill zoom** | `Ctrl+0` |
@@ -225,7 +225,7 @@ Viktigste standardverdier (forkortet - den fulle `DEFAULTS`-ordboken ligger i `s
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray-systemfeltikon + meny
 ├── hotkey.py           Global snarveiregistrering (keyboard-bibliotek)
 ├── autostart.py        Håndtering av Windows Registry-oppstart
-├── zone_picker.py      Alt+F14 hjornefestingsvisning (tkinter)
+├── zone_picker.py      Ctrl+Q hjornefestingsvisning (tkinter)
 ├── events.py           In-process hendelsesbuss (EventBus)
 ├── guard.py            Enkeltinstans-lås + vising-foresporsel overlevering
 ├── git_diff.py         Arbeidstre diff / commit / revert for agenthandlinger

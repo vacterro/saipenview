@@ -74,7 +74,7 @@ const LOCALE_TH = {
   "settings.hotkeys.label": "คีย์ลัดแสดง/ซ่อน — คั่นด้วยจุลภาค รองรับ 2 ปุ่ม",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "คีย์ลัดยึดมุม — คั่นด้วยจุลภาค รองรับ 2 ปุ่ม",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "ความลึกของการสแกน (1-8 ระดับ)",
   "settings.scanDelay.label": "ความหน่วงการสแกน (มิลลิวินาทีต่อ 100 ไดเรกทอรี ช่วยลดภาระดิสก์ I/O)",
   "settings.rescanInterval.label": "ช่วงเวลาสแกนซ้ำในเบื้องหลัง (นาที)",

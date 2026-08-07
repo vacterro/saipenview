@@ -38,12 +38,11 @@ DEFAULTS = {
     "sidebar_width": 160,
     "show_hidden": False,
     # Same two-slot shape as "hotkeys" above; both are lists so either can hold
-    # a second binding. alt+f14 mirrors the alt+f15 convention -- F13..F24
-    # don't exist on normal keyboards, so they're collision-free targets for a
-    # remapper/macro key. Only ONE default here on purpose: snap-corner is a
-    # secondary action and there is no second combo that is safe to claim
-    # globally without guessing at what the user already uses.
-    "snap_hotkey": ["alt+f14"],
+    # a second binding. ctrl+q is the user's requested snap default (T-180),
+    # deliberately reverting the 4d291a0 decision that freed it because a
+    # GLOBAL binding hijacks the combo in every app and ctrl+q is a ubiquitous
+    # quit accelerator -- the user accepts that tradeoff.
+    "snap_hotkey": ["ctrl+q"],
     "collapse_hint_acknowledged": False,
     "collapsed_sections": {},
     "show_on_launch": True,  # False = start hidden in tray (old default)
@@ -112,24 +111,7 @@ def load_config() -> dict:
         cfg[key] = dedupe(cfg.get(key))
     if cfg.get("selected_root"):
         cfg["selected_root"] = canonical(cfg["selected_root"])
-    # Migration: ctrl+q was freed in 4d291a0 and dropped from both DEFAULTS
-    # lists for the reason spelled out above "hotkeys" -- a GLOBAL binding
-    # hijacks the combo in every application, and ctrl+q is a ubiquitous quit
-    # accelerator. Only the defaults were cleaned then; every config.json
-    # already on disk kept shipping it under snap_hotkey, so the corner-snap
-    # kept firing from unrelated windows. Strip it on load, and never leave a
-    # slot empty -- a hotkey list with nothing in it registers nothing.
-    snap = cfg.get("snap_hotkey")
-    if isinstance(snap, list) and any(_is_ctrl_q(k) for k in snap):
-        cfg["snap_hotkey"] = [k for k in snap if not _is_ctrl_q(k)] or list(
-            DEFAULTS["snap_hotkey"]
-        )
     return cfg
-
-
-def _is_ctrl_q(combo: object) -> bool:
-    """`ctrl+q` in any of the spellings the settings field accepts."""
-    return isinstance(combo, str) and combo.replace(" ", "").lower() == "ctrl+q"
 
 
 _save_lock = threading.Lock()

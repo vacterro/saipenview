@@ -73,7 +73,7 @@ const LOCALE_NL = {
   "settings.hotkeys.label": "Sneltoetsen tonen/verbergen — kommagescheiden, 2 sneltoetsen ondersteund",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Sneltoetsen hoek-snapping — kommagescheiden, 2 sneltoetsen ondersteund",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Scandiepte (1-8 niveaus)",
   "settings.scanDelay.label": "Scanvertraging (ms per 100 mappen, vertraagt schijf-I/O)",
   "settings.rescanInterval.label": "Achtergrond-rescan interval (minuten)",

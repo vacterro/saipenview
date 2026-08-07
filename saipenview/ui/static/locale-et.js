@@ -73,7 +73,7 @@ const LOCALE_ET = {
   "settings.hotkeys.label": "Näita/Peida kiirklahvid — komaga eraldatud, toetatud 2 seost",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Nurka kinnitamise kiirklahvid — komaga eraldatud, toetatud 2 seost",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Skannimise sügavus (1-8 taset)",
   "settings.scanDelay.label": "Skannimise viivitus (ms 100 kausta kohta, piirab ketta IO-d)",
   "settings.rescanInterval.label": "Taustaskannimise intervall (minutites)",

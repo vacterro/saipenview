@@ -4,6 +4,31 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.21] - 2026-08-07
+
+### Changed
+
+- **Default window-snap hotkey is now `Ctrl+Q` (T-180).** `snap_hotkey`
+  ships `["ctrl+q"]` instead of `["alt+f14"]`, reversing the 4d291a0
+  decision that freed the combo — a global binding hijacks it in every app
+  and it collides with common quit accelerators, a tradeoff the user
+  explicitly accepted. The load-time migration that silently purged `ctrl+q`
+  from any saved config is gone: a snap binding the user sets in Settings
+  now survives restarts instead of being reset on the next launch. Settings
+  placeholder, quick-help and all 34 locale/README translations follow.
+
+### Removed
+
+- `config.py`'s `_is_ctrl_q` load-time strip and its four migration tests
+  (the strip existed only to clean configs that predated 4d291a0).
+
+### Fixed
+
+- Release version files reconciled: `pyproject.toml` and
+  `saipenview/__init__.py` had lagged v0.1.18..v0.1.20 (tags shipped while
+  the declared version stayed 0.1.17, so wheels carried stale METADATA).
+  Reset to 0.1.21 so the tag, the wheel and the changelog agree again.
+
 ## [0.1.20] - 2026-08-07
 
 ### Added

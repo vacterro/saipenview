@@ -73,7 +73,7 @@
 
 ### ⌨️ Comenzi rapide & Fereastră
 - **Afișare/Ascundere** — `Ctrl+Alt+X` (configurabil)
-- **Fixare la colțuri** - `Alt+F14` rotește SS → SD → JS → JD
+- **Fixare la colțuri** - `Ctrl+Q` rotește SS → SD → JS → JD
 - **Zoom** — `Ctrl+MouseWheel`, `Ctrl+`+`/`-`
 - **Tray de sistem** — minimizare în tray, pornire ascunsă
 - **Mereu deasupra** (Always-on-top) comutator
@@ -140,7 +140,7 @@ saipenview
 | Acțiune | Cum |
 |---|---|
 | **Afișare / Ascundere** | `Ctrl+Alt+X` sau `Alt+F15` (ambele configurabile) |
-| **Fixare în colț** | `Alt+F14` - rotește Sus-Stânga → Sus-Dreapta → Jos-Stânga → Jos-Dreapta |
+| **Fixare în colț** | `Ctrl+Q` - rotește Sus-Stânga → Sus-Dreapta → Jos-Stânga → Jos-Dreapta |
 | **Oprire de urgență** | `Ctrl+Shift+Alt+Q` — închide forțat procesul |
 | **Mărire / Micșorare** | `Ctrl+MouseWheel` sau `Ctrl` + `+` / `-` |
 | **Resetare zoom** | `Ctrl+0` |
@@ -233,7 +233,7 @@ Valori implicite principale (abreviat - dicționarul complet `DEFAULTS` este în
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -277,7 +277,7 @@ saipenview/
 ├── tray.py             Iconiță de tray pystray + meniu
 ├── hotkey.py           Înregistrare comenzi rapide globale (biblioteca keyboard)
 ├── autostart.py        Gestionare pornire automată în Registrul Windows
-├── zone_picker.py      Suprapunere fixare colț Alt+F14 (tkinter)
+├── zone_picker.py      Suprapunere fixare colț Ctrl+Q (tkinter)
 ├── events.py           Bus de evenimente în proces (EventBus)
 ├── guard.py            Blocare instanță unică + predarea cererii de afișare
 ├── git_diff.py         Diff / commit / revert al arborelui de lucru pentru acțiuni agenți

@@ -73,7 +73,7 @@ const LOCALE_TR = {
   "settings.hotkeys.label": "Göster/gizle kısayolları — virgülle ayrılmış, 2 bağlama desteklenir",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Köşeye hizalama kısayolları — virgülle ayrılmış, 2 bağlama desteklenir",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Tarama derinliği (1-8 seviye)",
   "settings.scanDelay.label": "Tarama gecikmesi (100 dizin başına ms, disk I/O'sunu sınırlar)",
   "settings.rescanInterval.label": "Arka plan yeniden tarama aralığı (dakika)",

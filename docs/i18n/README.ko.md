@@ -73,7 +73,7 @@
 
 ### ⌨️ 단축키 및 창 관리
 - **표시/숨기기** — `Ctrl+Alt+X` (설정 가능)
-- **모서리 맞춤** - `Alt+F14` 순환: 좌상 → 우상 → 좌하 → 우하
+- **모서리 맞춤** - `Ctrl+Q` 순환: 좌상 → 우상 → 좌하 → 우하
 - **확대/축소** — `Ctrl+마우스휠`, `Ctrl+`+`/`-`
 - **시스템 트레이** — 트레이로 최소화, 숨김 상태로 시작
 - **최상단 고정** 토글
@@ -140,7 +140,7 @@ saipenview
 | 작업 | 방법 |
 |---|---|
 | **표시 / 숨기기** | `Ctrl+Alt+X` 또는 `Alt+F15` (둘 다 변경 가능) |
-| **모서리 맞춤** | `Alt+F14` - 순환: 왼쪽-위 → 오른쪽-위 → 왼쪽-아래 → 오른쪽-아래 |
+| **모서리 맞춤** | `Ctrl+Q` - 순환: 왼쪽-위 → 오른쪽-위 → 왼쪽-아래 → 오른쪽-아래 |
 | **강제 종료** | `Ctrl+Shift+Alt+Q` — 프로세스 강제 종료 |
 | **확대 / 축소** | `Ctrl+마우스휠` 또는 `Ctrl` + `+` / `-` |
 | **확대/축소 초기화** | `Ctrl+0` |
@@ -225,7 +225,7 @@ saipenview/_data/config.json
 ```json
 {
   "hotkeys":          ["ctrl+alt+x", "alt+f15"],
-  "snap_hotkey":      ["alt+f14"],
+  "snap_hotkey":      ["ctrl+q"],
   "zoom_level":       1.0,
   "font_family":      "Verdana_m1",
   "scan_roots":       null,
@@ -269,7 +269,7 @@ saipenview/
 ├── tray.py             pystray 시스템 트레이 아이콘 + 메뉴
 ├── hotkey.py           전역 단축키 등록 (keyboard 라이브러리)
 ├── autostart.py        Windows 레지스트리 자동 시작 관리
-├── zone_picker.py      Alt+F14 모서리 맞춤 오버레이(tkinter)
+├── zone_picker.py      Ctrl+Q 모서리 맞춤 오버레이(tkinter)
 ├── events.py           프로세스 내 이벤트 버스(EventBus)
 ├── guard.py            단일 인스턴스 잠금 + 표시 요청 전달
 ├── git_diff.py         에이전트 작업용 작업 트리 diff / commit / revert

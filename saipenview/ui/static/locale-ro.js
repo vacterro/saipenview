@@ -73,7 +73,7 @@ const LOCALE_RO = {
   "settings.hotkeys.label": "Comenzi rapide afișare/ascundere — separate prin virgulă, maxim 2 combinații",
   "settings.hotkeys.placeholder": "ctrl+alt+x, alt+f15",
   "settings.snapHotkey.label": "Comenzi rapide fixare în colț — separate prin virgulă, maxim 2 combinații",
-  "settings.snapHotkey.placeholder": "alt+f14",
+  "settings.snapHotkey.placeholder": "ctrl+q",
   "settings.scanDepth.label": "Adâncime scanare (1-8 niveluri)",
   "settings.scanDelay.label": "Întârziere scanare (ms per 100 directoare, limitează I/O disc)",
   "settings.rescanInterval.label": "Interval de rescanare în fundal (minute)",
