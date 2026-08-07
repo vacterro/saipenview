@@ -34,7 +34,11 @@ def api(tmp_path) -> Api:
         patch("saipenview.api.save_config"),
         patch("saipenview.api.BackgroundScanner"),
     ):
-        yield Api()
+        api = Api()
+        try:
+            yield api
+        finally:
+            api.stop()
 
 
 def _register(api: Api, tmp_path):

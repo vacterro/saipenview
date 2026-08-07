@@ -1,11 +1,17 @@
-"""T-170: wheel version-triple + installed-package smoke, run locally.
+"""T-170/T-188: wheel version identity + installed-package smoke, run locally.
 
 Builds the wheel from a CLEAN tracked checkout (git archive -- nothing
 untracked can leak in), then verifies:
 
-1. METADATA Version == pyproject.toml `version` == saipenview.__version__
+1. METADATA Version == the checkout's `saipenview.__version__` (the ONE
+   source; pyproject derives it dynamically, so there is no static copy to
+   compare against).
 2. the installed wheel's `saipenview` resolves to the wheel, not the source tree
 3. the core modules import from that installed copy
+4. TAG identity: when HEAD carries a `v<X>` tag, the wheel MUST be version X.
+   A wheel that triple-matches a stale version (the v0.1.18..v0.1.20 defect,
+   where pyproject/__init__ agreed on 0.1.17 while the tag said v0.1.20) is a
+   lie and must fail loudly.
 
 This is the same contract the CI wheel job enforces; GitHub runners cannot be
 executed from this machine, so the equivalent runs here and the results are
@@ -22,6 +28,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 
 
 def main() -> int:
@@ -53,10 +60,16 @@ def main() -> int:
         meta_match = re.search(r"^Version:\s*(.+)$", meta, re.MULTILINE)
         meta_ver = meta_match.group(1).strip()
 
-        pyproj = (checkout / "pyproject.toml").read_text(encoding="utf-8")
-        pyproj_ver = re.search(r'^version\s*=\s*"([^"]+)"', pyproj, re.MULTILINE).group(
-            1
-        )
+        # The single version source inside the archived checkout.
+        init = (checkout / "saipenview" / "__init__.py").read_text(encoding="utf-8")
+        src_match = VERSION_RE.search(init)
+        if not src_match:
+            print(
+                "wheel verify FAIL: checkout __init__.py has no __version__",
+                file=sys.stderr,
+            )
+            return 1
+        src_ver = src_match.group(1)
 
         target = base / "inst"
         subprocess.run(
@@ -79,12 +92,33 @@ def main() -> int:
 
         pkg_ver = saipenview.__version__
 
-        print(f"pyproject.toml:  {pyproj_ver}")
-        print(f"wheel METADATA:  {meta_ver}")
-        print(f"__version__:     {pkg_ver}")
+        print(f"source __version__:  {src_ver}")
+        print(f"wheel METADATA:      {meta_ver}")
+        print(f"installed __version__: {pkg_ver}")
 
-        if not (pyproj_ver == meta_ver == pkg_ver):
-            print("wheel verify FAIL: version triple mismatch", file=sys.stderr)
+        if not (src_ver == meta_ver == pkg_ver):
+            print("wheel verify FAIL: version mismatch", file=sys.stderr)
+            return 1
+
+        # TAG identity (T-188): a release tag at HEAD names the expected
+        # version; a wheel that disagrees with it is stale-release evidence.
+        tags = subprocess.run(
+            ["git", "tag", "--points-at", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        tags_at_head = [
+            t.strip() for t in (tags.stdout or "").splitlines() if t.strip()
+        ]
+        expected = [t[1:] for t in tags_at_head if t.startswith("v")]
+        if expected and src_ver not in expected:
+            print(
+                f"wheel verify FAIL: HEAD is tagged {tags_at_head} but the wheel "
+                f"is version {src_ver}",
+                file=sys.stderr,
+            )
             return 1
 
         if not saipenview.__file__.startswith(str(target)):
@@ -103,8 +137,10 @@ def main() -> int:
         ):
             __import__(mod)
 
+        tag_note = f" tag=({'/'.join(tags_at_head) if tags_at_head else 'none'})"
         print(
-            "wheel verify PASS: version triple matches, installed wheel imports clean"
+            "wheel verify PASS: version identity matches, installed wheel "
+            f"imports clean{tag_note}"
         )
         return 0
 

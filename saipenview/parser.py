@@ -13,7 +13,15 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from saipenview.textio import read_doc, read_doc_meta, write_doc
+from saipenview.protocol_write import (
+    ConflictError,
+    MutationRejected,
+    escape_pipe,
+    get_coordinator,
+    next_event_id,
+    next_ticket_id,
+)
+from saipenview.textio import read_doc
 
 # T-123: `updated` stamps. A valid protocol timestamp is explicit UTC (Z) or
 # carries an offset; a timezone-naive value is AMBIGUOUS -- never silently
@@ -87,53 +95,50 @@ def update_state(root: Path, updates: dict[str, str]) -> bool:
     if not state_path.is_file():
         return False
 
-    text, enc, newline = read_doc_meta(state_path)
-    match = FRONTMATTER_RE.match(text)
-    if not match:
+    def transform(text: str) -> str | None:
+        match = FRONTMATTER_RE.match(text)
+        if not match:
+            return None
+        lines = match.group(1).splitlines()
+        new_lines = []
+        updated_keys = set()
+        for line in lines:
+            sline = line.strip()
+            if not sline or ":" not in sline:
+                new_lines.append(line)
+                continue
+            key, _, _ = line.partition(":")
+            k = key.strip()
+            if k in updates:
+                new_lines.append(f"{k}: {updates[k]}")
+                updated_keys.add(k)
+            else:
+                new_lines.append(line)
+
+        for k, v in updates.items():
+            if k not in updated_keys:
+                new_lines.append(f"{k}: {v}")
+
+        if "updated" not in updates:
+            now_str = datetime.datetime.now(datetime.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            found = False
+            for i, line in enumerate(new_lines):
+                if line.startswith("updated:"):
+                    new_lines[i] = f"updated: {now_str}"
+                    found = True
+                    break
+            if not found:
+                new_lines.append(f"updated: {now_str}")
+
+        new_frontmatter = "---\n" + "\n".join(new_lines) + "\n---\n"
+        return new_frontmatter + text[match.end() :]
+
+    try:
+        return get_coordinator().mutate_doc(state_path, transform) is not None
+    except (ConflictError, MutationRejected, OSError):
         return False
-
-    lines = match.group(1).splitlines()
-    new_lines = []
-    updated_keys = set()
-    for line in lines:
-        sline = line.strip()
-        if not sline or ":" not in sline:
-            new_lines.append(line)
-            continue
-        key, _, _ = line.partition(":")
-        k = key.strip()
-        if k in updates:
-            new_lines.append(f"{k}: {updates[k]}")
-            updated_keys.add(k)
-        else:
-            new_lines.append(line)
-
-    for k, v in updates.items():
-        if k not in updated_keys:
-            new_lines.append(f"{k}: {v}")
-
-    if "updated" not in updates:
-        now_str = datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-        found = False
-        for i, line in enumerate(new_lines):
-            if line.startswith("updated:"):
-                new_lines[i] = f"updated: {now_str}"
-                found = True
-                break
-        if not found:
-            new_lines.append(f"updated: {now_str}")
-
-    new_frontmatter = "---\n" + "\n".join(new_lines) + "\n---\n"
-    new_text = new_frontmatter + text[match.end() :]
-    # Atomic write: .tmp -> replace -> no .bak accumulation.
-    # Previous versions created STATE.md.bak on every call without
-    # cleanup, letting N .bak files accumulate per project.
-    # Encoding and newline come back from read_doc_meta so stamping one field
-    # doesn't silently re-encode a file we didn't author.
-    write_doc(state_path, new_text, enc, newline)
-    return True
 
 
 @dataclass
@@ -200,68 +205,70 @@ def move_ticket(
     board_path = root / ".saipen" / "BOARD.md"
     if not board_path.is_file():
         return False
-    text, enc, newline = read_doc_meta(board_path)
 
-    lines = text.splitlines(True)  # keep line endings
-    section_starts: dict[str, int] = {}
-    ticket_line_idx = -1
-    actual_status = old_ch
-    current_heading: str | None = None
+    def transform(text: str) -> str | None:
+        lines = text.splitlines(True)  # keep line endings
+        section_starts: dict[str, int] = {}
+        ticket_line_idx = -1
+        actual_status = old_ch
+        current_heading: str | None = None
 
-    for i, line in enumerate(lines):
-        heading = SECTION_HEADING_RE.match(line.strip())
-        if heading:
-            current_heading = heading.group(1)
-            if current_heading not in section_starts:
-                section_starts[current_heading] = i
-            continue
+        for i, line in enumerate(lines):
+            heading = SECTION_HEADING_RE.match(line.strip())
+            if heading:
+                current_heading = heading.group(1)
+                if current_heading not in section_starts:
+                    section_starts[current_heading] = i
+                continue
+            if ticket_line_idx < 0:
+                ticket = TICKET_RE.match(line.strip())
+                if ticket and ticket.group(2) == ticket_id:
+                    # The ticket's REAL checkbox, which need not be the one the
+                    # action expects -- "start" on an already-`[x]` ticket is
+                    # allowed, it just moves where the new status dictates. The
+                    # replacement below has to target what is actually there:
+                    # rewriting `[ ]` on a line that reads `[x]` matched nothing,
+                    # so the line moved to ## DOING still carrying `[x]` and the
+                    # board came out in exactly the checkbox-vs-section state
+                    # RFC 1.2 forbids.
+                    actual_status = ticket.group(1)
+                    ticket_line_idx = i
+
         if ticket_line_idx < 0:
-            ticket = TICKET_RE.match(line.strip())
-            if ticket and ticket.group(2) == ticket_id:
-                # The ticket's REAL checkbox, which need not be the one the
-                # action expects -- "start" on an already-`[x]` ticket is
-                # allowed, it just moves where the new status dictates. The
-                # replacement below has to target what is actually there:
-                # rewriting `[ ]` on a line that reads `[x]` matched nothing,
-                # so the line moved to ## DOING still carrying `[x]` and the
-                # board came out in exactly the checkbox-vs-section state
-                # RFC 1.2 forbids.
-                actual_status = ticket.group(1)
-                ticket_line_idx = i
+            return None
 
-    if ticket_line_idx < 0:
+        # Remove the ticket line from its current position
+        ticket_line = lines.pop(ticket_line_idx)
+
+        # Update the status marker
+        ticket_line = ticket_line.replace(f"[{actual_status}]", f"[{new_ch}]", 1)
+
+        # T-174: blocking appends the reason as a `| blocker:` ticket field. The
+        # field list is closed, so a literal pipe in the reason is escaped as \|.
+        if action == "block" and blocker_reason and blocker_reason.strip():
+            reason = escape_pipe(blocker_reason.strip())
+            newline = "\n" if ticket_line.endswith("\n") else ""
+            ticket_line = ticket_line.rstrip("\n") + f" | blocker: {reason}" + newline
+
+        # Insert into the target section (after its heading, before next heading or end)
+        insert_pos = len(lines)  # default: end of file
+        if target_section in section_starts:
+            target_idx = section_starts[target_section]
+            # Find the next heading after target section, or end of file
+            for j in range(target_idx + 1, len(lines)):
+                if SECTION_HEADING_RE.match(lines[j].strip()):
+                    insert_pos = j
+                    break
+            else:
+                insert_pos = len(lines)
+
+        lines.insert(insert_pos, ticket_line)
+        return "".join(lines)
+
+    try:
+        return get_coordinator().mutate_doc(board_path, transform) is not None
+    except (ConflictError, MutationRejected, OSError):
         return False
-
-    # Remove the ticket line from its current position
-    ticket_line = lines.pop(ticket_line_idx)
-
-    # Update the status marker
-    ticket_line = ticket_line.replace(f"[{actual_status}]", f"[{new_ch}]", 1)
-
-    # T-174: blocking appends the reason as a `| blocker:` ticket field. The
-    # field list is closed, so a literal pipe in the reason is escaped as \|.
-    if action == "block" and blocker_reason and blocker_reason.strip():
-        reason = blocker_reason.strip().replace("|", "\\|")
-        newline = "\n" if ticket_line.endswith("\n") else ""
-        ticket_line = ticket_line.rstrip("\n") + f" | blocker: {reason}" + newline
-
-    # Insert into the target section (after its heading, before next heading or end)
-    insert_pos = len(lines)  # default: end of file
-    if target_section in section_starts:
-        target_idx = section_starts[target_section]
-        # Find the next heading after target section, or end of file
-        for j in range(target_idx + 1, len(lines)):
-            if SECTION_HEADING_RE.match(lines[j].strip()):
-                insert_pos = j
-                break
-        else:
-            insert_pos = len(lines)
-
-    lines.insert(insert_pos, ticket_line)
-    new_text = "".join(lines)
-
-    write_doc(board_path, new_text, enc, newline)
-    return True
 
 
 def reorder_ticket(
@@ -280,81 +287,59 @@ def reorder_ticket(
     board_path = root / ".saipen" / "BOARD.md"
     if not board_path.is_file():
         return False
-    text, enc, newline = read_doc_meta(board_path)
-    lines = text.splitlines(True)
 
-    section_start = -1
-    section_end = len(lines)
-    ticket_idx = -1
-    before_idx = -1
-    current: str | None = None
-    for i, line in enumerate(lines):
-        heading = SECTION_HEADING_RE.match(line.strip())
-        if heading:
-            current = heading.group(1)
-            if current == section:
-                section_start = i
-            elif section_start >= 0:
-                section_end = i
-                break
-            continue
-        if current == section and section_start >= 0:
-            t = TICKET_RE.match(line.strip())
-            if t:
-                if t.group(2) == ticket_id:
-                    ticket_idx = i
-                elif t.group(2) == before_ticket_id:
-                    before_idx = i
+    def transform(text: str) -> str | None:
+        lines = text.splitlines(True)
 
-    if section_start < 0 or ticket_idx < 0 or ticket_idx < section_start:
+        section_start = -1
+        section_end = len(lines)
+        ticket_idx = -1
+        before_idx = -1
+        current: str | None = None
+        for i, line in enumerate(lines):
+            heading = SECTION_HEADING_RE.match(line.strip())
+            if heading:
+                current = heading.group(1)
+                if current == section:
+                    section_start = i
+                elif section_start >= 0:
+                    section_end = i
+                    break
+                continue
+            if current == section and section_start >= 0:
+                t = TICKET_RE.match(line.strip())
+                if t:
+                    if t.group(2) == ticket_id:
+                        ticket_idx = i
+                    elif t.group(2) == before_ticket_id:
+                        before_idx = i
+
+        if section_start < 0 or ticket_idx < 0 or ticket_idx < section_start:
+            return None
+        if before_idx >= 0 and before_idx >= section_end:
+            return None
+
+        ticket_line = lines.pop(ticket_idx)
+        if before_idx > ticket_idx:
+            before_idx -= 1
+        section_end_adj = section_end - 1 if section_end > ticket_idx else section_end
+        insert_pos = before_idx if before_idx >= 0 else section_end_adj
+        # No-op: already in place.
+        if insert_pos == ticket_idx:
+            lines.insert(ticket_idx, ticket_line)
+            return None
+        lines.insert(insert_pos, ticket_line)
+        return "".join(lines)
+
+    try:
+        return get_coordinator().mutate_doc(board_path, transform) is not None
+    except (ConflictError, MutationRejected, OSError):
         return False
-    if before_idx >= 0 and before_idx >= section_end:
-        return False
-
-    ticket_line = lines.pop(ticket_idx)
-    if before_idx > ticket_idx:
-        before_idx -= 1
-    section_end_adj = section_end - 1 if section_end > ticket_idx else section_end
-    insert_pos = before_idx if before_idx >= 0 else section_end_adj
-    # No-op: already in place.
-    if insert_pos == ticket_idx:
-        lines.insert(ticket_idx, ticket_line)
-        return True
-    lines.insert(insert_pos, ticket_line)
-
-    write_doc(board_path, "".join(lines), enc, newline)
-    return True
 
 
-def record_manual_work(root: Path, description: str) -> dict:
-    """Record a user's manual edit as a board entry (T-127).
-
-    The user did something by hand -- edited a project's STATE/BOARD/LOG in an
-    editor, made a commit, ran a script. SAIPENVIEW cannot attribute the
-    change to a person (the watcher never knows who wrote the file), so it
-    does not try: the UI asks, the user confirms, and THIS function writes the
-    explicit record. One board ticket + one LOG evidence line, both through
-    the single-writer atomic path. Returns ``{"ok": True}`` or an error dict.
-    """
-    description = " ".join(str(description or "").split())
-    if not description:
-        return {"ok": False, "error": "description is empty"}
-
-    board_path = root / ".saipen" / "BOARD.md"
-    log_path = root / ".saipen" / "LOG.md"
-    if not board_path.is_file():
-        return {"ok": False, "error": "BOARD.md not found"}
-
-    # Next T-### across the whole board (T-### must never be reused). Zero-
-    # padded to three digits, the board's own convention.
-    board_text, enc, newline = read_doc_meta(board_path)
-    existing_ids = [int(m) for m in re.findall(r"\bT-(\d+)\b", board_text)]
-    next_ticket = max(existing_ids) + 1 if existing_ids else 1
-    ticket_id = f"T-{next_ticket:03d}"
-
-    ticket = f"- [ ] {ticket_id} Manual: {description} | owner: user"
+def _insert_into_todo(board_text: str, ticket_line: str) -> str:
+    """Insert *ticket_line* under `## TODO`, before the next heading."""
     if "\n## TODO" in "\n" + board_text:
-        # Insert under ## TODO (after its heading, before the next heading).
         lines = board_text.splitlines(True)
         insert_at = len(lines)
         in_todo = False
@@ -367,26 +352,114 @@ def record_manual_work(root: Path, description: str) -> dict:
                 elif in_todo:
                     insert_at = i
                     break
-        lines.insert(insert_at, ticket + "\n")
-        board_text = "".join(lines)
-    else:
-        board_text = board_text.rstrip("\n") + "\n\n## TODO\n" + ticket + "\n"
-    write_doc(board_path, board_text, enc, newline)
+        lines.insert(insert_at, ticket_line + "\n")
+        return "".join(lines)
+    return board_text.rstrip("\n") + "\n\n## TODO\n" + ticket_line + "\n"
 
-    # LOG evidence line (valid skeleton: dated, monotonic E-N, RUN taxonomy).
-    log_text, log_enc, log_nl = read_doc_meta(log_path)
-    existing_events = [int(m) for m in re.findall(r"\[E-(\d+)\]", log_text)]
-    next_event = max(existing_events) + 1 if existing_events else 1
-    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%d.%m.%y %H:%M")
-    git_note = _manual_work_git_note(root)
-    log_line = (
-        f"- {stamp} [E-{next_event}] [{ticket_id}] RUN: manual work recorded "
-        f"-- {description}{git_note}"
-    )
-    log_text = (
-        (log_text.rstrip("\n") + "\n" if log_text.strip() else "") + log_line + "\n"
-    )
-    write_doc(log_path, log_text, log_enc, log_nl)
+
+_MANUAL_WORK_RE = re.compile(
+    r"\[E-(\d+)\] \[(T-\d+)\] RUN: manual work recorded -- (.*)$"
+)
+
+
+def record_manual_work(root: Path, description: str) -> dict:
+    """Record a user's manual edit as a board entry (T-127).
+
+    The user did something by hand -- edited a project's STATE/BOARD/LOG in an
+    editor, made a commit, ran a script. SAIPENVIEW cannot attribute the
+    change to a person (the watcher never knows who wrote the file), so it
+    does not try: the UI asks, the user confirms, and THIS function writes the
+    explicit record. One board ticket + one LOG evidence line, both through
+    the per-project write coordinator (T-183). Returns ``{"ok": True}`` or an
+    error dict.
+
+    Crash safety / idempotency (T-191): the LOG evidence line is written
+    FIRST, then the BOARD ticket. A failure between the two leaves the LOG
+    record behind -- never an unlogged orphan ticket -- and a retry detects
+    the prior LOG line and resumes (same ticket id, or a no-op if the ticket
+    is already on the board).
+    """
+    description = " ".join(str(description or "").split())
+    if not description:
+        return {"ok": False, "error": "description is empty"}
+    escaped = escape_pipe(description)
+
+    board_path = root / ".saipen" / "BOARD.md"
+    log_path = root / ".saipen" / "LOG.md"
+    if not board_path.is_file():
+        return {"ok": False, "error": "BOARD.md not found"}
+    if not log_path.is_file():
+        return {"ok": False, "error": "LOG.md not found"}
+
+    coord = get_coordinator()
+    with coord.locked(root):
+        # Both files are read once, under the root lock, and the fingerprints
+        # of THAT read become the CAS baseline for both writes. An external
+        # writer between read and commit raises ConflictError; nothing is
+        # written, ids are never burned on a stale read.
+        log_fp = coord.fingerprint(log_path)
+        log_text = read_doc(log_path)
+        board_fp = coord.fingerprint(board_path)
+        board_text = read_doc(board_path)
+
+        # Idempotent resume: did a prior attempt already write the LOG line?
+        for m in re.finditer(_MANUAL_WORK_RE, log_text):
+            if m.group(3).strip() == escaped:
+                event_id = f"E-{m.group(1)}"
+                ticket_id = m.group(2)
+                if re.search(rf"\b{re.escape(ticket_id)}\b", board_text):
+                    return {
+                        "ok": True,
+                        "already": True,
+                        "ticket_id": ticket_id,
+                        "event": event_id,
+                    }
+                ticket_line = f"- [ ] {ticket_id} Manual: {escaped} | owner: user"
+                try:
+                    coord.mutate_doc(
+                        board_path,
+                        lambda t, tl=ticket_line: _insert_into_todo(t, tl),
+                        expected_fingerprint=board_fp,
+                    )
+                except ConflictError:
+                    return {
+                        "ok": False,
+                        "error": "project changed concurrently; retry",
+                    }
+                return {
+                    "ok": True,
+                    "resumed": True,
+                    "ticket_id": ticket_id,
+                    "event": event_id,
+                }
+
+        # Fresh allocation -- one place, under the root lock (T-183).
+        next_event = next_event_id(log_text)
+        next_ticket = next_ticket_id(board_text)
+        ticket_id = f"T-{next_ticket:03d}"
+        stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%d.%m.%y %H:%M")
+        git_note = _manual_work_git_note(root)
+        log_line = (
+            f"- {stamp} [E-{next_event}] [{ticket_id}] RUN: manual work recorded "
+            f"-- {escaped}{git_note}"
+        )
+        ticket_line = f"- [ ] {ticket_id} Manual: {escaped} | owner: user"
+
+        try:
+            coord.mutate_doc(
+                log_path,
+                lambda t, ll=log_line: (
+                    (t.rstrip("\n") + "\n" if t.strip() else "") + ll + "\n"
+                ),
+                expected_fingerprint=log_fp,
+            )
+            coord.mutate_doc(
+                board_path,
+                lambda t, tl=ticket_line: _insert_into_todo(t, tl),
+                expected_fingerprint=board_fp,
+            )
+        except ConflictError:
+            return {"ok": False, "error": "project changed concurrently; retry"}
 
     return {"ok": True, "ticket_id": ticket_id, "event": f"E-{next_event}"}
 
@@ -410,14 +483,16 @@ def _manual_work_git_note(root: Path) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return ""
+    # A dead reader thread can leave stdout as None; never crash a worker on it.
     if head.returncode != 0:
         return ""
+    head_out = (head.stdout or "").strip()
     dirty = (
-        len([ln for ln in status.stdout.splitlines() if ln.strip()])
+        len([ln for ln in (status.stdout or "").splitlines() if ln.strip()])
         if status.returncode == 0
         else 0
     )
-    return f" -- at {head.stdout.strip()} ({dirty} dirty files)"
+    return f" -- at {head_out} ({dirty} dirty files)"
 
 
 def parse_board(text: str) -> Board:
@@ -806,24 +881,30 @@ def check_subs_staleness(root: Path, state: dict) -> tuple[bool, str]:
 
 
 # --- OUTBOX collect ---
-_TICKET_ID_RE = re.compile(r"T-(\d+)")
-_EVENT_ID_RE = re.compile(r"\[E-(\d+)\]")
 _COLLECT_SUB_FM_RE = re.compile(r"^##\s+(\S+):\s*(.*)$", re.MULTILINE)
 _COLLECT_STATUS_RE = re.compile(r"^- \*\*status:\*\*\s*ready", re.MULTILINE)
+_COLLECT_LOG_RE = re.compile(r"RUN: collect \S+ (\S+)(?:\s|$)")
+_COLLECT_INBOX_RE = re.compile(r"\| source: \S+ (\S+) \|")
 
 
-def _highest_ticket_number(text: str) -> int:
-    """Find the highest T-### number in a BOARD.md text."""
-    max_n = 0
-    for match in _TICKET_ID_RE.finditer(text):
-        n = int(match.group(1))
-        max_n = max(max_n, n)
-    return max_n
+def _current_head(root: Path) -> str:
+    """Short git HEAD of *root*; '' when not a git repo or git unavailable."""
+    import subprocess as _sp
 
-
-def _highest_event_number(text: str) -> int:
-    """Highest E-### in a LOG.md text; 0 when the log carries none."""
-    return max((int(m.group(1)) for m in _EVENT_ID_RE.finditer(text)), default=0)
+    if not (root / ".git").exists():
+        return ""
+    try:
+        r = _sp.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            creationflags=0x08000000,
+        )
+        return (r.stdout or "").strip()
+    except (OSError, _sp.SubprocessError):
+        return ""
 
 
 def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
@@ -835,7 +916,13 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
     - Mark the entry reviewed in the sub's OUTBOX.md
     - Append a LOG RUN line to the main LOG.md
 
-    Write order (crash safety): main files first, OUTBOX.md last.
+    Write order (crash safety): main files first, OUTBOX.md last. Every step
+    is guarded by a stable-identity check `(sub_name, entry_id)` (T-191), so a
+    retry after a crash between steps resumes instead of duplicating: an
+    already-reviewed OUTBOX entry is a no-op, an existing `[from sub id]`
+    ticket skips the BOARD write, an existing `collect sub id` LOG line skips
+    the LOG write, an existing `source: sub id` inbox line skips the inbox
+    write. External sub content is pipe-escaped for the closed BOARD grammar.
 
     Returns a dict with:
       ok: bool
@@ -845,9 +932,7 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
     import datetime
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    # RFC § 1.2 LOG stamp: DD.MM.YY HH:MM, UTC. This wrote an ISO-ish
-    # "%Y-%m-%d %H:%M:%S", which no SAIPEN validator recognises as a dated
-    # entry -- so every line this function ever appended counted as undated.
+    # RFC § 1.2 LOG stamp: DD.MM.YY HH:MM, UTC.
     date_str = now.strftime("%d.%m.%y %H:%M")
 
     # --- Locate the sub's OUTBOX.md ---
@@ -862,149 +947,241 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
             "ticket_id": None,
         }
 
-    # --- Read and find the entry ---
-    outbox_text, outbox_enc, outbox_nl = read_doc_meta(outbox_path)
-    lines = outbox_text.splitlines(True)  # keep line endings
+    coord = get_coordinator()
+    with coord.locked(root):
+        # --- Read the OUTBOX entry once, under the root lock ---
+        outbox_fp = coord.fingerprint(outbox_path)
+        outbox_text = read_doc(outbox_path)
+        lines = outbox_text.splitlines(True)
 
-    # Find the target entry's heading line index and its status line
-    entry_heading_idx = -1
-    status_line_idx = -1
-    entry_critical = False
-    entry_summary = ""
-    entry_refs = ""
-    entry_title = ""
+        entry_heading_idx = -1
+        status_line_idx = -1
+        entry_critical = False
+        entry_summary = ""
+        entry_refs = ""
+        entry_title = ""
+        entry_source_head = ""
 
-    i = 0
-    while i < len(lines):
-        m = _COLLECT_SUB_FM_RE.match(lines[i].strip())
-        if m and m.group(1) == entry_id:
-            entry_heading_idx = i
-            entry_title = m.group(2).strip()
-            # Read fields in this entry block (until next heading or EOF)
-            # and locate the status line index for later replacement
-            j = i + 1
-            while j < len(lines):
-                next_heading = _COLLECT_SUB_FM_RE.match(lines[j].strip())
-                if next_heading:
-                    break
-                line_stripped = lines[j].strip()
-                if line_stripped.startswith("- **status:"):
-                    if status_line_idx < 0:
-                        status_line_idx = j
-                    if "ready" not in line_stripped:
-                        # Entry exists but not in 'ready' status
-                        return {
-                            "ok": False,
-                            "message": f"entry '{entry_id}' is not ready (already reviewed or blocked)",
-                            "ticket_id": None,
-                        }
-                elif line_stripped.startswith("- **critical:"):
-                    val = line_stripped.split("**critical:**", 1)[-1].strip().lower()
-                    entry_critical = val == "true"
-                elif line_stripped.startswith("- **summary:"):
-                    entry_summary = line_stripped.split("**summary:**", 1)[-1].strip()
-                elif line_stripped.startswith("- **main_project_refs:"):
-                    entry_refs = line_stripped.split("**main_project_refs:**", 1)[
-                        -1
-                    ].strip()
-                j += 1
-            break
-        i += 1
+        i = 0
+        while i < len(lines):
+            m = _COLLECT_SUB_FM_RE.match(lines[i].strip())
+            if m and m.group(1) == entry_id:
+                entry_heading_idx = i
+                entry_title = m.group(2).strip()
+                j = i + 1
+                while j < len(lines):
+                    next_heading = _COLLECT_SUB_FM_RE.match(lines[j].strip())
+                    if next_heading:
+                        break
+                    line_stripped = lines[j].strip()
+                    if line_stripped.startswith("- **status:"):
+                        if status_line_idx < 0:
+                            status_line_idx = j
+                        if "ready" not in line_stripped:
+                            return {
+                                "ok": True,
+                                "already": True,
+                                "message": (
+                                    f"entry '{entry_id}' is not ready "
+                                    f"(already reviewed or blocked)"
+                                ),
+                                "ticket_id": None,
+                            }
+                    elif line_stripped.startswith("- **critical:"):
+                        val = (
+                            line_stripped.split("**critical:**", 1)[-1].strip().lower()
+                        )
+                        entry_critical = val == "true"
+                    elif line_stripped.startswith("- **summary:"):
+                        entry_summary = line_stripped.split("**summary:**", 1)[
+                            -1
+                        ].strip()
+                    elif line_stripped.startswith("- **main_project_refs:"):
+                        entry_refs = line_stripped.split("**main_project_refs:**", 1)[
+                            -1
+                        ].strip()
+                    elif line_stripped.startswith("- **source_head:"):
+                        entry_source_head = line_stripped.split("**source_head:**", 1)[
+                            -1
+                        ].strip()
+                    j += 1
+                break
+            i += 1
 
-    if entry_heading_idx < 0:
-        return {
-            "ok": False,
-            "message": f"entry '{entry_id}' not found in {sub_name}'s OUTBOX",
-            "ticket_id": None,
-        }
-
-    if status_line_idx < 0:
-        return {
-            "ok": False,
-            "message": f"entry '{entry_id}' has no status field",
-            "ticket_id": None,
-        }
-
-    # --- Route the entry ---
-    created_ticket_id = None
-
-    if entry_critical:
-        # Create a new T-### ticket on main BOARD.md
-        board_path = root / ".saipen" / "BOARD.md"
-        if board_path.is_file():
-            board_text, board_enc, board_nl = read_doc_meta(board_path)
-            next_num = _highest_ticket_number(board_text) + 1
-            created_ticket_id = f"T-{next_num:03d}"
-
-            # Build ticket description with sub reference
-            ticket_desc = f"[from {sub_name} {entry_id}] {entry_title}"
-            if entry_summary:
-                ticket_desc += f" -- {entry_summary}"
-            ticket_line = f"- [ ] {created_ticket_id} | {ticket_desc}\n"
-
-            # Find TODO section and insert after heading
-            board_lines = board_text.splitlines(True)
-            insert_pos = len(board_lines)
-            for idx, line in enumerate(board_lines):
-                if SECTION_HEADING_RE.match(line.strip()) and line.strip().endswith(
-                    "TODO"
-                ):
-                    insert_pos = idx + 1
-                    break
-            board_lines.insert(insert_pos, ticket_line)
-            new_board = "".join(board_lines)
-
-            # Write main BOARD.md FIRST (crash safety)
-            write_doc(board_path, new_board, board_enc, board_nl)
-            message = f"created {created_ticket_id} for critical entry '{entry_id}' from {sub_name}"
-        else:
+        if entry_heading_idx < 0:
             return {
                 "ok": False,
-                "message": "main BOARD.md not found",
+                "message": f"entry '{entry_id}' not found in {sub_name}'s OUTBOX",
                 "ticket_id": None,
             }
-    else:
-        # Non-critical: append to _shared/inbox.md
-        inbox_path = subs_dir / "_shared" / "inbox.md"
-        refs_text = f" | ref: {entry_refs}" if entry_refs else ""
-        inbox_line = f"- {date_str} | source: {sub_name} {entry_id} | {entry_summary or entry_title}{refs_text}\n"
 
-        if inbox_path.is_file():
-            inbox_text, inbox_enc, inbox_nl = read_doc_meta(inbox_path)
+        if status_line_idx < 0:
+            return {
+                "ok": False,
+                "message": f"entry '{entry_id}' has no status field",
+                "ticket_id": None,
+            }
+
+        # --- Freshness (T-191): a payload built against a different HEAD is
+        # stale and must not be applied blindly. ---
+        if entry_source_head:
+            head = _current_head(root)
+            if head and entry_source_head != head:
+                return {
+                    "ok": False,
+                    "message": (
+                        f"entry '{entry_id}' is stale: source_head "
+                        f"{entry_source_head} != current HEAD {head}"
+                    ),
+                    "ticket_id": None,
+                }
+
+        # --- Route the entry ---
+        created_ticket_id = None
+
+        if entry_critical:
+            board_path = root / ".saipen" / "BOARD.md"
+            if not board_path.is_file():
+                return {
+                    "ok": False,
+                    "message": "main BOARD.md not found",
+                    "ticket_id": None,
+                }
+            board_fp = coord.fingerprint(board_path)
+            board_text = read_doc(board_path)
+
+            # Idempotency: this entry already has a ticket on the board?
+            already_ticket = re.search(
+                rf"\[from {re.escape(sub_name)} {re.escape(entry_id)}\]", board_text
+            )
+            if already_ticket:
+                # Pull the T-id from the whole line the marker sits on, not the
+                # marker text itself (which carries no id).
+                line = board_text[
+                    board_text.rfind("\n", 0, already_ticket.start()) + 1 :
+                ]
+                line = line.split("\n", 1)[0]
+                tid_match = re.search(r"\b(T-\d+)\b", line)
+                created_ticket_id = tid_match.group(1) if tid_match else None
+                message = (
+                    f"entry '{entry_id}' from {sub_name} already collected "
+                    f"({created_ticket_id})"
+                )
+            else:
+                next_num = next_ticket_id(board_text)
+                created_ticket_id = f"T-{next_num:03d}"
+                # External sub content must not break the closed BOARD grammar:
+                # pipes are escaped, the description stays on one line.
+                desc = escape_pipe(
+                    " ".join(
+                        (
+                            entry_title
+                            + (f" -- {entry_summary}" if entry_summary else "")
+                        ).split()
+                    )
+                )
+                ticket_line = (
+                    f"- [ ] {created_ticket_id} [from {sub_name} {entry_id}] {desc}"
+                )
+                try:
+                    coord.mutate_doc(
+                        board_path,
+                        lambda t, tl=ticket_line: _insert_into_todo(t, tl),
+                        expected_fingerprint=board_fp,
+                    )
+                except ConflictError:
+                    return {
+                        "ok": False,
+                        "message": "project changed concurrently; retry",
+                        "ticket_id": None,
+                    }
+                message = (
+                    f"created {created_ticket_id} for critical entry '{entry_id}' "
+                    f"from {sub_name}"
+                )
         else:
-            inbox_text, inbox_enc, inbox_nl = "# Inbox\n\n", "utf-8", "\n"
-        inbox_text += inbox_line
-        write_doc(inbox_path, inbox_text, inbox_enc, inbox_nl)
-        message = f"appended '{entry_id}' from {sub_name} to inbox (non-critical)"
+            inbox_path = subs_dir / "_shared" / "inbox.md"
+            inbox_fp = coord.fingerprint(inbox_path)
+            inbox_text = read_doc(inbox_path)
+            already_inbox = re.search(
+                rf"\| source: {re.escape(sub_name)} {re.escape(entry_id)} \|",
+                inbox_text,
+            )
+            if already_inbox:
+                message = f"entry '{entry_id}' from {sub_name} already in inbox"
+            else:
+                refs_text = f" | ref: {escape_pipe(entry_refs)}" if entry_refs else ""
+                summary = escape_pipe(entry_summary or entry_title)
+                inbox_line = (
+                    f"- {date_str} | source: {sub_name} {entry_id} | "
+                    f"{summary}{refs_text}"
+                )
+                try:
+                    coord.mutate_doc(
+                        inbox_path,
+                        lambda t, il=inbox_line: (
+                            (t.rstrip("\n") + "\n" if t.strip() else "") + il + "\n"
+                        ),
+                        expected_fingerprint=inbox_fp,
+                    )
+                except ConflictError:
+                    return {
+                        "ok": False,
+                        "message": "project changed concurrently; retry",
+                        "ticket_id": None,
+                    }
+                message = (
+                    f"appended '{entry_id}' from {sub_name} to inbox (non-critical)"
+                )
 
-    # --- Append LOG RUN line to main LOG.md ---
-    log_path = root / ".saipen" / "LOG.md"
-    if log_path.is_file():
-        log_text, log_enc, log_nl = read_doc_meta(log_path)
-    else:
-        log_text, log_enc, log_nl = "# Log\n\n", "utf-8", "\n"
+        # --- Append LOG RUN line to main LOG.md (idempotent) ---
+        log_path = root / ".saipen" / "LOG.md"
+        log_fp = coord.fingerprint(log_path)
+        log_text = read_doc(log_path)
+        already_log = re.search(
+            rf"RUN: collect {re.escape(sub_name)} {re.escape(entry_id)}(?:\s|$)",
+            log_text,
+        )
+        if not already_log:
+            next_event = next_event_id(log_text)
+            parent = f" [parent: E-{next_event - 1}]" if next_event > 1 else ""
+            target = f" -> {created_ticket_id}" if created_ticket_id else ""
+            log_line = (
+                f"- {date_str} [E-{next_event}]{parent} [T-none] RUN: collect "
+                f"{sub_name} {entry_id}{target}"
+            )
+            try:
+                coord.mutate_doc(
+                    log_path,
+                    lambda t, ll=log_line: (
+                        (t.rstrip("\n") + "\n" if t.strip() else "") + ll + "\n"
+                    ),
+                    expected_fingerprint=log_fp,
+                )
+            except ConflictError:
+                return {
+                    "ok": False,
+                    "message": "project changed concurrently; retry",
+                    "ticket_id": None,
+                }
 
-    # E-### continues the project's own sequence. It used to be built from the
-    # wall clock ("E-%H%M%S"), which drops a five- or six-digit id into a
-    # sequence sitting in the hundreds: unique by luck, monotonic by nothing,
-    # and every genuine entry appended afterwards then reads as out-of-order.
-    last_event = _highest_event_number(log_text)
-    parent = f" [parent: E-{last_event}]" if last_event else ""
-    target = f" -> {created_ticket_id}" if created_ticket_id else ""
-    log_line = (
-        f"- {date_str} [E-{last_event + 1}]{parent} [T-none] RUN: collect "
-        f"{sub_name} {entry_id}{target}\n"
-    )
-    log_text += log_line
-    write_doc(log_path, log_text, log_enc, log_nl)
-
-    # --- Mark the OUTBOX entry reviewed LAST (crash safety) ---
-    # Replace only the specific entry's status line, not the first match in the whole file
-    lines[status_line_idx] = lines[status_line_idx].replace(
-        "- **status:** ready", "- **status:** reviewed", 1
-    )
-    new_outbox = "".join(lines)
-    write_doc(outbox_path, new_outbox, outbox_enc, outbox_nl)
+        # --- Mark the OUTBOX entry reviewed LAST (crash safety) ---
+        lines[status_line_idx] = lines[status_line_idx].replace(
+            "- **status:** ready", "- **status:** reviewed", 1
+        )
+        new_outbox = "".join(lines)
+        try:
+            coord.mutate_doc(
+                outbox_path,
+                lambda t, no=new_outbox: no,
+                expected_fingerprint=outbox_fp,
+            )
+        except ConflictError:
+            return {
+                "ok": False,
+                "message": "project changed concurrently; retry",
+                "ticket_id": created_ticket_id,
+            }
 
     return {"ok": True, "message": message, "ticket_id": created_ticket_id}
 
@@ -1081,7 +1258,9 @@ def get_git_status(root: Path) -> tuple[str, bool]:
         )
         if bp.returncode != 0:
             return "", False
-        branch = bp.stdout.strip()
+        # A dead reader thread (Bad file descriptor under load) leaves stdout
+        # None -- guard it so the scan thread never raises (T-179).
+        branch = (bp.stdout or "").strip()
         sp = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain"],
             capture_output=True,
@@ -1089,7 +1268,7 @@ def get_git_status(root: Path) -> tuple[str, bool]:
             check=False,
             creationflags=CREATE_NO_WINDOW,
         )
-        dirty = bool(sp.stdout.strip())
+        dirty = bool((sp.stdout or "").strip())
         return branch, dirty
     except (OSError, subprocess.SubprocessError):
         return "", False

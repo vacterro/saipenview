@@ -424,6 +424,18 @@ class ProcessManager:
             roots = list(self._processes.keys())
         return [{**self.get_status(r), "root": r} for r in roots]
 
+    def is_running(self, project_root: str) -> bool:
+        """True when a Core agent process is live (or launching) for *root*.
+
+        The write coordinator refuses direct protocol mutation for a project
+        an agent owns (T-183): SAIPENVIEW must never become writer #2 while
+        the agent it launched is mutating the same `.saipen/` files.
+        """
+        key = self._key(project_root)
+        with self._lock:
+            ap = self._processes.get(key)
+            return ap is not None or key in self._launching
+
     def stop_all(self) -> None:
         """Kill all running agents.  Called on app shutdown."""
         with self._lock:

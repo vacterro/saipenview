@@ -329,6 +329,20 @@ class Api:
         # and update only its cache row (T-124). No refresh_known() for every
         # project, no second poll for the same data version.
         self._refresh_one_project(root)
+        # Origin attribution (T-190): did WE write this exact content, or did
+        # someone outside the app? The registry records our post-write
+        # fingerprints; a matching current fingerprint is a self-write, a
+        # mismatch or an unregistered change is external. The frontend raises
+        # the "unrecorded external change" prompt only for origin=external.
+        from saipenview.protocol_write import get_coordinator
+
+        coord = get_coordinator()
+        changed_path = Path(root) / ".saipen" / file
+        origin = (
+            "self"
+            if coord.self_writes.consume(root, file, coord.fingerprint(changed_path))
+            else "external"
+        )
         if self._window:
             try:
                 # JSON-serialised values, never f-string interpolation: a root
@@ -339,6 +353,8 @@ class Api:
                     + json.dumps(root)
                     + ", "
                     + json.dumps(file)
+                    + ", "
+                    + json.dumps(origin)
                     + ")"
                 )
             except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
@@ -888,8 +904,29 @@ class Api:
                 file=sys.stderr,
             )
             return False
+        path = Path(file_path)
+        # A write to a `.saipen/` protocol file is a protocol mutation: it
+        # goes through the write coordinator and refuses while a Core agent
+        # owns the project (T-183).
+        from saipenview.protocol_write import ConflictError, get_coordinator
+
+        if get_coordinator().is_protocol_file(path):
+            root = get_coordinator().root_for(path)
+            guard = self._guard_protocol_write(str(root))
+            if guard:
+                print(f"SAIPENVIEW: write_file_text refused: {guard}", file=sys.stderr)
+                return False
+            try:
+                content = content.replace("\r\n", "\n").replace("\r", "\n")
+                get_coordinator().mutate_doc(path, lambda _t, c=content: c)
+                return True
+            except (OSError, ConflictError) as e:
+                print(
+                    f"SAIPENVIEW: write_file_text({file_path}) failed: {e}",
+                    file=sys.stderr,
+                )
+                return False
         try:
-            path = Path(file_path)
             # Normalise line endings so write_doc re-applies exactly one
             # convention: a CRLF file whose editor content already carries
             # \r\n would otherwise get doubled \r\r\n.
@@ -951,6 +988,17 @@ class Api:
             return None
         return c
 
+    def _guard_protocol_write(self, root: str) -> str | None:
+        """Reason direct `.saipen/` mutation of *root* is refused, or None.
+
+        The single-writer invariant (T-183): SAIPENVIEW must not become writer
+        #2 while the Core agent it launched owns the project's protocol files.
+        An agent that is merely stored (finished) grants nothing -- only a live
+        or launching process blocks."""
+        if self._process_manager.is_running(root):
+            return f"Core agent is running for {root}; direct .saipen mutation refused"
+        return None
+
     def get_project_detail(self, root_str: str) -> dict | None:
         root = self._resolve_root(root_str)
         if not root:
@@ -981,6 +1029,9 @@ class Api:
         root = self._resolve_root(root_str)
         if not root:
             return None
+        guard = self._guard_protocol_write(root)
+        if guard:
+            return {"ok": False, "error": guard}
         p = Path(root)
         if update_state(p, updates):
             # force cache update
@@ -1190,6 +1241,11 @@ class Api:
         self._process_manager.stop_all()
         self.background_scanner.stop()
         self._watcher.stop()
+        # Unsubscribe the watcher handler: a stopped Api must not keep firing
+        # _on_file_changed on later project_changed events. In production the
+        # Api lives for the app lifetime, but tests construct many Apis, and a
+        # leaked handler made every later watcher event push to a dead window.
+        event_bus.unsubscribe("saipen.project_changed", self._on_file_changed)
 
     def set_auto_scan(self, enabled: bool) -> dict:
         self._auto_scan = enabled
@@ -1249,6 +1305,9 @@ class Api:
         root = self._resolve_root(root_str)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
+        guard = self._guard_protocol_write(root)
+        if guard:
+            return {"ok": False, "error": guard}
         p = Path(root)
         result = collect_outbox_entry(p, sub_name, entry_id)
         if result.get("ok"):
@@ -1400,6 +1459,9 @@ class Api:
         root = self._resolve_root(root_str)
         if not root:
             return None
+        guard = self._guard_protocol_write(root)
+        if guard:
+            return {"ok": False, "error": guard}
         p = Path(root)
         if reorder_ticket(p, ticket_id, section, before_ticket_id):
             # No full rescan: the watcher (T-124) picks up the BOARD.md change
@@ -1414,6 +1476,9 @@ class Api:
         root = self._resolve_root(root_str)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
+        guard = self._guard_protocol_write(root)
+        if guard:
+            return {"ok": False, "error": guard}
         result = record_manual_work(Path(root), description)
         if result.get("ok"):
             # The watcher (T-124) picks up the BOARD/LOG change and
@@ -1437,6 +1502,9 @@ class Api:
         root = self._resolve_root(root_str)
         if not root:
             return None
+        guard = self._guard_protocol_write(root)
+        if guard:
+            return {"ok": False, "error": guard}
         p = Path(root)
         if move_ticket(p, ticket_id, action, blocker_reason=blocker_reason):
             self.rescan()
@@ -1533,6 +1601,9 @@ class Api:
         root = self._resolve_root(root)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
+        guard = self._guard_protocol_write(root)
+        if guard:
+            return {"ok": False, "error": guard}
         state_md = Path(root) / ".saipen" / "STATE.md"
         if not state_md.exists():
             return {"ok": False, "error": "STATE.md not found"}

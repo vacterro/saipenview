@@ -570,8 +570,10 @@ class TestCollectOutbox:
         )
 
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
-        assert result["ok"] is False
-        assert "not ready" in result["message"]
+        # T-191 idempotency: an already-collected (reviewed) entry is a
+        # deterministic no-op, not an error -- re-running must never duplicate.
+        assert result["ok"] is True
+        assert result.get("already") is True
 
     def test_collect_no_status_field_returns_error(self, tmp_path):
         """Entry with no status field at all returns error."""

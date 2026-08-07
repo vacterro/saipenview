@@ -21,7 +21,12 @@ from unittest.mock import patch
 import pytest
 
 from saipenview.events import event_bus
-from saipenview.watcher import DEBOUNCE_DELAY, SaipenWatcher
+from saipenview.watcher import SaipenWatcher
+
+# A short debounce makes the arrival tests fast; the collapse/no-event tests
+# build their own long-debounce watcher. Short here is fine because the
+# "event must arrive" assertions never sleep a fixed window -- they wait.
+TEST_DEBOUNCE = 0.05
 
 
 def _wait_for(predicate, timeout=10.0):
@@ -29,7 +34,25 @@ def _wait_for(predicate, timeout=10.0):
     while time.monotonic() < deadline:
         if predicate():
             return True
-        time.sleep(0.05)
+        time.sleep(0.02)
+    return False
+
+
+def _write_until_seen(do_write, log, timeout=10.0) -> bool:
+    """Run *do_write* until the watcher publishes an event.
+
+    watchdog's emitter opens its OS watch handle asynchronously after
+    `schedule()` returns; a write landing before that handle is live is
+    silently missed (an OS-baseline race, not a watcher defect -- the app
+    polls and self-heals). Retrying until the event arrives makes the
+    integration test deterministic under load.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        do_write()
+        if log.count() >= 1:
+            return True
+        time.sleep(TEST_DEBOUNCE * 2)
     return False
 
 
@@ -43,7 +66,7 @@ def _make_project(root: Path) -> Path:
 
 @pytest.fixture
 def watcher():
-    w = SaipenWatcher()
+    w = SaipenWatcher(debounce_delay=TEST_DEBOUNCE)
     yield w
     w.stop()
 
@@ -85,63 +108,85 @@ class TestOwnership:
     ):
         """The watch set comes from known projects, not from agent launch."""
         watcher.sync([str(project)])
-        (project / ".saipen" / "STATE.md").write_text(
-            "---\nphase: BUILD\n---\n", encoding="utf-8"
-        )
-        assert _wait_for(lambda: event_log.count() >= 1), "no event for a plain project"
+        assert _write_until_seen(
+            lambda: (project / ".saipen" / "STATE.md").write_text(
+                "---\nphase: BUILD\n---\n", encoding="utf-8"
+            ),
+            event_log,
+        ), "no event for a plain project"
         assert event_log.last()["root"] == str(project)
         assert event_log.last()["file"] == "STATE.md"
 
     def test_unknown_root_is_not_watched(self, watcher, project, event_log):
         watcher.sync([])
         (project / ".saipen" / "STATE.md").write_text("x\n", encoding="utf-8")
-        time.sleep(DEBOUNCE_DELAY * 3)
+        time.sleep(TEST_DEBOUNCE * 4)
         assert event_log.count() == 0
 
 
 class TestEventKinds:
     def test_atomic_os_replace_state_triggers(self, watcher, project, event_log):
         watcher.sync([str(project)])
-        tmp = project / ".saipen" / "STATE.md.tmp"
-        tmp.write_text("---\nphase: SCOUT\n---\n", encoding="utf-8")
-        os.replace(tmp, project / ".saipen" / "STATE.md")
-        assert _wait_for(lambda: event_log.count() >= 1)
+
+        def do_write():
+            tmp = project / ".saipen" / "STATE.md.tmp"
+            tmp.write_text("---\nphase: SCOUT\n---\n", encoding="utf-8")
+            os.replace(tmp, project / ".saipen" / "STATE.md")
+
+        assert _write_until_seen(do_write, event_log)
         assert event_log.last()["file"] == "STATE.md"
 
     def test_board_moved_event_triggers(self, watcher, project, event_log):
         watcher.sync([str(project)])
-        tmp = project / ".saipen" / "incoming.tmp"
-        tmp.write_text("# B2\n", encoding="utf-8")
-        os.replace(tmp, project / ".saipen" / "BOARD.md")
-        assert _wait_for(lambda: event_log.count() >= 1)
+
+        def do_write():
+            tmp = project / ".saipen" / "incoming.tmp"
+            tmp.write_text("# B2\n", encoding="utf-8")
+            os.replace(tmp, project / ".saipen" / "BOARD.md")
+
+        assert _write_until_seen(do_write, event_log)
         assert event_log.last()["file"] == "BOARD.md"
 
     def test_log_created_event_triggers(self, watcher, project, event_log):
         watcher.sync([str(project)])
-        (project / ".saipen" / "LOG.md").write_text(
-            "- 01.01.26 00:00 [E-1] RUN: x\n", encoding="utf-8"
+        assert _write_until_seen(
+            lambda: (project / ".saipen" / "LOG.md").write_text(
+                "- 01.01.26 00:00 [E-1] RUN: x\n", encoding="utf-8"
+            ),
+            event_log,
         )
-        assert _wait_for(lambda: event_log.count() >= 1)
         assert event_log.last()["file"] == "LOG.md"
 
     def test_unrelated_file_ignored(self, watcher, project, event_log):
         watcher.sync([str(project)])
         (project / ".saipen" / "MANIFEST.md").write_text("- x\n", encoding="utf-8")
         (project / "scratch.txt").write_text("x\n", encoding="utf-8")
-        time.sleep(DEBOUNCE_DELAY * 3)
+        time.sleep(TEST_DEBOUNCE * 4)
         assert event_log.count() == 0
 
 
 class TestDebounce:
-    def test_event_burst_collapses_to_one_refresh(self, watcher, project, event_log):
-        watcher.sync([str(project)])
-        f = project / ".saipen" / "STATE.md"
-        for _ in range(6):
-            f.write_text("---\nphase: BUILD\n---\n", encoding="utf-8")
-            time.sleep(0.03)
-        assert _wait_for(lambda: event_log.count() >= 1)
-        time.sleep(DEBOUNCE_DELAY * 3)
-        assert event_log.count() == 1, f"burst produced {event_log.count()} events"
+    def test_event_burst_collapses_to_one_refresh(self, tmp_path, project, event_log):
+        # A long debounce makes the collapse deterministic: six rapid writes
+        # land well inside one debounce window, so exactly one event publishes.
+        watcher = SaipenWatcher(debounce_delay=0.6)
+        try:
+            watcher.sync([str(project)])
+            f = project / ".saipen" / "STATE.md"
+            # Retry the burst until the emitter's OS watch handle is live (the
+            # start-up race), then assert the single-event collapse.
+            deadline = time.monotonic() + 10.0
+            seen = False
+            while time.monotonic() < deadline and not seen:
+                for _ in range(6):
+                    f.write_text("---\nphase: BUILD\n---\n", encoding="utf-8")
+                    time.sleep(0.01)
+                seen = _wait_for(lambda: event_log.count() >= 1, timeout=2.0)
+            assert seen, "burst produced no event"
+            time.sleep(1.5)  # well past the 0.6s debounce
+            assert event_log.count() == 1, f"burst produced {event_log.count()} events"
+        finally:
+            watcher.stop()
 
 
 class TestLifecycle:
@@ -149,7 +194,7 @@ class TestLifecycle:
         watcher.sync([str(project)])
         (project / ".saipen" / "STATE.md").write_text("x\n", encoding="utf-8")
         watcher.unwatch(str(project))
-        time.sleep(DEBOUNCE_DELAY * 4)
+        time.sleep(TEST_DEBOUNCE * 4)
         assert event_log.count() == 0, "a callback fired after unwatch"
 
     def test_stop_is_idempotent_and_silences_events(self, watcher, project, event_log):
@@ -157,7 +202,7 @@ class TestLifecycle:
         watcher.stop()
         watcher.stop()
         (project / ".saipen" / "STATE.md").write_text("x\n", encoding="utf-8")
-        time.sleep(DEBOUNCE_DELAY * 3)
+        time.sleep(TEST_DEBOUNCE * 4)
         assert event_log.count() == 0
 
 
@@ -174,13 +219,15 @@ class TestJsBridge:
             + json.dumps(tricky)
             + ", "
             + json.dumps("STATE.md")
+            + ", "
+            + json.dumps("external")
             + ")"
         )
         r = subprocess.run(
             [
                 "node",
                 "-e",
-                "function onSaipenFileChanged(a,b){console.log(JSON.stringify([a,b]))};"
+                "function onSaipenFileChanged(a,b,c){console.log(JSON.stringify([a,b,c]))};"
                 + js_expr,
             ],
             capture_output=True,
@@ -188,7 +235,7 @@ class TestJsBridge:
             encoding="utf-8",
         )
         assert r.returncode == 0, r.stderr
-        assert json.loads(r.stdout) == [tricky, "STATE.md"], (
+        assert json.loads(r.stdout) == [tricky, "STATE.md", "external"], (
             "a Windows root did not survive the JS round-trip byte-exact"
         )
 

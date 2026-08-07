@@ -20,6 +20,11 @@ def run() -> int:
     api._window = window
 
     if not guard.acquire(on_show_request=window.show):
+        # A second instance hands off SHOW and exits -- but the Api it just
+        # built owns a watcher thread and an event-bus subscription, and a
+        # leaked handler would keep firing on later watcher events. Clean up
+        # before returning (T-190).
+        api.stop()
         return 0
 
     tray = build_tray_icon(on_toggle=window.toggle, on_quit=lambda: window.destroy())

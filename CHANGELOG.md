@@ -4,6 +4,71 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+> **Release metadata defect (0.1.18..0.1.20).** Those three releases were
+> tagged and pushed while the committed version files stayed at 0.1.17, so the
+> wheels they describe carry METADATA `0.1.17` and no `v0.1.18` tag was ever
+> created (the 0.1.18 commit shipped under the 0.1.19 release). Their
+> changelog entries describe real code, but their release identity was false.
+> Fixed forward by `tools/release_gate.py` + `tools/verify_wheel.py` (T-188):
+> version now has one source (`saipenview/__init__.py`, derived dynamically
+> by pyproject) and the gate fails any release whose tag, wheel, changelog and
+> package version disagree.
+
+## [0.1.22] - 2026-08-07
+
+### Added
+
+- **Per-project write coordinator (T-183).** Every mutation of a project's
+  `.saipen/` files now goes through one coordinator: per-root lock plus an
+  optimistic fingerprint/CAS so an external change between our read and our
+  commit is a controlled conflict, never a silent lost update; the only
+  T-/E- id allocators in the codebase; and a deterministic refusal to mutate
+  a project while a launched Core agent owns it.
+- **Backend self-write attribution (T-190).** The frontend no longer guesses
+  which root it wrote. The coordinator registers each successful
+  per-`(root, file)` post-write fingerprint and the watcher compares the
+  current content, pushing `origin=self|external` -- so a failed write can
+  never suppress the "unrecorded external change" prompt and a real external
+  edit is always reported. `MainWindow.evaluate_js` delegate added (the
+  watcher push had been dead in production: the Api called a method that
+  never existed).
+- **Idempotent, grammar-safe mutations (T-191).** `record_manual_work` is
+  LOG-first with idempotent resume (no unlogged orphan tickets);
+  `collect_outbox_entry` is idempotent per `(sub, entry_id)` -- re-running
+  after any partial step resumes, never duplicates -- and refuses a stale
+  `source_head` handoff. External text is pipe-escaped for the closed BOARD
+  grammar.
+- **Deterministic file watcher (T-179 wave).** The load-sensitive full-suite
+  flake family is fixed at the root: unguarded `subprocess.run().stdout`
+  `.strip()` calls no longer crash worker threads, the watcher lifecycle is
+  hardened (`_disposed` guard, per-watch debounce), and the test fixture that
+  depended on `C:\Program Files` is now a deterministic temp dir with spaces.
+
+### Changed
+
+- **Release/version truth (T-188).** The version has ONE source
+  (`saipenview/__init__.py`; pyproject derives it dynamically). New
+  `tools/release_gate.py` and tag-identity checking in `tools/verify_wheel.py`
+  fail any release whose package version, wheel METADATA, git tag and
+  CHANGELOG heading disagree -- the defect that shipped v0.1.18..v0.1.20 with
+  wheels identifying as 0.1.17.
+- **Dependency floors aligned (T-189).** `watchdog>=4.0`, `psutil>=5.9.0`
+  everywhere; nuitka moved to pyproject's `dev` extra. A parity test makes
+  the two install paths agree.
+- **Own `.saipen/` memory conformant (T-187).** Every validator FAIL cleared
+  with an explicit legacy policy (`docs/conformance-legacy.md`); the split-
+  brain LOG branch and stale markhunt board copies quarantined verbatim;
+  protocol canary bumped through 7.210.0.
+
+### Fixed
+
+- **Real leak behind the flake (T-190).** `app.run()` returned early on a
+  second instance without stopping the Api, leaking an event-bus subscriber
+  and watcher that fired on every later file change -- the source of the
+  "js push failed" spam, missing watcher events and `PermissionError`s that
+  made full-suite runs unreliable. The early-return path now cleans up, and
+  the test suite pins zero subscriber leaks per test.
+
 ## [0.1.21] - 2026-08-07
 
 ### Changed

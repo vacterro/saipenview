@@ -162,7 +162,7 @@ Coming soon ✨
 
 | Modal | What it does |
 |---|---|
-| **Settings** | Zoom, hotkeys, scan tuning, autostart, always-on-top, font, flash toggle, file viewer default, custom commands, locale, scan roots |
+| **Settings** | Zoom, hotkeys, snap hotkey, theme picker, scan tuning, autostart, always-on-top, font, flash toggle, file viewer default, custom commands, locale, scan roots |
 | **File Viewer** | Read & edit STATE.md, BOARD.md, LOG.md — Source (raw) or Reader (rendered) mode |
 | **Help** | Comprehensive mini-wiki covering every feature, shortcut, and concept |
 | **Confirm** | Vintage-styled DOM dialog (replaces native `confirm()`) |
@@ -303,7 +303,7 @@ mismatch, each named on stdout.
 ```
 saipenview/
 ├── app.py              Entry wiring — tray, hotkey, window, api, single-instance guard
-├── api.py              JS-facing pywebview bridge (66 public methods)
+├── api.py              JS-facing pywebview bridge (85 public methods)
 ├── scanner.py          Drive walk + background rescan loop
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsing
 ├── textio.py           One reader for every .saipen/ file — BOM, UTF-16, cp1251
@@ -326,7 +326,7 @@ saipenview/
 │   └── static/
 │       ├── index.html
 │       ├── style.css   Vintage dark-golden Win95 theme
-│       └── app.js      Frontend logic (~3300 lines)
+│       └── app.js      Frontend logic (~4.3k lines)
 ├── assets/
 │   └── tray_icon.png
 ├── screenshots/        README screenshots

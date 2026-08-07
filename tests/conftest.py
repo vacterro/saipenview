@@ -6,6 +6,23 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _no_leaked_event_bus_subscribers():
+    """Any test that leaves a subscriber on the global event bus leaks state
+    into every later test -- an Api's _on_file_changed keeps firing on watcher
+    events (the T-190/T-179 flake family). Pin it: teardown must return to the
+    pre-test subscriber count."""
+    from saipenview.events import event_bus
+
+    before = sum(len(v) for v in event_bus._subscribers.values())
+    yield
+    after = sum(len(v) for v in event_bus._subscribers.values())
+    assert after <= before, (
+        f"test leaked {after - before} event-bus subscriber(s) into later tests"
+    )
+
+
 # ── Config fixtures ──
 
 

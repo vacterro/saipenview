@@ -97,15 +97,26 @@ class TestAppModule:
         _ensure_mock("webview")
         import saipenview.app
 
-        # Mock the guard to not acquire → run returns 0 immediately
-        with patch("saipenview.app.SingleInstanceGuard") as mock_guard_cls:
+        # Mock the guard to not acquire → run returns 0 immediately. Also mock
+        # create_window: run() builds a MainWindow BEFORE the guard check, and a
+        # real pywebview window must not be attempted in a test (K.9).
+        with (
+            patch("saipenview.app.SingleInstanceGuard") as mock_guard_cls,
+            patch("saipenview.ui.window.webview.create_window") as mock_create,
+        ):
             mock_guard = MagicMock()
             mock_guard.acquire.return_value = False
             mock_guard_cls.return_value = mock_guard
+            mock_create.return_value = MagicMock()
 
             result = saipenview.app.run()
             assert result == 0
             mock_guard.acquire.assert_called_once()
+        # The Api run() built must have been stopped: no leaked event-bus
+        # subscriber may survive into later tests (T-190).
+        from saipenview.events import event_bus
+
+        assert sum(len(v) for v in event_bus._subscribers.values()) == 0
 
 
 # ── ui/window.py ──

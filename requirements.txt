@@ -1,7 +1,13 @@
+# Runtime dependencies -- MUST mirror the `dependencies` floor in pyproject.toml
+# (T-189): two install paths (pip install -r requirements.txt for run.bat vs the
+# wheel build) must not be able to silently install different supported floors.
+# tests/test_dependency_parity.py asserts the parity mechanically.
 pystray>=0.19
 keyboard>=0.13
 pywebview>=5.0
 Pillow>=10.0
 watchdog>=4.0
 psutil>=5.9.0
+# Build/dev dependency (tools/build.py, Nuitka onefile) -- also declared in
+# pyproject's `dev` extra.
 nuitka>=2.0.0

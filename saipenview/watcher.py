@@ -32,10 +32,12 @@ class _SaipenEventHandler(FileSystemEventHandler):
     """Reacts to all four watchdog event kinds, filtering to the protocol
     files, collapsing bursts into one debounced publish per file."""
 
-    def __init__(self, root: str) -> None:
+    def __init__(self, root: str, debounce_delay: float = DEBOUNCE_DELAY) -> None:
         self.root = root
+        self._debounce_delay = debounce_delay
         self._lock = threading.Lock()
         self._timers: dict[str, threading.Timer] = {}
+        self._disposed = False
 
     def on_modified(self, event) -> None:
         self._maybe_event(event)
@@ -65,16 +67,24 @@ class _SaipenEventHandler(FileSystemEventHandler):
 
     def _debounce(self, name: str) -> None:
         with self._lock:
+            if self._disposed:
+                return
             timer = self._timers.get(name)
             if timer:
                 timer.cancel()
-            t = threading.Timer(DEBOUNCE_DELAY, self._fire, args=(name,))
+            t = threading.Timer(self._debounce_delay, self._fire, args=(name,))
             t.daemon = True
             self._timers[name] = t
             t.start()
 
     def _fire(self, name: str) -> None:
+        # T-124's lifecycle contract, made deterministic (T-183 wave): the
+        # callback MUST never publish after cancel()/stop() -- a timer that
+        # already began executing when cancel() ran is checked here, under the
+        # same lock cancel() uses.
         with self._lock:
+            if self._disposed:
+                return
             self._timers.pop(name, None)
         event_bus.publish("saipen.project_changed", {"root": self.root, "file": name})
 
@@ -82,6 +92,7 @@ class _SaipenEventHandler(FileSystemEventHandler):
         """Cancel all pending timers -- the callback must never fire after
         the watch is gone (T-124)."""
         with self._lock:
+            self._disposed = True
             for t in self._timers.values():
                 t.cancel()
             self._timers.clear()
@@ -90,13 +101,14 @@ class _SaipenEventHandler(FileSystemEventHandler):
 class SaipenWatcher:
     """Owns the watchdog observer and the set of watched project roots."""
 
-    def __init__(self) -> None:
+    def __init__(self, debounce_delay: float = DEBOUNCE_DELAY) -> None:
         self._observer = Observer()
         self._observer.start()
         self._watches: dict[str, object] = {}
         self._handlers: dict[str, _SaipenEventHandler] = {}
         self._lock = threading.Lock()
         self._stopped = False
+        self._debounce_delay = debounce_delay
 
     def sync(self, roots: list[str]) -> None:
         """Reconcile the watch set with the current known projects.
@@ -125,7 +137,7 @@ class SaipenWatcher:
             if self._stopped or root in self._watches:
                 return
             try:
-                handler = _SaipenEventHandler(root)
+                handler = _SaipenEventHandler(root, debounce_delay=self._debounce_delay)
                 watch = self._observer.schedule(
                     handler, str(saipen_dir), recursive=False
                 )

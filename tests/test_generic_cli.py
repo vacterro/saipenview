@@ -55,7 +55,17 @@ class TestShellContract:
         assert any("hello world" in line for line in lines), lines
 
     def test_quoted_path_with_spaces(self, pm, tmp_path):
-        lines = _run(pm, tmp_path, 'if exist "C:\\Program Files" echo PF_OK')
+        # Deterministic fixture: a temp dir with spaces INSIDE the project,
+        # not an environment-dependent path like "C:\Program Files" (which
+        # failed once under suite load -- T-179). The assertion must not depend
+        # on whether some machine has that directory.
+        spaced = tmp_path / "dir with spaces"
+        spaced.mkdir()
+        marker = spaced / "probe file.txt"
+        marker.write_text("x", encoding="utf-8")
+        lines = _run(
+            pm, tmp_path, 'if exist "dir with spaces\\probe file.txt" echo PF_OK'
+        )
         assert any("PF_OK" in line for line in lines), lines
 
     def test_pipe(self, pm, tmp_path):

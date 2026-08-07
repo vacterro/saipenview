@@ -4,7 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saipenview"
-version = "0.1.21"
+# ONE version source (T-188): `saipenview/__init__.py` is the canonical value,
+# derived here at build time. A static copy previously lagged the tags
+# (v0.1.18..v0.1.20 shipped with pyproject still at 0.1.17), so a wheel could
+# lie about which release it was.
+dynamic = ["version"]
 description = "Desktop tray viewer for SAIPEN projects — live dashboard with vintage Win95 aesthetic"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,9 +36,18 @@ dependencies = [
     "keyboard>=0.13",
     "pywebview>=5.0",
     "Pillow>=10.0",
-    "watchdog>=3.0",
-    "psutil>=5.9",
+    "watchdog>=4.0",
+    "psutil>=5.9.0",
 ]
+
+[project.optional-dependencies]
+# Build/dev dependencies live in an extra, not in the runtime `dependencies`
+# floor (T-189). requirements.txt mirrors the runtime floor for the run.bat
+# install path and adds nuitka for tools/build.py.
+dev = ["nuitka>=2.0.0"]
+
+[tool.setuptools.dynamic]
+version = {attr = "saipenview.__version__"}
 
 [project.urls]
 Homepage = "https://github.com/vacterro/saipenview"
@@ -101,6 +114,7 @@ python_files = ["test_*.py"]
 # install of the freshly built wheel) -- list-form, no shell.
 "tools/verify_wheel.py" = ["S603", "S607"]
 "tools/export_source.py" = ["S603", "S607"]
+"tools/release_gate.py" = ["S603", "S607"]
 # Test files use `assert` extensively (standard pytest pattern); bandit's
 # S101 warning is noise here. The git tests (tests/test_git_diff.py) invoke
 # the real git CLI against a temporary fixture repo -- list-form, no shell,

@@ -1,8 +1,10 @@
-"""T-127: the unrecorded-external-change prompt is wired.
+"""T-127/T-190: the unrecorded-external-change prompt is wired.
 
-Source-level contract: a watcher event for a root SAIPENVIEW did not just
-write raises the persistent "Record manual work" bar; self-writes are marked
-so the prompt never re-appears for the app's own actions.
+Source-level contract: a watcher event whose origin is NOT "self" raises the
+persistent "Record manual work" bar; origin attribution moved BACKEND-side in
+T-190 -- the frontend no longer guesses which root it wrote (the old
+selfWriteRoots Set was an unsafe causal model), it trusts the origin the Api
+pushed.
 """
 
 from __future__ import annotations
@@ -28,15 +30,16 @@ def test_unrecorded_bar_and_record_button_exist():
     assert "agent.unrecorded" in src
 
 
-def test_self_writes_are_marked_and_consumed():
+def test_on_saipen_file_changed_takes_origin_and_prompts_only_on_external():
     src = APP_JS.read_text(encoding="utf-8")
-    assert "const selfWriteRoots = new Set();" in src
-    assert "function markSelfWrite(root)" in src
-    # the watcher handler consumes a self-write instead of raising the prompt
+    assert "window.onSaipenFileChanged = function(root, fileName, origin)" in src
     body = src[src.index("window.onSaipenFileChanged =") : src.index("function poll()")]
-    assert "selfWriteRoots.has(root)" in body
-    assert "selfWriteRoots.delete(root)" in body
+    assert 'origin !== "self"' in body
     assert "showUnrecordedChange(root)" in body
+    # The unsafe frontend causal model is gone: no mark-before-write helper,
+    # no single global debounce swallowing events across projects.
+    assert "markSelfWrite" not in src
+    assert "fileChangeDebounce" not in src
 
 
 def test_record_button_calls_the_backend():
@@ -47,7 +50,6 @@ def test_record_button_calls_the_backend():
     assert "unrecordedChangeRoot = null" in body
 
 
-def test_self_write_sites_mark_the_root():
+def test_no_frontend_self_write_calls_remain():
     src = APP_JS.read_text(encoding="utf-8")
-    assert "markSelfWrite(detail.root);" in src  # ticket toggles + reorder
-    assert "markSelfWrite(root);" in src  # human note + record
+    assert "markSelfWrite(" not in src

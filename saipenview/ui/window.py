@@ -277,6 +277,19 @@ class MainWindow:
         except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: restore failed: {e}", file=sys.stderr)
 
+    def evaluate_js(self, script: str) -> object:
+        """Run *script* in the page, returning the result.
+
+        The public delegate the Api calls to push events to the frontend. For
+        a long time the Api called `self._window.evaluate_js` directly, but
+        `self._window` is the pywebview window, NOT this MainWindow, and
+        MainWindow had no such method -- so every watcher push raised
+        AttributeError, was swallowed by the api.py except, and in production
+        (stderr is None under pythonw.exe) was completely silent. The stale
+        MARKHUNT T-176 finding was right; this is the fix.
+        """
+        return self._window.evaluate_js(script)
+
     def _is_minimized(self) -> bool:
         """Ask Windows whether the window is iconic.
 

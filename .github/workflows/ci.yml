@@ -33,6 +33,16 @@ jobs:
           pip install -e .
           pip install pytest ruff==0.16.0
 
+      # T-193: own-`.saipen` conformance must gate CI, not skip on a runner.
+      # test_conformance_legacy.py skips when the canonical validator is
+      # unreachable; clone the protocol repo and point SAIPEN_HOME at it so the
+      # memory regression test actually runs and turns CI red.
+      - name: Fetch canonical SAIPEN validator
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/vacterro/saipen.git "$RUNNER_TEMP/saipen"
+          echo "SAIPEN_HOME=$RUNNER_TEMP/saipen" >> "$GITHUB_ENV"
+
       - name: pytest (full suite)
         run: python -m pytest tests -q
 

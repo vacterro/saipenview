@@ -391,23 +391,44 @@ If applicable, add screenshots of the UI change.
 
 ## Release Process
 
-1. Ensure `saipenview/__init__.py` has the new version.
-2. Update `CHANGELOG.md` with notable changes since last release.
-3. Tag the release:
+The version has ONE source of truth: `saipenview/__init__.py`'s `__version__`.
+`pyproject.toml` derives it dynamically, so there is no second file to bump
+(T-188). v0.1.18..v0.1.20 shipped tags whose wheels identified as 0.1.17
+because only the tag moved; the gate below exists to make that impossible.
+
+1. Bump `saipenview/__init__.py` to the new version (micro for a patch,
+   feature for a minor).
+2. Add the matching `## [X.Y.Z]` heading to the top of `CHANGELOG.md` with the
+   notable changes since the last release.
+3. Run the release identity gate -- it MUST pass before anything is pushed:
    ```bash
-   git tag -a v0.1.0 -m "v0.1.0"
-   git push origin v0.1.0
+   python tools/release_gate.py
    ```
-4. Build the wheel:
+   This asserts `__version__` == CHANGELOG head, that the version is not
+   behind the newest tag, and that pyproject declares the version dynamic.
+4. Build and verify the wheel identity:
    ```bash
    python -m build --wheel
+   python tools/verify_wheel.py
    ```
-5. Create a GitHub Release from the tag, attaching the `.whl` file.
-6. (Future) Publish to PyPI:
+   `verify_wheel.py` builds from a clean `git archive HEAD` and asserts the
+   wheel METADATA matches the committed `__version__` AND, when HEAD is
+   tagged, matches that tag. A stale-version wheel fails loudly.
+5. Tag the release and push:
+   ```bash
+   git tag -a v<X.Y.Z> -m "release v<X.Y.Z>"
+   git push origin main
+   git push origin v<X.Y.Z>
+   ```
+6. Create a GitHub Release from the tag, attaching the `.whl` file.
+7. (Future) Publish to PyPI:
    ```bash
    pip install twine
    python -m twine upload dist/*
    ```
+
+Every step that names a version (`__version__`, CHANGELOG heading, tag, wheel
+METADATA) must name the same string; the gate enforces it mechanically.
 
 ---
 

@@ -71,7 +71,11 @@ def api_patches(mock_config, tmp_path):
 @pytest.fixture
 def api(api_patches) -> Api:
     """Construct an Api with all external dependencies mocked."""
-    return Api()
+    instance = Api()
+    try:
+        yield instance
+    finally:
+        instance.stop()  # stop the real SaipenWatcher + unsubscribe the bus handler
 
 
 def _make_project(
