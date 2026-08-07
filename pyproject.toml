@@ -96,6 +96,11 @@ python_files = ["test_*.py"]
 "saipenview/git_diff.py" = ["S603", "S607"]
 "saipenview/runtime.py" = ["S603", "S607"]
 "tools/build.py" = ["S603"]
+# tools/verify_wheel.py and tools/export_source.py drive git/build/pip with
+# controlled local arguments (git archive of HEAD, python -m build, pip
+# install of the freshly built wheel) -- list-form, no shell.
+"tools/verify_wheel.py" = ["S603", "S607"]
+"tools/export_source.py" = ["S603", "S607"]
 # Test files use `assert` extensively (standard pytest pattern); bandit's
 # S101 warning is noise here. The git tests (tests/test_git_diff.py) invoke
 # the real git CLI against a temporary fixture repo -- list-form, no shell,
