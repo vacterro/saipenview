@@ -20,7 +20,9 @@ dist/
 # Project runtime data
 saipenview/_data/
 
-# Session / agent data — contains machine-local paths, session state
+# Session / agent data — machine-local paths, session state. INTENTIONALLY
+# local-only by written contract (docs/saipen-persistence.md, T-172): the
+# canonical memory travels via tools/export_source.py, never via git.
 .saipen/
 .freebuff/
 
