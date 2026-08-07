@@ -22,7 +22,6 @@ from saipenview.engines.base import AgentEngine
 from saipenview.events import event_bus
 from saipenview.paths import canonical_key
 from saipenview.sessions import SessionStore
-from saipenview.watcher import SaipenWatcher
 
 # Maximum lines to keep in the per-process output buffer.
 DEFAULT_OUTPUT_BUFFER_SIZE = 5000
@@ -84,7 +83,6 @@ class ProcessManager:
         # Popen (T-166 concurrency).
         self._launching: set[str] = set()
         self._buffer_size = buffer_size
-        self.watcher = SaipenWatcher()
         self.sessions = SessionStore()
 
     def _key(self, project_root: str) -> str:
@@ -203,8 +201,6 @@ class ProcessManager:
                     "instruction": instruction,
                 },
             )
-
-            self.watcher.watch(project_root)
 
             return {"ok": True, "engine": engine.name, "pid": proc.pid}
         finally:
@@ -430,7 +426,6 @@ class ProcessManager:
 
     def stop_all(self) -> None:
         """Kill all running agents.  Called on app shutdown."""
-        self.watcher.stop()
         with self._lock:
             roots = [r for r, ap in self._processes.items() if ap.status == "running"]
         for root in roots:
@@ -477,4 +472,3 @@ class ProcessManager:
             print(f"SAIPENVIEW: output reader error: {exc}", file=sys.stderr)
 
         self._finalize(ap)
-        self.watcher.unwatch(ap.project_root)

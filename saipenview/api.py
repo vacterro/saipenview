@@ -47,6 +47,7 @@ from saipenview.scanner import (
     scan,
 )
 from saipenview.textio import read_doc, read_doc_meta, write_doc
+from saipenview.watcher import SaipenWatcher
 
 _OUTBOX_STATUS_ORDER = {"ready": 0, "blocked": 1, "draft": 2, "stale": 3, "reviewed": 4}
 
@@ -262,6 +263,7 @@ class Api:
     def __init__(self, on_hotkeys_changed=None, window=None):
         self._window = window
         self._lock = threading.Lock()
+        self._cache_lock = threading.Lock()
         self._projects: list[dict] = []
         self._has_scanned = False
         self._scanning = False
@@ -299,21 +301,63 @@ class Api:
             on_scan_start=lambda: self._set_scanning(True),
         )
 
-        event_bus.subscribe("saipen.state_changed", self._on_file_changed)
-        event_bus.subscribe("saipen.board_changed", self._on_file_changed)
-        event_bus.subscribe("saipen.log_appended", self._on_file_changed)
+        event_bus.subscribe("saipen.project_changed", self._on_file_changed)
+        # The watcher belongs to the Api/project registry, not the
+        # ProcessManager (T-124): every known project is watched, agent
+        # launch/finish has nothing to do with it.
+        self._watcher = SaipenWatcher()
 
     def _on_file_changed(self, data: dict) -> None:
         root = data["root"]
         file = data["file"]
-        self.refresh_known()
+        # One event -> one targeted refresh: re-read only the changed project
+        # and update only its cache row (T-124). No refresh_known() for every
+        # project, no second poll for the same data version.
+        self._refresh_one_project(root)
         if self._window:
             try:
+                # JSON-serialised values, never f-string interpolation: a root
+                # with backslashes, an apostrophe or Unicode must reach the
+                # page byte-exact (T-124).
                 self._window.evaluate_js(
-                    f"if (window.onSaipenFileChanged) window.onSaipenFileChanged('{root}', '{file}')"
+                    "if (window.onSaipenFileChanged) window.onSaipenFileChanged("
+                    + json.dumps(root)
+                    + ", "
+                    + json.dumps(file)
+                    + ")"
                 )
             except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
                 print(f"SAIPENVIEW: js push failed: {e}", file=sys.stderr)
+
+    def _refresh_one_project(self, root: str) -> None:
+        """Re-parse one project and update only its cache row."""
+        pinned_set = set(self._config.get("pinned_roots") or [])
+        try:
+            proj = load_project(Path(root), with_git=False)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"SAIPENVIEW: targeted refresh({root}) failed: {e}", file=sys.stderr)
+            return
+        if proj is None:
+            return
+        row = _project_to_dict(proj, pinned_set)
+        with self._lock:
+            prev = next((p for p in self._projects if p["root"] == root), None)
+            if prev is None:
+                return
+            row["git_branch"] = prev.get("git_branch", "")
+            row["git_dirty"] = prev.get("git_dirty", False)
+            for i, p in enumerate(self._projects):
+                if p["root"] == root:
+                    self._projects[i] = row
+                    break
+            self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+        self._write_cache()
+
+    def _sync_watcher(self) -> None:
+        """Reconcile the watcher's watch set with the known projects (T-124)."""
+        with self._lock:
+            roots = [p["root"] for p in self._projects]
+        self._watcher.sync(roots)
 
     def _set_scanning(self, val: bool) -> None:
         with self._lock:
@@ -344,6 +388,8 @@ class Api:
         # Atomic write (temp + replace) via the shared helper -- a crash mid
         # plain write left truncated JSON that __init__'s json.load choked on.
         self._write_cache()
+        # Watch exactly what we know about (T-124).
+        self._sync_watcher()
 
     def get_projects(self) -> list[dict]:
         hidden_set = set(self._config.get("hidden_roots") or [])
@@ -408,16 +454,34 @@ class Api:
         # the 5s poll and must not turn into a disk write every 5 seconds.
         if changed:
             self._write_cache()
+        self._sync_watcher()
         return self.get_projects()
 
     def _write_cache(self) -> None:
         try:
-            tmp_path = self._cache_file.with_name(self._cache_file.name + ".tmp")
+            import tempfile
+
             with self._lock:
                 snapshot = list(self._projects)
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(snapshot, f)
-            os.replace(tmp_path, self._cache_file)
+            # One writer lock + a unique temp name per write (T-124): a shared
+            # <name>.tmp would let two concurrent writes clobber each other's
+            # temp before os.replace, and a crashed first writer would leave
+            # its temp for the second to replace.
+            with self._cache_lock:
+                fd, tmp_name = tempfile.mkstemp(
+                    dir=str(self._cache_file.parent), prefix="cache.json."
+                )
+                tmp_path = Path(tmp_name)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(snapshot, f)
+                    os.replace(tmp_path, self._cache_file)
+                finally:
+                    try:
+                        if tmp_path.exists():
+                            tmp_path.unlink()
+                    except OSError:
+                        pass
         except (OSError, ValueError) as e:
             print(
                 f"SAIPENVIEW: failed to write cache at {self._cache_file}: {e}",
@@ -1091,6 +1155,7 @@ class Api:
     def stop(self) -> None:
         self._process_manager.stop_all()
         self.background_scanner.stop()
+        self._watcher.stop()
 
     def set_auto_scan(self, enabled: bool) -> dict:
         self._auto_scan = enabled

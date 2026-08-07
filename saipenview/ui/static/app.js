@@ -1898,7 +1898,15 @@ let fileChangeDebounce = null;
 window.onSaipenFileChanged = function(root, fileName) {
   if (fileChangeDebounce) clearTimeout(fileChangeDebounce);
   fileChangeDebounce = setTimeout(() => {
-    poll();
+    // The backend already re-read the changed project (one targeted refresh,
+    // T-124) before pushing this notification. Reading the fresh cache here --
+    // NOT calling refresh_known() again -- is the one-refresh-per-event rule;
+    // a second full re-parse of every project for one file change is the
+    // defect T-124 removes.
+    window.pywebview.api.get_projects().then(projects => {
+      render(projects, true);
+      renderLinkedWorktrees();
+    }).catch(() => {});
   }, 100);
 };
 
