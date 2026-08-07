@@ -92,6 +92,8 @@ const LOCALE_EN = {
   "settings.locale.zhCN": "简体中文 (Simplified Chinese)",
   "settings.customCommands.label": "Custom commands (label, command)",
   "settings.customCommands.add": "+ Add command",
+  "settings.engineOverrides.label": "Engine overrides (JSON)",
+  "settings.engineOverrides.placeholder": "{\"engine-name\": {\"path\": \"\", \"extra_args\": [], \"env\": {}}}",
   "settings.drives.label": "Drives / folders to scan",
   "settings.resetCollapseHint": "Reset collapse hint",
   "settings.save.text": "Save",

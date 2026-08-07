@@ -123,20 +123,33 @@ class _EngineWithOverrides:
 
 def _apply_engine_overrides(engine, overrides) -> tuple:
     """Return (wrapped_engine, None) or (None, error) on invalid overrides."""
+    ok, err = validate_engine_overrides(overrides)
+    if not ok:
+        return None, err
+    path = overrides.get("path")
+    extra = overrides.get("extra_args") or []
+    env = overrides.get("env") or {}
+    return _EngineWithOverrides(engine, path, extra, env), None
+
+
+def validate_engine_overrides(overrides) -> tuple[bool, str]:
+    """Shape-check one engine's override dict (T-178). The settings UI and the
+    launch path share this so an invalid override is rejected the same way
+    wherever it is typed."""
     if not isinstance(overrides, dict):
-        return None, "engine_overrides entry must be an object"
+        return False, "engine_overrides entry must be an object"
     path = overrides.get("path")
     extra = overrides.get("extra_args") or []
     env = overrides.get("env") or {}
     if path is not None and not isinstance(path, str):
-        return None, "engine override 'path' must be a string"
+        return False, "engine override 'path' must be a string"
     if not isinstance(extra, list) or not all(isinstance(a, str) for a in extra):
-        return None, "engine override 'extra_args' must be a list of strings"
+        return False, "engine override 'extra_args' must be a list of strings"
     if not isinstance(env, dict) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in env.items()
     ):
-        return None, "engine override 'env' must be a dict of str -> str"
-    return _EngineWithOverrides(engine, path, extra, env), None
+        return False, "engine override 'env' must be a dict of str -> str"
+    return True, ""
 
 
 def _sub_to_dict(sub: SubStatus) -> dict:
@@ -713,6 +726,24 @@ class Api:
                 self._config[k] = settings[k]
         save_config(self._config)
         return self.get_config()
+
+    def set_engine_overrides(self, overrides: dict) -> dict:
+        """Persist the per-engine override dict (T-178), validated exactly as
+        launch_agent validates it -- an invalid override is refused and the
+        saved value is untouched."""
+        if not isinstance(overrides, dict):
+            return {"ok": False, "error": "engine_overrides must be an object"}
+        for engine_name, entry in overrides.items():
+            ok, err = validate_engine_overrides(entry)
+            if not ok:
+                return {
+                    "ok": False,
+                    "error": f"engine '{engine_name}': {err}",
+                    "invalid_key": engine_name,
+                }
+        self._config["engine_overrides"] = dict(overrides)
+        save_config(self._config)
+        return {"ok": True, "config": self.get_config()}
 
     def toggle_pin(self, root_str: str) -> list[dict]:
         pinned = list(self._config.get("pinned_roots") or [])

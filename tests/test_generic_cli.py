@@ -13,6 +13,7 @@ override surface (path / extra_args / env), validated before launch.
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -131,3 +132,57 @@ class TestEngineOverrides:
         assert _apply_engine_overrides(engine, {"extra_args": "nope"})[0] is None
         assert _apply_engine_overrides(engine, {"env": {"K": 1}})[0] is None
         assert _apply_engine_overrides(engine, "nope")[0] is None
+
+    def test_validate_engine_overrides_shape(self):
+        from saipenview.api import validate_engine_overrides
+
+        assert validate_engine_overrides({"path": "C:\\x.exe"})[0] is True
+        assert validate_engine_overrides({"extra_args": ["--v"]})[0] is True
+        assert validate_engine_overrides({"env": {"K": "v"}})[0] is True
+        assert validate_engine_overrides({"path": 7})[0] is False
+        assert validate_engine_overrides({"extra_args": "no"})[0] is False
+        assert validate_engine_overrides({"env": {"K": 1}})[0] is False
+        assert validate_engine_overrides("nope")[0] is False
+
+    def test_set_engine_overrides_persists_valid(self, tmp_path):
+        from saipenview.api import Api
+        from saipenview.config import DEFAULTS
+
+        with (
+            patch("saipenview.api.config_path"),
+            patch("saipenview.api.load_config", return_value=dict(DEFAULTS)),
+            patch("saipenview.api.save_config") as mock_save,
+            patch("saipenview.api.BackgroundScanner"),
+        ):
+            a = Api()
+            res = a.set_engine_overrides(
+                {"generic-cli": {"path": "C:\\custom\\cmd.exe"}}
+            )
+            assert res["ok"] is True
+            assert (
+                a._config["engine_overrides"]["generic-cli"]["path"]
+                == "C:\\custom\\cmd.exe"
+            )
+            mock_save.assert_called_once()
+            a.stop()
+
+    def test_set_engine_overrides_rejects_invalid(self, tmp_path):
+        from saipenview.api import Api
+        from saipenview.config import DEFAULTS
+
+        with (
+            patch("saipenview.api.config_path"),
+            patch("saipenview.api.load_config", return_value=dict(DEFAULTS)),
+            patch("saipenview.api.save_config") as mock_save,
+            patch("saipenview.api.BackgroundScanner"),
+        ):
+            a = Api()
+            a._config["engine_overrides"] = {"good": {"path": "C:\\x.exe"}}
+            res = a.set_engine_overrides({"generic-cli": {"path": 42}})
+            assert res["ok"] is False
+            assert "path" in res["error"]
+            assert a._config["engine_overrides"] == {"good": {"path": "C:\\x.exe"}}, (
+                "an invalid override must not clobber the saved value"
+            )
+            mock_save.assert_not_called()
+            a.stop()

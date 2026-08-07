@@ -2759,6 +2759,14 @@ function openSettings() {
         list.appendChild(row);
       };
     }
+    // T-178: engine_overrides as a JSON textarea -- the same dict launch_agent
+    // reads, edited in place, validated on save.
+    const ovInput = document.getElementById("engineOverridesInput");
+    if (ovInput) {
+      ovInput.value = JSON.stringify(cfg.engine_overrides || {}, null, 2);
+      const ovErr = document.getElementById("engineOverridesError");
+      if (ovErr) ovErr.style.display = "none";
+    }
     document.getElementById("saveSettingsBtn").textContent = "Save";
     settingsModal.style.display = "flex";
     window.pywebview.api.get_local_drives().then((drives) => {
@@ -2848,6 +2856,21 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
 
   const saveBtn = document.getElementById("saveSettingsBtn");
   const api = window.pywebview.api;
+  // T-178: parse the engine_overrides JSON up front -- invalid JSON or a
+  // wrong shape aborts the save with a visible error, so a bad override can
+  // never reach the disk.
+  let engineOverrides = null;
+  const ovInput = document.getElementById("engineOverridesInput");
+  if (ovInput) {
+    const ovErr = document.getElementById("engineOverridesError");
+    try {
+      engineOverrides = JSON.parse(ovInput.value || "{}");
+    } catch (e) {
+      if (ovErr) { ovErr.textContent = "engine_overrides is not valid JSON"; ovErr.style.display = "block"; }
+      return;
+    }
+    if (ovErr) ovErr.style.display = "none";
+  }
   saveBtn.textContent = "Saving...";
   saveBtn.disabled = true;
   const resetHint = document.getElementById("resetCollapseHint").checked;
@@ -2876,9 +2899,22 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
       api.set_frameless(frameless),
       api.set_locale(localeVal),
       api.save_view_config({ show_on_launch: showOnLaunch, flash_changes: flashChanges, custom_commands: customCommands, file_viewer_default: fvd, locale: locale, theme: themeSlug }),
+      engineOverrides !== null ? api.set_engine_overrides(engineOverrides) : Promise.resolve(),
     ]);
-  }).then(() => {
+  }).then((results) => {
     if (saveTimedOut) return;
+    // T-178: set_engine_overrides resolves with {ok:false, error} -- the
+    // backend refused an invalid override, so the save must not silently
+    // succeed with the old value still in place.
+    const ovResult = engineOverrides !== null && results ? results[results.length - 1] : null;
+    if (ovResult && !ovResult.ok) {
+      clearTimeout(saveTimeout);
+      const ovErr = document.getElementById("engineOverridesError");
+      if (ovErr) { ovErr.textContent = ovResult.error || "invalid engine_overrides"; ovErr.style.display = "block"; }
+      saveBtn.textContent = "Save failed -- retry?";
+      saveBtn.disabled = false;
+      return;
+    }
     clearTimeout(saveTimeout);
     document.body.style.zoom = zoomLevel;
     applyFontFamily(fontFamily);

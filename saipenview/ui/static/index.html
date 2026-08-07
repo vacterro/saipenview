@@ -174,6 +174,10 @@
           <button id="addCustomCmdBtn" type="button" data-i18n-value="settings.customCommands.add" style="font-size:9px; padding:1px 4px; min-height:16px;">+ Add command</button>
         </div>
       </label>
+      <label class="settings-wide" data-i18n="settings.engineOverrides.label">Engine overrides (JSON)
+        <textarea id="engineOverridesInput" rows="4" spellcheck="false" style="width:100%; font-family:monospace; font-size:10px; box-sizing:border-box;" data-i18n-placeholder="settings.engineOverrides.placeholder" placeholder='{"engine-name": {"path": "", "extra_args": [], "env": {}}}'></textarea>
+        <div id="engineOverridesError" style="font-size:9px; color:var(--danger); display:none;"></div>
+      </label>
       <div class="settings-field settings-wide" data-i18n="settings.drives.label">Drives / folders to scan
         <div id="drivesBar" class="drives-bar drives-bar-settings"></div>
       </div>
