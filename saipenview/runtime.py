@@ -129,7 +129,13 @@ class ProcessManager:
             self._launching.add(key)
 
         try:
-            cmd = engine.build_command(project_root, instruction)
+            try:
+                cmd = engine.build_command(project_root, instruction)
+            except ValueError as exc:
+                # T-168: an engine rejects an empty/invalid command with a
+                # clear error instead of launching garbage.
+                return {"ok": False, "error": str(exc)}
+
             env = None
             if engine.default_env:
                 import os

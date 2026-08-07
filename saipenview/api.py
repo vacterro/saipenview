@@ -62,6 +62,82 @@ def _outbox_entry_to_dict(e: OutboxEntry) -> dict:
     }
 
 
+class _EngineWithOverrides:
+    """Wrap an engine so build_command honours `engine_overrides` (T-168).
+
+    The override surface is deliberately small and validated: `path`
+    replaces the executable, `extra_args` is appended to the argv, `env`
+    merges into default_env. Anything else is rejected before a launch."""
+
+    def __init__(self, engine, path, extra_args, env):
+        self._engine = engine
+        self._path = path
+        self._extra = extra_args
+        self._env = env
+
+    @property
+    def name(self) -> str:
+        return self._engine.name
+
+    @property
+    def display_name(self) -> str:
+        return self._engine.display_name
+
+    def detect(self) -> bool:
+        return self._engine.detect()
+
+    def build_command(self, project_root, instruction, *, extra_args=None):
+        merged = list(extra_args or []) + list(self._extra)
+        cmd = self._engine.build_command(
+            project_root, instruction, extra_args=merged or None
+        )
+        if isinstance(cmd, str):
+            # A command-line string (GenericCLI shell contract, T-168):
+            # replace the leading executable token only.
+            if self._path:
+                head, _, tail = cmd.partition(" ")
+                cmd = self._path + (" " + tail if tail else "")
+            return cmd
+        cmd = list(cmd)
+        if self._path:
+            cmd[0] = self._path
+        return cmd
+
+    @property
+    def supports_stdin(self) -> bool:
+        return self._engine.supports_stdin
+
+    @property
+    def default_env(self) -> dict | None:
+        env = dict(self._engine.default_env or {})
+        env.update(self._env)
+        return env or None
+
+    def parse_event(self, line):
+        return self._engine.parse_event(line)
+
+    def to_dict(self) -> dict:
+        return self._engine.to_dict()
+
+
+def _apply_engine_overrides(engine, overrides) -> tuple:
+    """Return (wrapped_engine, None) or (None, error) on invalid overrides."""
+    if not isinstance(overrides, dict):
+        return None, "engine_overrides entry must be an object"
+    path = overrides.get("path")
+    extra = overrides.get("extra_args") or []
+    env = overrides.get("env") or {}
+    if path is not None and not isinstance(path, str):
+        return None, "engine override 'path' must be a string"
+    if not isinstance(extra, list) or not all(isinstance(a, str) for a in extra):
+        return None, "engine override 'extra_args' must be a list of strings"
+    if not isinstance(env, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
+        return None, "engine override 'env' must be a dict of str -> str"
+    return _EngineWithOverrides(engine, path, extra, env), None
+
+
 def _sub_to_dict(sub: SubStatus) -> dict:
     outbox_sorted = sorted(
         sub.outbox,
@@ -1276,6 +1352,17 @@ class Api:
         root = self._resolve_root(root)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
+
+        # engine_overrides was a documented-but-dead config key (T-168): now it
+        # is the real override surface -- path / extra_args / env per engine,
+        # validated before anything launches.
+        overrides = (self._config.get("engine_overrides") or {}).get(engine_name)
+        if overrides:
+            wrapped, err = _apply_engine_overrides(engine, overrides)
+            if wrapped is None:
+                return {"ok": False, "error": err}
+            engine = wrapped
+
         return self._process_manager.launch(engine, root, instruction)
 
     def stop_agent(self, root: str) -> dict:

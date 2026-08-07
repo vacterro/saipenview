@@ -58,8 +58,10 @@
 - **Stale warning** — detects out-of-date protocol files
 - **Agent Engine** — launch `claude-code` (or other engines: codex, aider, gemini, cline, goose, agy, generic_cli) in a project
   - **Live status** — running/exit state, CPU, elapsed time per project
-  - **Output console** — buffered agent output (default 5000 lines), stdin input
+  - **Output console** — buffered agent output (default 5000 lines), stdin input only for engines with proven stdin support
   - **Kill / stop all** — per-project kill and global stop
+  - **Generic CLI is a shell command** — `generic-cli` runs the instruction through `cmd.exe /d /s /c` with the project as working directory; quotes, pipes and `&&` work. Send is not offered for one-shot engines (codex exec, gemini --prompt, opencode run, ...) until stdin support is proven
+  - **`engine_overrides`** — per-engine `{"path": <exe>, "extra_args": [...], "env": {...}}` validated before launch (config.py)
   - **Single-instance guard** — only one app instance; second launch re-shows window
 
 ### 🎮 Interaction

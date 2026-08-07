@@ -67,7 +67,10 @@ class AgentEngine(ABC):
             extra_args: Optional additional CLI flags.
 
         Returns:
-            A list suitable for subprocess.Popen(cmd, ...).
+            A list suitable for subprocess.Popen(cmd, ...). One exception:
+            GenericCLIEngine returns a raw command-line STRING (also accepted
+            by Popen on Windows) so cmd.exe /c receives it without Python's
+            argv re-quoting (T-168).
         """
 
     def detect(self) -> bool:

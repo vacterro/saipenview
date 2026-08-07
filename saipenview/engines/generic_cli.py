@@ -12,11 +12,14 @@ from saipenview.engines.base import AgentEngine, AgentEvent
 
 
 class GenericCLIEngine(AgentEngine):
-    """Run an arbitrary CLI command as an agent process.
+    """Run an arbitrary shell command as an agent process.
 
-    The ``instruction`` parameter to build_command() is treated as
-    the full shell command to execute.  The project_root becomes the
-    working directory (handled by runtime.py, not encoded in argv).
+    The ``instruction`` parameter to build_command() is the FULL shell
+    command -- quotes, pipes, ``&&`` and all -- run through
+    ``cmd.exe /d /s /c`` on Windows with the project root as the working
+    directory. It is a shell command, never a whitespace-split argv
+    (T-168): a promise of shell syntax fulfilled with a bare ``split()``
+    is how a quoted path with spaces becomes four arguments.
     """
 
     @property
@@ -25,7 +28,7 @@ class GenericCLIEngine(AgentEngine):
 
     @property
     def display_name(self) -> str:
-        return "Generic CLI"
+        return "Generic CLI (shell command)"
 
     def detect(self) -> bool:
         # Always available -- it's just a subprocess wrapper
@@ -38,13 +41,21 @@ class GenericCLIEngine(AgentEngine):
         *,
         extra_args: list[str] | None = None,
     ) -> list[str]:
-        # instruction IS the command -- split on whitespace for Popen
-        # For complex commands with quotes/pipes, user should use
-        # shell syntax and we'll wrap in cmd.exe /c
-        parts = instruction.split()
+        # Reject empty before cmd.exe sees it -- an empty shell command would
+        # open and immediately close a cmd window with no error anyone sees.
+        if not instruction.strip():
+            raise ValueError("empty command: the generic CLI needs a command to run")
+        command = instruction
         if extra_args:
-            parts.extend(extra_args)
-        return parts
+            command = command + " " + " ".join(extra_args)
+        # The command is a single STRING command line, not an argv list:
+        # `cmd.exe /d /s /c <command>` with the working directory set by
+        # runtime.py's Popen(cwd=project_root). Passing it through a Python
+        # argv would re-quote it (an inner quote becomes `\"`), which cmd's
+        # /c parser misreads -- that is how `if exist "C:\Program Files" ...`
+        # silently stopped existing. A string command line reaches cmd raw.
+        # The project root is never interpolated here (T-168).
+        return f"cmd.exe /d /s /c {command}"
 
     @property
     def supports_stdin(self) -> bool:

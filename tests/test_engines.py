@@ -77,6 +77,10 @@ class TestRegistryInvariants:
 
     def test_extra_args_are_appended_not_replaced(self):
         for name, engine in list_engines():
+            if name == "generic-cli":
+                # T-168: the generic CLI folds extra_args INTO the shell command
+                # string (`cmd.exe /d /s /c <cmd> --zzz`), not an argv append.
+                continue
             base = engine.build_command(ROOT, INSTR)
             with_extra = engine.build_command(ROOT, INSTR, extra_args=["--zzz"])
             assert with_extra == base + ["--zzz"], name
