@@ -33,4 +33,5 @@ class AgyEngine(AgentEngine):
 
     @property
     def supports_stdin(self) -> bool:
-        return True
+        # T-167: build_command uses gy -p <instr> --mode=accept-edits (one-shot prompt); no live evidence the process reads later stdin
+        return False

@@ -311,6 +311,13 @@ class ProcessManager:
             }
 
         try:
+            # Single framing owner (T-167): the backend strips trailing CR/LF
+            # and adds exactly one \n, so the frontend sends clean text and the
+            # wire always carries one final newline. Multiline input keeps its
+            # internal newlines. Empty input is refused.
+            text = text.rstrip("\r\n")
+            if not text.strip():
+                return {"ok": False, "error": "input is empty"}
             ap.process.stdin.write(text + "\n")
             ap.process.stdin.flush()
         except OSError as exc:

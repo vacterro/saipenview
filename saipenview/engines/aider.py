@@ -36,4 +36,5 @@ class AiderEngine(AgentEngine):
 
     @property
     def supports_stdin(self) -> bool:
-        return True
+        # T-167: build_command uses ider -m <instr> --yes-always (one-shot message); no live evidence the process reads later stdin
+        return False

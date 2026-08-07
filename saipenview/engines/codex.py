@@ -33,4 +33,5 @@ class CodexEngine(AgentEngine):
 
     @property
     def supports_stdin(self) -> bool:
-        return True
+        # T-167: build_command uses codex exec <instr> (one-shot headless); no live evidence the process reads later stdin
+        return False

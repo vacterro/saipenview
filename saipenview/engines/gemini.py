@@ -44,7 +44,8 @@ class GeminiEngine(AgentEngine):
 
     @property
     def supports_stdin(self) -> bool:
-        return True
+        # T-167: build_command uses gemini --prompt <instr> --yolo (one-shot headless); no live evidence the process reads later stdin
+        return False
 
     @property
     def default_env(self) -> dict[str, str] | None:

@@ -33,4 +33,5 @@ class ClineEngine(AgentEngine):
 
     @property
     def supports_stdin(self) -> bool:
-        return True
+        # T-167: build_command uses cline -y <instr> (one-shot); no live evidence the process reads later stdin
+        return False

@@ -48,7 +48,8 @@ class GenericCLIEngine(AgentEngine):
 
     @property
     def supports_stdin(self) -> bool:
-        return True
+        # T-167: launched as one shell command; whether it reads stdin is command-dependent, no generic evidence
+        return False
 
     def parse_event(self, line: str) -> AgentEvent | None:
         """No structured parsing -- everything is raw output."""

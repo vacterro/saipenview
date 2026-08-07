@@ -33,4 +33,5 @@ class GooseEngine(AgentEngine):
 
     @property
     def supports_stdin(self) -> bool:
-        return True
+        # T-167: build_command uses goose run -t <instr> (one-shot run); no live evidence the process reads later stdin
+        return False

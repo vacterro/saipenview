@@ -275,6 +275,7 @@ const LOCALE_EN = {
   "agent.send.label": "Send",
   "agent.send.title": "Send this text to the agent (Enter sends, Shift+Enter starts a new line)",
   "agent.chat.placeholder": "Reply to the agent — Enter sends, Shift+Enter = new line",
+  "agent.noStdin": "This engine is one-shot (headless): it reads no input after launch, so Send is not offered until stdin support is proven for it",
   "agent.shortcut.continue.title": "Send 'saipen continue' — resume the protocol from STATE.md",
   "agent.shortcut.hunt.title": "Send 'saipen hunt' — sweep the codebase for new problems",
   "agent.shortcut.clean.title": "Send 'saipen clean' — tidy the board and the repo",

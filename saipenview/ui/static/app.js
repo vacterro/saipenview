@@ -3269,6 +3269,12 @@ function renderAgentPanel(root, container) {
   if (!container) return;
   const status = agentStatusCache[root];
   const isRunning = status && status.status === "running";
+  // T-167: a one-shot engine reads no later stdin, so Send must not be
+  // offered for it. supports_stdin is a per-engine capability with evidence,
+  // never an assumption.
+  const runningEngineStdin = (status && status.engine)
+    ? (availableEnginesCache.find(e => e.name === status.engine) || {}).supports_stdin
+    : false;
 
   const switchedProject = currentAgentPanelRoot !== root;
   if (switchedProject) {
@@ -3361,7 +3367,8 @@ ${testBadgeHtml}
 
   let bottomHtml = "";
   if (isRunning) {
-    bottomHtml = `<div class="agent-chat-panel" style="padding:4px;">
+    if (runningEngineStdin) {
+      bottomHtml = `<div class="agent-chat-panel" style="padding:4px;">
       <div class="agent-chat-shortcuts" style="display:flex; gap:4px; margin-bottom:4px;">
         <button class="chat-shortcut-btn raised" data-cmd="saipen continue" style="font-size:10px; padding:2px 4px;" title="${escapeHtml(t("agent.shortcut.continue.title"))}">Continue</button>
         <button class="chat-shortcut-btn raised" data-cmd="saipen hunt" style="font-size:10px; padding:2px 4px;" title="${escapeHtml(t("agent.shortcut.hunt.title"))}">Hunt</button>
@@ -3372,6 +3379,13 @@ ${testBadgeHtml}
         <button id="agentSendBtn" data-root="${escapeHtml(root)}" style="color:var(--success)" title="${escapeHtml(t("agent.send.title"))}">${escapeHtml(t("agent.send.label"))}</button>
       </div>
     </div>`;
+    } else {
+      bottomHtml = `<div class="agent-chat-panel" style="padding:4px;">
+      <div style="font-size:10px; color:var(--textSecondary); background:var(--surfaceRaised); border:1px solid var(--borderHighlight); border-right-color:var(--borderDark); border-bottom-color:var(--borderDark); padding:2px 4px;">
+        ${escapeHtml(t("agent.noStdin"))}
+      </div>
+    </div>`;
+    }
   } else {
     const available = availableEnginesCache.filter(e => e.available);
     // Preselect the configured engine, but only when it is actually installed
@@ -3424,7 +3438,7 @@ ${testBadgeHtml}
     const sendInput = () => {
       const text = chatInput.value;
       if (!text.trim()) return;
-      window.pywebview.api.send_agent_input(root, text + "\n").then(res => {
+      window.pywebview.api.send_agent_input(root, text).then(res => {
         if (res.ok) {
           chatInput.value = "";
           showToast("Sent", "success");
@@ -3449,7 +3463,7 @@ ${testBadgeHtml}
       btn.addEventListener("click", (e) => {
         const cmd = e.target.getAttribute("data-cmd");
         if (cmd) {
-          window.pywebview.api.send_agent_input(root, cmd + "\n").then(res => {
+          window.pywebview.api.send_agent_input(root, cmd).then(res => {
             if (res.ok) showToast("Sent: " + cmd, "success");
             else showToast("Send failed: " + res.error, "error");
           });
