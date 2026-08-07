@@ -3588,6 +3588,10 @@ ${testBadgeHtml}
           <button id="agentHumanNoteBtn" data-root="${escapeHtml(root)}" style="font-size:10px; padding:2px 4px;" title="${escapeHtml(t("agent.note.title"))}">${escapeHtml(t("agent.note.label"))}</button>
         </div>
       </div>
+      <div class="agent-launch-row" style="margin-top:2px; align-items:center;">
+        <select id="agentHistorySelect" title="${escapeHtml(t("agent.history.title"))}" style="flex:1 1 auto; min-width:0;"></select>
+        <span style="font-size:9px; color:var(--textMuted); flex:0 0 auto;">${escapeHtml(t("agent.history.label"))}</span>
+      </div>
     </div>`;
   }
   bottomEl.innerHTML = bottomHtml;
@@ -3694,6 +3698,14 @@ ${testBadgeHtml}
         }
       });
     }
+
+    const historySelect = container.querySelector("#agentHistorySelect");
+    if (historySelect) {
+      renderAgentHistorySelect(root, historySelect);
+      historySelect.addEventListener("change", () => {
+        loadAgentRun(root, historySelect.value);
+      });
+    }
   }
 }
 
@@ -3731,7 +3743,13 @@ function isCurrentProjectPanel(root) {
   if (currentDetailRoot !== root) return false;
   const panel = document.getElementById("agentPanelContainer");
   if (!panel) return true;
-  return panel.dataset.root === root;
+  // T-169 + T-177: the data-root lives on the .agent-panel CHILD (built by
+  // renderAgentPanel), not on the container -- reading it off the container
+  // made this guard always-false in the real app, silently disabling the
+  // transcript restore and the history picker.
+  const agentPanel = panel.querySelector(".agent-panel");
+  if (!agentPanel) return true;
+  return agentPanel.dataset.root === root;
 }
 
 function restoreLastTranscript(root, container) {
@@ -3780,6 +3798,84 @@ function restoreLastTranscript(root, container) {
     agentRestoredRoots.add(root);
   }).catch(() => {
     // Transient failure: not marked, the next poll retries (T-169).
+  });
+}
+
+// T-177: browse past agent runs. The session store keeps up to 50 per project
+// but the panel only auto-restored the last one; this select lists them and
+// loading one renders its stored lines, guarded by the T-169 project-switch
+// check so a stale transcript can never land in another project's panel.
+function renderAgentHistorySelect(root, selectEl) {
+  if (!selectEl) return;
+  window.pywebview.api.get_agent_history(root, 20).then((runs) => {
+    if (!isCurrentProjectPanel(root)) return;
+    const previous = selectEl.value;
+    selectEl.innerHTML = "";
+    const list = runs || [];
+    if (!list.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = t("agent.history.empty");
+      selectEl.appendChild(opt);
+      selectEl.disabled = true;
+      return;
+    }
+    list.forEach((r) => {
+      const opt = document.createElement("option");
+      opt.value = r.run_id || "";
+      const when = r.started_at ? formatLocalTime(r.started_at, "utc") : "?";
+      opt.textContent = when + "  " + (r.engine_display || r.engine || "?") +
+        "  [" + (r.status || "?") + "]  " + (r.line_count || 0) + " " + t("agent.output.lines");
+      selectEl.appendChild(opt);
+    });
+    selectEl.disabled = false;
+    if (previous && [...selectEl.options].some((o) => o.value === previous)) {
+      selectEl.value = previous;
+    } else {
+      selectEl.selectedIndex = 0;
+    }
+  }).catch(() => {
+    if (!selectEl.isConnected) return;
+    selectEl.innerHTML = "";
+  });
+}
+
+function loadAgentRun(root, runId) {
+  if (!runId) return;
+  if (!isCurrentProjectPanel(root)) return;
+  window.pywebview.api.get_agent_transcript(runId).then((res) => {
+    if (!isCurrentProjectPanel(root)) return;
+    const linesContainer = document.getElementById("agentOutputLines");
+    if (!linesContainer) return;
+    linesContainer.innerHTML = "";
+    if (res && res.found) {
+      const head = document.createElement("div");
+      head.className = "agent-output-restored";
+      head.textContent = t("agent.restoredHistory", { count: res.total || 0 });
+      linesContainer.appendChild(head);
+      (res.lines || []).forEach((line) => {
+        const div = document.createElement("div");
+        div.className = "agent-output-line";
+        div.textContent = line;
+        linesContainer.appendChild(div);
+      });
+      const meta = document.getElementById("agentOutputMeta");
+      if (meta) meta.textContent = t("agent.output.lines") + ": " + (res.total || 0);
+      const panel = linesContainer.parentElement;
+      if (panel) panel.scrollTop = panel.scrollHeight;
+    } else {
+      const head = document.createElement("div");
+      head.className = "agent-output-restored";
+      head.textContent = t("agent.noTranscript");
+      linesContainer.appendChild(head);
+    }
+    // The explicit choice wins over the auto-restore on the next poll.
+    agentRestoredRoots.add(root);
+  }).catch(() => {
+    if (isCurrentProjectPanel(root)) {
+      const linesContainer = document.getElementById("agentOutputLines");
+      if (linesContainer) linesContainer.innerHTML = "";
+    }
   });
 }
 

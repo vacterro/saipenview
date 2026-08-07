@@ -285,4 +285,9 @@ const LOCALE_EN = {
   "agent.output.truncated": "transcript capped",
   "agent.output.title": "Live output from the agent process. Read-only.",
   "agent.noEngines": "No agent CLI found on PATH (Claude, Gemini, Codex, OpenCode, Aider, Cline, Goose, Agy). A generic CLI is selected as a fallback.",
+  "agent.history.title": "Past agent runs for this project -- select one to view its stored transcript",
+  "agent.history.label": "history",
+  "agent.history.empty": "no past runs",
+  "agent.restoredHistory": "— stored transcript, ${count} lines —",
+  "agent.noTranscript": "no stored transcript for this run",
 };

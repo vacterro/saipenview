@@ -37,7 +37,14 @@ const document = {{
       parentElement: {{ scrollTop: 0, scrollHeight: 100 }},
     }};
     if (id === "agentOutputMeta") return null;
-    if (id === "agentPanelContainer") return {{ dataset: {{ root: datasetRoot.value }} }};
+    // T-177: the container itself carries NO data-root; the .agent-panel
+    // child does. The stub must mirror the real DOM or the guard test is
+    // testing a different element than the app reads.
+    if (id === "agentPanelContainer") return {{
+      querySelector: (sel) => sel === ".agent-panel"
+        ? {{ dataset: {{ root: datasetRoot.value }} }}
+        : null,
+    }};
     return null;
   }},
   createElement: (tag) => ({{ __kind: tag, className: "", textContent: "", appendChild(){{}} }}),
