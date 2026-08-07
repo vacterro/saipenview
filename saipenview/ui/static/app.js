@@ -3149,12 +3149,14 @@ function renderStateAsHtml(text) {
   let body = text;
   let fmHtml = "";
   const fmMatch = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+  const KNOWN_FM = ["phase", "task", "next_action", "blocker", "agent", "updated"];
   if (fmMatch) {
     body = text.slice(fmMatch[0].length);
     const lines = fmMatch[1].split("\n").filter(l => l.trim());
     fmHtml = '<div class="reader-fm">' + lines.map(l => {
       const [k, ...v] = l.split(":");
-      return `<div class="reader-fm-row"><span class="reader-fm-key">${escapeHtml(k.trim())}</span><span class="reader-fm-val">${escapeHtml(v.join(":").trim())}</span></div>`;
+      const known = KNOWN_FM.includes(k.trim()) ? " reader-fm-key-known" : "";
+      return `<div class="reader-fm-row"><span class="reader-fm-key${known}">${escapeHtml(k.trim())}</span><span class="reader-fm-val">${escapeHtml(v.join(":").trim())}</span></div>`;
     }).join("") + '</div>';
   }
   const bodyHtml = '<pre class="reader-raw">' + escapeHtml(body.trim()) + '</pre>';
@@ -3162,6 +3164,7 @@ function renderStateAsHtml(text) {
 }
 
 function renderBoardAsHtml(text) {
+  const PIPE_SENTINEL = "\u0000";
   const sections = text.split(/^##\s+/m);
   return sections.map(section => {
     const lines = section.split("\n").filter(l => l.trim());
@@ -3174,8 +3177,20 @@ function renderBoardAsHtml(text) {
       <div class="reader-section-title">${escapeHtml(heading)}</div>
       ${items.map(l => {
         const checked = l.includes("[x]") ? "reader-done" : l.includes("[/]") ? "reader-doing" : "";
-        const text = l.replace(/^\s*-\s*\[[ x/]\]\s*/, "").replace(/\s*\|.*$/, "");
-        return `<div class="reader-ticket ${checked}"><span class="reader-bullet">${l.includes("[x]") ? "✓" : l.includes("[/]") ? "◷" : "○"}</span>${escapeHtml(text)}</div>`;
+        const rest = l.replace(/^\s*-\s*\[[ x/]\]\s*/, "").replace(/\\\|/g, PIPE_SENTINEL);
+        // T-125: keep the `| field: value` tail (verify/blocker/owner/...) and
+        // render it as a muted sub-line instead of throwing it away -- a
+        // reviewer reading the board wants to SEE the verify evidence.
+        const chunks = rest.split(/\s*\|\s*(?=[a-z_]+:\s)/);
+        const desc = chunks[0].replace(new RegExp(PIPE_SENTINEL, "g"), "|").trim();
+        const fields = chunks.slice(1).map(ch => {
+          const eq = ch.indexOf(":");
+          return { k: ch.slice(0, eq).trim(), v: ch.slice(eq + 1).trim().replace(new RegExp(PIPE_SENTINEL, "g"), "|") };
+        });
+        const fieldHtml = fields.length
+          ? `<div class="reader-ticket-fields">${fields.map(f => `<span class="reader-ticket-field"><b>${escapeHtml(f.k)}:</b> ${escapeHtml(f.v)}</span>`).join(" ")}</div>`
+          : "";
+        return `<div class="reader-ticket ${checked}"><span class="reader-bullet">${l.includes("[x]") ? "✓" : l.includes("[/]") ? "◷" : "○"}</span><span>${escapeHtml(desc)}</span></div>${fieldHtml}`;
       }).join("")}
     </div>`;
   }).join("");

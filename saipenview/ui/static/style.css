@@ -484,6 +484,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .file-viewer-rendered .reader-fm { background: var(--surfaceSoft); border: 1px solid var(--borderMuted); padding: 8px 12px; margin-bottom: 8px; }
 .file-viewer-rendered .reader-fm-row { display: flex; gap: 8px; padding: 2px 0; font-size: 11px; }
 .file-viewer-rendered .reader-fm-key { color: var(--borderHighlight); font-weight: bold; min-width: 100px; flex-shrink: 0; }
+.file-viewer-rendered .reader-fm-key-known { color: var(--goldStar); }
 .file-viewer-rendered .reader-fm-val { color: var(--textPrimary); word-break: break-all; }
 .file-viewer-rendered .reader-raw { background: var(--surface); border: 1px solid var(--borderMuted); padding: 8px; font-family: monospace; font-size: 11px; color: var(--textPrimary); white-space: pre-wrap; overflow-x: auto; }
 .file-viewer-rendered .reader-section { margin-bottom: 8px; }
@@ -492,6 +493,8 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .file-viewer-rendered .reader-ticket.reader-done { color: var(--textMuted); text-decoration: line-through; }
 .file-viewer-rendered .reader-ticket.reader-doing { color: var(--borderHighlight); }
 .file-viewer-rendered .reader-bullet { font-size: 12px; width: 14px; text-align: center; flex-shrink: 0; }
+.file-viewer-rendered .reader-ticket-fields { font-size: 10px; color: var(--textMuted); padding: 0 0 2px 24px; }
+.file-viewer-rendered .reader-ticket-field { margin-right: 10px; display: inline-block; }
 .file-viewer-rendered .reader-empty { font-size: 10px; color: var(--textMuted); font-style: italic; padding: 4px 8px; }
 .file-viewer-rendered .reader-log { }
 .file-viewer-rendered .reader-log-line { padding: 1px 0; font-size: 11px; display: flex; gap: 6px; }
