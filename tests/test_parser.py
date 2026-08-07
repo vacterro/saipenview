@@ -306,7 +306,9 @@ class TestMoveTicket:
         result = move_ticket(saipen_project_with_board, "T-001", "start")
         assert result is True
 
-        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
+        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(
+            encoding="utf-8"
+        )
         assert "[/] T-001" in text  # Now in-progress
         assert "DOING" in text
 
@@ -317,7 +319,9 @@ class TestMoveTicket:
         result = move_ticket(saipen_project_with_board, "T-003", "done")
         assert result is True
 
-        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
+        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(
+            encoding="utf-8"
+        )
         assert "[x] T-003" in text
 
     def test_reopen_ticket(self, saipen_project_with_board):
@@ -327,7 +331,9 @@ class TestMoveTicket:
         result = move_ticket(saipen_project_with_board, "T-004", "reopen")
         assert result is True
 
-        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
+        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(
+            encoding="utf-8"
+        )
         assert "[ ] T-004" in text
 
     def test_unknown_action_returns_false(self, saipen_project_with_board):
@@ -381,7 +387,9 @@ class TestCollectOutbox:
         assert result["ticket_id"].startswith("T-")
 
         # Verify ticket was added to BOARD.md
-        board = (saipen_project_with_subs / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
+        board = (saipen_project_with_subs / ".saipen" / "BOARD.md").read_text(
+            encoding="utf-8"
+        )
         assert result["ticket_id"] in board
 
     def test_collect_non_critical_appends_inbox(self, saipen_project_with_subs):
@@ -398,7 +406,12 @@ class TestCollectOutbox:
         collect_outbox_entry(saipen_project_with_subs, "saihunt", "HUNT-001")
         outbox_path = (
             saipen_project_with_subs
-            / ".saipen" / "extensions" / "subs" / "saihunt" / "kitchen" / "OUTBOX.md"
+            / ".saipen"
+            / "extensions"
+            / "subs"
+            / "saihunt"
+            / "kitchen"
+            / "OUTBOX.md"
         )
         text = outbox_path.read_text(encoding="utf-8")
         assert "**status:** reviewed" in text
@@ -406,7 +419,9 @@ class TestCollectOutbox:
     def test_collect_nonexistent_entry(self, saipen_project_with_subs):
         from saipenview.parser import collect_outbox_entry
 
-        result = collect_outbox_entry(saipen_project_with_subs, "saihunt", "NONEXISTENT")
+        result = collect_outbox_entry(
+            saipen_project_with_subs, "saihunt", "NONEXISTENT"
+        )
         assert result["ok"] is False
         assert "not found" in result["message"].lower()
 
@@ -415,7 +430,9 @@ class TestCollectOutbox:
         from saipenview.parser import collect_outbox_entry
 
         collect_outbox_entry(saipen_project_with_subs, "saihunt", "HUNT-001")
-        log = (saipen_project_with_subs / ".saipen" / "LOG.md").read_text(encoding="utf-8")
+        log = (saipen_project_with_subs / ".saipen" / "LOG.md").read_text(
+            encoding="utf-8"
+        )
         assert "RUN:" in log
         assert "saihunt" in log
 
@@ -423,7 +440,9 @@ class TestCollectOutbox:
         """Non-critical ready entry should go to _shared/inbox.md, not BOARD.md."""
         from saipenview.parser import collect_outbox_entry
 
-        result = collect_outbox_entry(saipen_project_with_subs_noncritical, "saihunt", "HUNT-002")
+        result = collect_outbox_entry(
+            saipen_project_with_subs_noncritical, "saihunt", "HUNT-002"
+        )
         assert result["ok"] is True
         assert result["ticket_id"] is None  # No ticket created for non-critical
         assert "inbox" in result["message"]
@@ -431,7 +450,11 @@ class TestCollectOutbox:
         # Verify inbox exists with our entry
         inbox = (
             saipen_project_with_subs_noncritical
-            / ".saipen" / "extensions" / "subs" / "_shared" / "inbox.md"
+            / ".saipen"
+            / "extensions"
+            / "subs"
+            / "_shared"
+            / "inbox.md"
         )
         assert inbox.is_file()
         text = inbox.read_text(encoding="utf-8")
@@ -443,7 +466,9 @@ class TestCollectOutbox:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert result["ok"] is False
         assert "no subs" in result["message"]
@@ -453,8 +478,12 @@ class TestCollectOutbox:
         from saipenview.parser import collect_outbox_entry
 
         root = tmp_path / "proj"
-        (root / ".saipen" / "extensions" / "subs" / "saihunt" / "kitchen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "extensions" / "subs" / "saihunt" / "kitchen").mkdir(
+            parents=True
+        )
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert result["ok"] is False
         assert "no OUTBOX" in result["message"]
@@ -465,11 +494,16 @@ class TestCollectOutbox:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: BUILD\n---\n", encoding="utf-8")
-        (root / ".saipen" / "BOARD.md").write_text(
-            "# BOARD\n\n## TODO\n- [ ] T-001 | existing\n\n## DOING\n\n## DONE\n\n", encoding="utf-8"
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: BUILD\n---\n", encoding="utf-8"
         )
-        (root / ".saipen" / "LOG.md").write_text("# LOG\n\n- 2026-01-01 test entry\n", encoding="utf-8")
+        (root / ".saipen" / "BOARD.md").write_text(
+            "# BOARD\n\n## TODO\n- [ ] T-001 | existing\n\n## DOING\n\n## DONE\n\n",
+            encoding="utf-8",
+        )
+        (root / ".saipen" / "LOG.md").write_text(
+            "# LOG\n\n- 2026-01-01 test entry\n", encoding="utf-8"
+        )
 
         # Create sub with OUTBOX — critical ready entry
         outbox_dir = root / ".saipen" / "extensions" / "subs" / "saihunt" / "kitchen"
@@ -500,12 +534,15 @@ class TestCollectOutbox:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: BUILD\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: BUILD\n---\n", encoding="utf-8"
+        )
 
         outbox_dir = root / ".saipen" / "extensions" / "subs" / "saihunt" / "kitchen"
         outbox_dir.mkdir(parents=True)
         (outbox_dir / "OUTBOX.md").write_text(
-            "## HUNT-001: test\n- **status:** ready\n- **critical:** true\n", encoding="utf-8"
+            "## HUNT-001: test\n- **status:** ready\n- **critical:** true\n",
+            encoding="utf-8",
         )
 
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
@@ -518,13 +555,18 @@ class TestCollectOutbox:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: BUILD\n---\n", encoding="utf-8")
-        (root / ".saipen" / "BOARD.md").write_text("# BOARD\n\n## TODO\n\n## DOING\n\n## DONE\n\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: BUILD\n---\n", encoding="utf-8"
+        )
+        (root / ".saipen" / "BOARD.md").write_text(
+            "# BOARD\n\n## TODO\n\n## DOING\n\n## DONE\n\n", encoding="utf-8"
+        )
 
         outbox_dir = root / ".saipen" / "extensions" / "subs" / "saihunt" / "kitchen"
         outbox_dir.mkdir(parents=True)
         (outbox_dir / "OUTBOX.md").write_text(
-            "## HUNT-001: done\n- **status:** reviewed\n- **critical:** true\n", encoding="utf-8"
+            "## HUNT-001: done\n- **status:** reviewed\n- **critical:** true\n",
+            encoding="utf-8",
         )
 
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
@@ -537,8 +579,12 @@ class TestCollectOutbox:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: BUILD\n---\n", encoding="utf-8")
-        (root / ".saipen" / "BOARD.md").write_text("# BOARD\n\n## TODO\n\n## DOING\n\n## DONE\n\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: BUILD\n---\n", encoding="utf-8"
+        )
+        (root / ".saipen" / "BOARD.md").write_text(
+            "# BOARD\n\n## TODO\n\n## DOING\n\n## DONE\n\n", encoding="utf-8"
+        )
 
         outbox_dir = root / ".saipen" / "extensions" / "subs" / "saihunt" / "kitchen"
         outbox_dir.mkdir(parents=True)
@@ -585,7 +631,9 @@ class TestLoadSubs:
         root = tmp_path / "no-subs"
         root.mkdir()
         (root / ".saipen").mkdir()
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         assert load_subs(root) == []
 
     def test_loads_subs_from_dir_scan_when_no_manifest(self, tmp_path):
@@ -594,7 +642,9 @@ class TestLoadSubs:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         # Create subs dir with STATE.md but WITHOUT MANIFEST.md
         # Note: load_subs checks entry/STATE.md (not entry/.saipen/STATE.md)
         subs_dir = root / ".saipen" / "extensions" / "subs"
@@ -618,7 +668,9 @@ class TestLoadSubs:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         subs_dir = root / ".saipen" / "extensions" / "subs"
         subs_dir.mkdir(parents=True)
         (subs_dir / "TEMPLATE").mkdir()
@@ -643,7 +695,9 @@ class TestLoadSubs:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         # Create subs at root/extensions/subs (not .saipen/...)
         (root / "extensions" / "subs" / "mysub").mkdir(parents=True)
         (root / "extensions" / "subs" / "mysub" / "STATE.md").write_text(
@@ -660,7 +714,9 @@ class TestLoadSubs:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         subs_dir = root / ".saipen" / "extensions" / "subs"
         subs_dir.mkdir(parents=True)
         # Write a corrupt MANIFEST.md
@@ -697,7 +753,9 @@ class TestProjectStatus:
     def test_name_from_root(self):
         from saipenview.parser import Board, ProjectStatus
 
-        p = ProjectStatus(root=Path("/projects/my-app"), state={"phase": "DONE"}, board=Board())
+        p = ProjectStatus(
+            root=Path("/projects/my-app"), state={"phase": "DONE"}, board=Board()
+        )
         assert p.name == "my-app"
 
     def test_phase_from_state(self):
@@ -787,12 +845,17 @@ class TestLoadProject:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: BUILD\n---\n", encoding="utf-8")
-        (root / ".saipen" / "BOARD.md").write_text("# BOARD\n\n## TODO\n\n## DONE\n\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: BUILD\n---\n", encoding="utf-8"
+        )
+        (root / ".saipen" / "BOARD.md").write_text(
+            "# BOARD\n\n## TODO\n\n## DONE\n\n", encoding="utf-8"
+        )
 
         # First call to os.stat (for is_file) passes, second call (for mtime) fails
         real_stat = os.stat
         _calls = {}
+
         def _mock_stat(path, *args, **kwargs):
             key = str(path)
             _calls[key] = _calls.get(key, 0) + 1
@@ -828,7 +891,9 @@ class TestLoadTranslate:
         (root / ".saipen" / "saitranslate" / "STATE.md").write_text(
             "---\nphase: TRANSLATE\n---\n", encoding="utf-8"
         )
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         t = load_translate(root)
         assert t is not None
         assert t.name == "saitranslate"
@@ -860,7 +925,10 @@ class TestCheckSubsStaleness:
         # Delete a local file
         local_file = (
             saipen_project_with_staleness
-            / ".saipen" / "extensions" / "subs" / "PROTOCOL.md"
+            / ".saipen"
+            / "extensions"
+            / "subs"
+            / "PROTOCOL.md"
         )
         local_file.unlink()
 
@@ -905,6 +973,7 @@ class TestCheckSubsStaleness:
 
         # Mock Path.open to raise on LOG.md
         original_open = Path.open
+
         def _mock_open(self_obj, *args, **kwargs):
             if "LOG.md" in str(self_obj):
                 raise OSError("access denied")
@@ -931,7 +1000,9 @@ class TestCheckSubsStaleness:
 
         root = tmp_path / "proj"
         (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (root / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
         fm = {"saipen_home": str(tmp_path / "saipen-home")}
         stale, details = check_subs_staleness(root, fm)
         assert stale is False
@@ -944,7 +1015,10 @@ class TestCheckSubsStaleness:
         # Touch a local file to change its mtime
         local_file = (
             saipen_project_with_staleness
-            / ".saipen" / "extensions" / "subs" / "PROTOCOL.md"
+            / ".saipen"
+            / "extensions"
+            / "subs"
+            / "PROTOCOL.md"
         )
         # Write different content to change size
         local_file.write_text("modified\n", encoding="utf-8")
@@ -958,7 +1032,9 @@ class TestCheckSubsStaleness:
         """If canonical file is missing locally, it's stale."""
         from saipenview.parser import check_subs_staleness
 
-        canon_root = saipen_project_with_staleness.parent / "saipen-home" / "extensions" / "subs"
+        canon_root = (
+            saipen_project_with_staleness.parent / "saipen-home" / "extensions" / "subs"
+        )
         # Delete a canonical file
         canon_file = canon_root / "PROTOCOL.md"
         if canon_file.exists():
@@ -969,7 +1045,10 @@ class TestCheckSubsStaleness:
         stale, details = check_subs_staleness(saipen_project_with_staleness, fm)
         local_file = (
             saipen_project_with_staleness
-            / ".saipen" / "extensions" / "subs" / "PROTOCOL.md"
+            / ".saipen"
+            / "extensions"
+            / "subs"
+            / "PROTOCOL.md"
         )
         if local_file.exists() and not canon_file.exists():
             # Canon missing, local present

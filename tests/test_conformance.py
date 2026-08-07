@@ -116,7 +116,9 @@ class TestStateShape:
         assert "state.missing" in rules(check_project(tmp_path, {}))
 
     def test_no_frontmatter(self, project):
-        (project / ".saipen" / "STATE.md").write_text("nothing here\n", encoding="utf-8")
+        (project / ".saipen" / "STATE.md").write_text(
+            "nothing here\n", encoding="utf-8"
+        )
         assert "state.frontmatter" in rules(grade(project))
 
     @pytest.mark.parametrize(
@@ -168,9 +170,7 @@ class TestTransitions:
 
     def test_from_any_phase_command_is_not_a_transition(self, project):
         # VALIDATE is entered by command from anywhere, so no FROM row applies.
-        set_state(
-            project, phase="VALIDATE", transition_from="REVIEW", task="none"
-        )
+        set_state(project, phase="VALIDATE", transition_from="REVIEW", task="none")
         assert "state.transition.illegal" not in rules(grade(project))
 
     def test_ship_is_not_from_any_phase(self, project):
@@ -338,9 +338,7 @@ class TestBoard:
     @pytest.mark.parametrize("heading", ["DOING", "TODO", "DONE", "BLOCKED"])
     def test_each_heading_is_required(self, project, heading):
         path = project / ".saipen" / "BOARD.md"
-        path.write_text(
-            read_doc(path).replace(f"## {heading}\n", ""), encoding="utf-8"
-        )
+        path.write_text(read_doc(path).replace(f"## {heading}\n", ""), encoding="utf-8")
         assert "board.heading.missing" in rules(grade(project))
 
     def test_duplicate_heading(self, project):
@@ -398,7 +396,10 @@ class TestBoard:
         path = project / ".saipen" / "BOARD.md"
         path.write_text(
             read_doc(path)
-            .replace("- [/] T-001 wire the parser | owner: core", "- [/] T-001 wire the parser | needs: T-002")
+            .replace(
+                "- [/] T-001 wire the parser | owner: core",
+                "- [/] T-001 wire the parser | needs: T-002",
+            )
             .replace("needs: T-001", "needs: T-001"),
             encoding="utf-8",
         )
@@ -415,9 +416,9 @@ class TestBoard:
     def test_escaped_pipe_is_not_a_field(self, project):
         path = project / ".saipen" / "BOARD.md"
         path.write_text(
-            read_doc(path).replace("| owner: core", "").replace(
-                "T-001 wire the parser", r"T-001 wire the parser a \| b"
-            ),
+            read_doc(path)
+            .replace("| owner: core", "")
+            .replace("T-001 wire the parser", r"T-001 wire the parser a \| b"),
             encoding="utf-8",
         )
         assert "board.ticket.field" not in rules(grade(project))

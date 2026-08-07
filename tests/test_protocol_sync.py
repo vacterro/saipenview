@@ -69,7 +69,10 @@ def _literal(src: str, name: str):
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == name:
-                    if isinstance(node.value, ast.Call) and getattr(node.value.func, "id", None) == "frozenset":
+                    if (
+                        isinstance(node.value, ast.Call)
+                        and getattr(node.value.func, "id", None) == "frozenset"
+                    ):
                         return ast.literal_eval(node.value.args[0])
                     return ast.literal_eval(node.value)
     return None
@@ -155,9 +158,7 @@ class TestAgainstValidator:
     def test_board_headings(self, validator_src):
         canon = _nested_literal(validator_src, "REQUIRED_HEADINGS")
         assert canon is not None
-        assert set(protocol.BOARD_HEADINGS) == {
-            h.removeprefix("## ") for h in canon
-        }
+        assert set(protocol.BOARD_HEADINGS) == {h.removeprefix("## ") for h in canon}
 
 
 class TestBaselineDeclared:

@@ -955,7 +955,9 @@ class TestBrowseFolderQuarantine:
             "a missing root was dropped from scan_roots by browse_folder -- "
             "the quarantine invariant T-138 built requires it to stay"
         )
-        assert any("picked" in r for r in roots), "the newly picked folder was not added"
+        assert any("picked" in r for r in roots), (
+            "the newly picked folder was not added"
+        )
 
     def test_single_worktree_scan_in_rescan(self, api, api_patches):
         with (

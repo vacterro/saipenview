@@ -143,9 +143,12 @@ class TestLimits:
         store.finish(rec.run_id, "done", 0)
         size = (store._dir / f"{rec.run_id}.log").stat().st_size
         assert size < MAX_TRANSCRIPT_BYTES * 1.05
-        assert json.loads(
-            (store._dir / f"{rec.run_id}.json").read_text(encoding="utf-8")
-        )["truncated"] is True
+        assert (
+            json.loads((store._dir / f"{rec.run_id}.json").read_text(encoding="utf-8"))[
+                "truncated"
+            ]
+            is True
+        )
 
     def test_transcript_tail_is_capped_on_read(self, store):
         rec = store.start(ROOT, "codex", "Codex", "go")
@@ -188,4 +191,8 @@ class TestLimits:
 class TestUnicode:
     def test_non_ascii_output_round_trips(self, store):
         rec = _run(store, lines=("тест — ok", "日本語", "emoji 🤖"))
-        assert store.transcript(rec.run_id)["lines"] == ["тест — ok", "日本語", "emoji 🤖"]
+        assert store.transcript(rec.run_id)["lines"] == [
+            "тест — ok",
+            "日本語",
+            "emoji 🤖",
+        ]

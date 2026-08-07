@@ -68,8 +68,7 @@ class TestLayoutIndependence:
         for combo in ("ctrl+q", "ctrl+alt+x", "alt+f14", "ctrl+shift+alt+q"):
             ours = {frozenset(c) for c in _combos(combo)}
             theirs = {
-                frozenset(c)
-                for c in keyboard.parse_hotkey_combinations(combo)[0]
+                frozenset(c) for c in keyboard.parse_hotkey_combinations(combo)[0]
             }
             assert ours <= theirs, combo
             assert ours, combo
@@ -170,7 +169,9 @@ class TestHotkeyListener:
         from saipenview.hotkey import HotkeyListener
 
         events = []
-        listener = HotkeyListener(on_toggle=lambda: events.append("toggle"), hotkeys=["ctrl+alt+x"])
+        listener = HotkeyListener(
+            on_toggle=lambda: events.append("toggle"), hotkeys=["ctrl+alt+x"]
+        )
         listener.start()
         listener.stop()
         # No assertion on events — hotkey won't fire without actual keypress
@@ -194,7 +195,9 @@ class TestHotkeyListener:
         """Listener can accept multiple hotkey combos."""
         from saipenview.hotkey import HotkeyListener
 
-        listener = HotkeyListener(on_toggle=lambda: None, hotkeys=["ctrl+alt+x", "alt+f15"])
+        listener = HotkeyListener(
+            on_toggle=lambda: None, hotkeys=["ctrl+alt+x", "alt+f15"]
+        )
         assert listener._hotkeys == ["ctrl+alt+x", "alt+f15"]
         listener.start()
         listener.stop()

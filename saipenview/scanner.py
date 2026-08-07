@@ -255,7 +255,6 @@ def _walk_with_depth_limit(
                 # catches _TEMP_/pytest-of-/scratch nests at yield time.
 
 
-
 def find_saipen_roots(
     scan_roots: list[str],
     max_depth: int = MAX_SCAN_DEPTH,

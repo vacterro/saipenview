@@ -149,10 +149,9 @@ class TestSingleInstanceGuard:
             if sock:
                 sock.close()
             import time
+
             time.sleep(0.2)
             # Thread should have exited without error
             assert guard._thread is None or not guard._thread.is_alive()
         finally:
             guard.stop()
-
-

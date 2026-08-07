@@ -31,7 +31,9 @@ class TestWalkWithDepthLimit:
         # Create a project structure
         proj = tmp_path / "my-project"
         (proj / ".saipen").mkdir(parents=True)
-        (proj / ".saipen" / "STATE.md").write_text("---\nphase: DONE\n---\n", encoding="utf-8")
+        (proj / ".saipen" / "STATE.md").write_text(
+            "---\nphase: DONE\n---\n", encoding="utf-8"
+        )
 
         results = list(_walk_with_depth_limit(tmp_path, max_depth=6, delay=0))
         assert len(results) == 1
@@ -42,9 +44,9 @@ class TestWalkWithDepthLimit:
 
         # Create a project inside node_modules — should be excluded
         (tmp_path / "node_modules" / "fake-project" / ".saipen").mkdir(parents=True)
-        (tmp_path / "node_modules" / "fake-project" / ".saipen" / "STATE.md").write_text(
-            "---\nphase: DONE\n---\n", encoding="utf-8"
-        )
+        (
+            tmp_path / "node_modules" / "fake-project" / ".saipen" / "STATE.md"
+        ).write_text("---\nphase: DONE\n---\n", encoding="utf-8")
         results = list(_walk_with_depth_limit(tmp_path, max_depth=6, delay=0))
         assert len(results) == 0
 
@@ -65,7 +67,9 @@ class TestWalkWithDepthLimit:
         # rel parts = ('a', 'b', 'c', 'project') → depth 4
         deep = tmp_path / "a" / "b" / "c" / "project"
         (deep / ".saipen").mkdir(parents=True)
-        (deep / ".saipen" / "STATE.md").write_text("---\nphase: DONE\n---\n", encoding="utf-8")
+        (deep / ".saipen" / "STATE.md").write_text(
+            "---\nphase: DONE\n---\n", encoding="utf-8"
+        )
 
         results = list(_walk_with_depth_limit(tmp_path, max_depth=2, delay=0))
         assert len(results) == 0  # Too shallow
@@ -82,11 +86,15 @@ class TestWalkWithDepthLimit:
 
         outer = tmp_path / "outer-project"
         (outer / ".saipen").mkdir(parents=True)
-        (outer / ".saipen" / "STATE.md").write_text("---\nphase: DONE\n---\n", encoding="utf-8")
+        (outer / ".saipen" / "STATE.md").write_text(
+            "---\nphase: DONE\n---\n", encoding="utf-8"
+        )
 
         # Nested project inside the first -- SHOULD be found
         (outer / "nested" / ".saipen").mkdir(parents=True)
-        (outer / "nested" / ".saipen" / "STATE.md").write_text("---\nphase: INIT\n---\n", encoding="utf-8")
+        (outer / "nested" / ".saipen" / "STATE.md").write_text(
+            "---\nphase: INIT\n---\n", encoding="utf-8"
+        )
 
         # A test-fixture-style nest below a project root must stay hidden
         (outer / "tests" / "scenarios" / "fix" / ".saipen").mkdir(parents=True)
@@ -105,7 +113,11 @@ class TestWalkWithDepthLimit:
         (tmp_path / "custom_exclude" / ".saipen" / "STATE.md").write_text(
             "---\nphase: DONE\n---\n", encoding="utf-8"
         )
-        results = list(_walk_with_depth_limit(tmp_path, max_depth=6, delay=0, extra_excludes={"custom_exclude"}))
+        results = list(
+            _walk_with_depth_limit(
+                tmp_path, max_depth=6, delay=0, extra_excludes={"custom_exclude"}
+            )
+        )
         assert len(results) == 0
 
 
@@ -116,7 +128,9 @@ class TestFindLinkedWorktrees:
         # Create a directory with .git as a FILE (worktree), not a dir
         wt = tmp_path / "worktree-project"
         wt.mkdir(parents=True)
-        (wt / ".git").write_text("gitdir: /main/.git/worktrees/worktree-project\n", encoding="utf-8")
+        (wt / ".git").write_text(
+            "gitdir: /main/.git/worktrees/worktree-project\n", encoding="utf-8"
+        )
 
         results = find_linked_worktrees([str(tmp_path)], max_depth=3, delay=0)
         assert len(results) == 1
@@ -129,9 +143,13 @@ class TestFindLinkedWorktrees:
 
         wt = tmp_path / "project-with-saipen"
         wt.mkdir(parents=True)
-        (wt / ".git").write_text("gitdir: /main/.git/worktrees/project\n", encoding="utf-8")
+        (wt / ".git").write_text(
+            "gitdir: /main/.git/worktrees/project\n", encoding="utf-8"
+        )
         (wt / ".saipen").mkdir()
-        (wt / ".saipen" / "STATE.md").write_text("---\nphase: DONE\n---\n", encoding="utf-8")
+        (wt / ".saipen" / "STATE.md").write_text(
+            "---\nphase: DONE\n---\n", encoding="utf-8"
+        )
 
         results = find_linked_worktrees([str(tmp_path)], max_depth=3, delay=0)
         assert len(results) == 0
@@ -225,8 +243,12 @@ class TestScan:
 
         proj = tmp_path / "real-project"
         (proj / ".saipen").mkdir(parents=True)
-        (proj / ".saipen" / "STATE.md").write_text("---\nphase: BUILD\n---\n", encoding="utf-8")
-        (proj / ".saipen" / "BOARD.md").write_text("# BOARD\n\n## TODO\n\n## DONE\n\n", encoding="utf-8")
+        (proj / ".saipen" / "STATE.md").write_text(
+            "---\nphase: BUILD\n---\n", encoding="utf-8"
+        )
+        (proj / ".saipen" / "BOARD.md").write_text(
+            "# BOARD\n\n## TODO\n\n## DONE\n\n", encoding="utf-8"
+        )
         (proj / ".saipen" / "LOG.md").write_text("# LOG\n\n", encoding="utf-8")
 
         results = scan(scan_roots=[str(tmp_path)], max_depth=3, delay=0)
@@ -241,7 +263,9 @@ class TestScan:
         monkeypatch.setattr("saipenview.scanner._is_garbage_root", lambda root: False)
         proj = tmp_path / "dup-root"
         (proj / ".saipen").mkdir(parents=True)
-        (proj / ".saipen" / "STATE.md").write_text("---\nphase: DONE\n---\n", encoding="utf-8")
+        (proj / ".saipen" / "STATE.md").write_text(
+            "---\nphase: DONE\n---\n", encoding="utf-8"
+        )
 
         # Only on Windows are these two spellings the same path.
         path_str = str(tmp_path)

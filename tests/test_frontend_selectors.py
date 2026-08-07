@@ -20,8 +20,9 @@ from pathlib import Path
 
 import pytest
 
-APP_JS = (Path(__file__).resolve().parent.parent
-          / "saipenview" / "ui" / "static" / "app.js")
+APP_JS = (
+    Path(__file__).resolve().parent.parent / "saipenview" / "ui" / "static" / "app.js"
+)
 
 
 def _strip_comments(source: str) -> str:
@@ -33,8 +34,9 @@ def _strip_comments(source: str) -> str:
     than on the bug. Crude by design -- it does not parse strings or regex
     literals -- which is fine for greps that only ever look at code shape.
     """
-    without_block = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"),
-                           source, flags=re.DOTALL)
+    without_block = re.sub(
+        r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), source, flags=re.DOTALL
+    )
     return re.sub(r"^\s*//.*$", "", without_block, flags=re.MULTILINE)
 
 
@@ -57,8 +59,9 @@ def test_no_selector_is_built_from_a_project_root(app_js: str) -> None:
         arg = match.group(1)
         # Only an INTERPOLATED root is the bug. A literal class name that
         # happens to contain the word -- `.remove-root` -- is not.
-        interpolated = (re.search(r"\$\{[^}]*\broot\b", arg)
-                        or re.search(r"\+\s*(?:escapeHtml\(\s*)?root\b", arg))
+        interpolated = re.search(r"\$\{[^}]*\broot\b", arg) or re.search(
+            r"\+\s*(?:escapeHtml\(\s*)?root\b", arg
+        )
         if interpolated:
             line = app_js[: match.start()].count("\n") + 1
             offenders.append(f"app.js:{line}: {arg.strip()[:70]}")
@@ -77,9 +80,14 @@ def test_agent_panel_ids_are_static(app_js: str) -> None:
     then searched for the still-escaped string. Identical for most paths, wrong
     for any path containing `&`.
     """
-    for element_id in ["agentControlTop", "agentControlBottom",
-                       "agentOutputLines", "agentOutputMeta",
-                       "agentOutputPanel", "agentSubtitle"]:
+    for element_id in [
+        "agentControlTop",
+        "agentControlBottom",
+        "agentOutputLines",
+        "agentOutputMeta",
+        "agentOutputPanel",
+        "agentSubtitle",
+    ]:
         assert f'id="{element_id}"' in app_js, f"{element_id} is no longer a static id"
         assert f'id="{element_id}-' not in app_js, (
             f"{element_id} is keyed on something again"
@@ -94,6 +102,6 @@ def test_the_panel_still_knows_which_project_it_is_showing(app_js: str) -> None:
     """
     panel = re.search(r'<div class="agent-panel[^>]*>', app_js)
     assert panel, "the agent panel skeleton is gone"
-    assert 'data-root=' in panel.group(0), (
+    assert "data-root=" in panel.group(0), (
         "the panel no longer records which project it is showing"
     )

@@ -288,9 +288,7 @@ def _render_untracked(
         text = data.decode("utf-8", errors="replace")
         lines = text.splitlines()
         if truncated:
-            lines.append(
-                f"... ({cap_bytes} bytes shown, file larger -- truncated)"
-            )
+            lines.append(f"... ({cap_bytes} bytes shown, file larger -- truncated)")
         shown = lines[:cap_lines]
         if len(lines) > cap_lines:
             shown.append(f"... ({len(lines) - cap_lines} more lines not shown)")

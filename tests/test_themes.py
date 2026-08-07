@@ -34,8 +34,10 @@ def _declared_in_root() -> dict[str, str]:
     # Comments first: the `:root` block carries long explanations that contain
     # colons and semicolons, and a naive scan reads prose as a declaration.
     block = re.sub(r"/\*.*?\*/", "", _root_block(), flags=re.DOTALL)
-    return {name: value.strip()
-            for name, value in re.findall(r"--([\w-]+)\s*:\s*([^;]+);", block)}
+    return {
+        name: value.strip()
+        for name, value in re.findall(r"--([\w-]+)\s*:\s*([^;]+);", block)
+    }
 
 
 def test_all_sixteen_palettes_load() -> None:
@@ -48,9 +50,22 @@ def test_all_sixteen_palettes_load() -> None:
     listed = themes.list_themes()
     assert len(listed) == 16, [t["slug"] for t in listed]
     assert {t["slug"] for t in listed} == {
-        "antigravity", "claudecode", "codenomad", "custom", "dracula",
-        "fpdefault", "freebuff", "golden", "goldendefault", "goldenvintage",
-        "klite", "nord", "oled", "solarized", "vintageclassic", "vintagedark",
+        "antigravity",
+        "claudecode",
+        "codenomad",
+        "custom",
+        "dracula",
+        "fpdefault",
+        "freebuff",
+        "golden",
+        "goldendefault",
+        "goldenvintage",
+        "klite",
+        "nord",
+        "oled",
+        "solarized",
+        "vintageclassic",
+        "vintagedark",
     }
 
 
@@ -95,9 +110,11 @@ def test_the_default_theme_is_byte_for_byte_the_shipped_look() -> None:
     declared = _declared_in_root()
     tokens = themes.load_theme(themes.DEFAULT_THEME)
     assert tokens is not None
-    drift = {name: (declared[name], tokens[name])
-             for name in themes.REQUIRED_TOKENS
-             if declared[name].upper() != tokens[name].upper()}
+    drift = {
+        name: (declared[name], tokens[name])
+        for name in themes.REQUIRED_TOKENS
+        if declared[name].upper() != tokens[name].upper()
+    }
     assert not drift, f"default theme differs from style.css :root: {drift}"
 
 
@@ -114,10 +131,17 @@ def test_an_unknown_slug_falls_back_instead_of_failing() -> None:
 def test_a_partial_palette_is_rejected_not_half_applied(tmp_path: Path) -> None:
     """The control for every test above: prove the validation actually fires."""
     broken = tmp_path / "broken.json"
-    broken.write_text(json.dumps({
-        "slug": "broken", "label": "Broken", "order": 1,
-        "tokens": {"background": "#000000"},
-    }), encoding="utf-8")
+    broken.write_text(
+        json.dumps(
+            {
+                "slug": "broken",
+                "label": "Broken",
+                "order": 1,
+                "tokens": {"background": "#000000"},
+            }
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(themes.ThemeError) as excinfo:
         themes._read(broken)
     assert "missing" in str(excinfo.value)
@@ -125,9 +149,17 @@ def test_a_partial_palette_is_rejected_not_half_applied(tmp_path: Path) -> None:
     malformed = tmp_path / "malformed.json"
     full = {name: "#101010" for name in themes.REQUIRED_TOKENS}
     full["borderHighlight"] = "goldenrod"
-    malformed.write_text(json.dumps({
-        "slug": "malformed", "label": "Malformed", "order": 1, "tokens": full,
-    }), encoding="utf-8")
+    malformed.write_text(
+        json.dumps(
+            {
+                "slug": "malformed",
+                "label": "Malformed",
+                "order": 1,
+                "tokens": full,
+            }
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(themes.ThemeError) as excinfo:
         themes._read(malformed)
     assert "borderHighlight" in str(excinfo.value)

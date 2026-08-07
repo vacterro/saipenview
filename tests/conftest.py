@@ -51,7 +51,8 @@ blocker: {blocker}
         (saipen / "BOARD.md").write_text(board_text, encoding="utf-8")
     else:
         (saipen / "BOARD.md").write_text(
-            "# BOARD\n\n## TODO\n\n## DOING\n\n## DONE\n\n## BLOCKED\n", encoding="utf-8"
+            "# BOARD\n\n## TODO\n\n## DOING\n\n## DONE\n\n## BLOCKED\n",
+            encoding="utf-8",
         )
 
     if log_text is not None:
@@ -101,7 +102,9 @@ blocker: none
 @pytest.fixture
 def saipen_project(tmp_path: Path) -> Path:
     """A minimal SAIPEN project at a tmp location."""
-    return _make_saipen_project(tmp_path / "my-project", phase="PLAN", task="build widget")
+    return _make_saipen_project(
+        tmp_path / "my-project", phase="PLAN", task="build widget"
+    )
 
 
 @pytest.fixture
@@ -134,17 +137,21 @@ def saipen_project_with_board(tmp_path: Path) -> Path:
 @pytest.fixture
 def saipen_project_with_subs(tmp_path: Path) -> Path:
     """A SAIPEN project with sub-agents and OUTBOX files."""
-    root = _make_saipen_project(tmp_path / "project-subs", phase="HUNT", task="bug chasing")
+    root = _make_saipen_project(
+        tmp_path / "project-subs", phase="HUNT", task="bug chasing"
+    )
 
     subs_dir = root / ".saipen" / "extensions" / "subs"
     subs_dir.mkdir(parents=True, exist_ok=True)
 
     (subs_dir / "MANIFEST.md").write_text(
-        "- saihunt -- bug-chasing sub\n- saiwiki -- documentation sub\n", encoding="utf-8"
+        "- saihunt -- bug-chasing sub\n- saiwiki -- documentation sub\n",
+        encoding="utf-8",
     )
 
     _make_sub_project(
-        subs_dir, "saihunt",
+        subs_dir,
+        "saihunt",
         phase="HUNT",
         outbox_text="""# OUTBOX
 
@@ -154,11 +161,12 @@ def saipen_project_with_subs(tmp_path: Path) -> Path:
 - **severity:** MEDIUM
 - **summary:** Found nullable field in parser.py
 - **details:** The `parse_frontmatter` function can return an empty dict.
-"""
+""",
     )
 
     _make_sub_project(
-        subs_dir, "saiwiki",
+        subs_dir,
+        "saiwiki",
         phase="INIT",
         outbox_text="""# OUTBOX
 
@@ -166,7 +174,7 @@ def saipen_project_with_subs(tmp_path: Path) -> Path:
 - **status:** draft
 - **critical:** false
 - **summary:** Wrote architecture overview
-"""
+""",
     )
 
     return root
@@ -175,16 +183,21 @@ def saipen_project_with_subs(tmp_path: Path) -> Path:
 @pytest.fixture
 def saipen_project_with_subs_noncritical(tmp_path: Path) -> Path:
     """A SAIPEN project with a non-critical ready OUTBOX entry."""
-    root = _make_saipen_project(tmp_path / "project-noncrit", phase="BUILD", task="fixes")
+    root = _make_saipen_project(
+        tmp_path / "project-noncrit", phase="BUILD", task="fixes"
+    )
 
     subs_dir = root / ".saipen" / "extensions" / "subs"
     subs_dir.mkdir(parents=True, exist_ok=True)
 
-    (subs_dir / "MANIFEST.md").write_text("- saihunt -- bug-chasing sub\n", encoding="utf-8")
+    (subs_dir / "MANIFEST.md").write_text(
+        "- saihunt -- bug-chasing sub\n", encoding="utf-8"
+    )
     (subs_dir / "_shared").mkdir(parents=True, exist_ok=True)
 
     _make_sub_project(
-        subs_dir, "saihunt",
+        subs_dir,
+        "saihunt",
         phase="HUNT",
         outbox_text="""# OUTBOX
 
@@ -193,7 +206,7 @@ def saipen_project_with_subs_noncritical(tmp_path: Path) -> Path:
 - **critical:** false
 - **severity:** LOW
 - **summary:** Unused import in test file
-"""
+""",
     )
 
     return root
@@ -202,12 +215,18 @@ def saipen_project_with_subs_noncritical(tmp_path: Path) -> Path:
 @pytest.fixture
 def saipen_project_with_translate(tmp_path: Path) -> Path:
     """A SAIPEN project with an external saitranslate sub (legacy path)."""
-    root = _make_saipen_project(tmp_path / "project-translate", phase="DONE", task="shipped")
+    root = _make_saipen_project(
+        tmp_path / "project-translate", phase="DONE", task="shipped"
+    )
 
     translate_dir = root / ".saitranslate"
     translate_dir.mkdir(parents=True, exist_ok=True)
-    (translate_dir / "STATE.md").write_text("---\nphase: TRANSLATE\ntask: translating docs\n---\n", encoding="utf-8")
-    (translate_dir / "BOARD.md").write_text("# BOARD\n\n## TODO\n\n## DONE\n\n", encoding="utf-8")
+    (translate_dir / "STATE.md").write_text(
+        "---\nphase: TRANSLATE\ntask: translating docs\n---\n", encoding="utf-8"
+    )
+    (translate_dir / "BOARD.md").write_text(
+        "# BOARD\n\n## TODO\n\n## DONE\n\n", encoding="utf-8"
+    )
     (translate_dir / "LOG.md").write_text("# LOG\n\n", encoding="utf-8")
 
     return root
@@ -242,7 +261,9 @@ def saipen_project_with_staleness(tmp_path: Path) -> Path:
     canon_subs = saipen_home / "extensions" / "subs"
     canon_subs.mkdir(parents=True, exist_ok=True)
 
-    (canon_subs / "PROTOCOL.md").write_text("# Protocol\n\nCanonical\n", encoding="utf-8")
+    (canon_subs / "PROTOCOL.md").write_text(
+        "# Protocol\n\nCanonical\n", encoding="utf-8"
+    )
     (canon_subs / "README.md").write_text("# Subs\n\nReadme\n", encoding="utf-8")
     (canon_subs / "MANIFEST.md").write_text("- test-sub -- test\n", encoding="utf-8")
     (canon_subs / "CREW.md").write_text("# Crew\n", encoding="utf-8")
@@ -270,6 +291,7 @@ def saipen_project_with_staleness(tmp_path: Path) -> Path:
 
     # Copy all canonical mtime/size to local files for true identity
     import os
+
     for rel in _STALENESS_FILES:
         c_path = canon_subs / rel
         l_path = subs_dir / rel

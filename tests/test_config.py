@@ -195,6 +195,7 @@ class TestSaveConfig:
         save_config(noisy)
 
         import json
+
         raw = json.loads(tmp_config_path.read_text(encoding="utf-8"))
         assert "bogus" not in raw
 
@@ -230,6 +231,7 @@ class TestSaveConfig:
         tmp_files = list(tmp_config_path.parent.glob("*.tmp"))
         assert len(tmp_files) == 0
         import json
+
         data = json.loads(tmp_config_path.read_text(encoding="utf-8"))
         assert data["locale"] == "zh-CN"
 

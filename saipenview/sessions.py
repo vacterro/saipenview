@@ -147,8 +147,14 @@ class SessionStore:
 
     # ---- writing ---------------------------------------------------------
 
-    def start(self, root: str, engine: str, engine_display: str, instruction: str,
-              pid: int | None = None) -> SessionRecord | None:
+    def start(
+        self,
+        root: str,
+        engine: str,
+        engine_display: str,
+        instruction: str,
+        pid: int | None = None,
+    ) -> SessionRecord | None:
         """Open a transcript for a new run. Returns None if the disk says no."""
         now = datetime.now(timezone.utc)
         key = project_key(root)
@@ -181,7 +187,10 @@ class SessionStore:
                 "a", encoding="utf-8", errors="replace", newline="\n"
             )
         except OSError as exc:
-            print(f"SAIPENVIEW: cannot open transcript for {run_id}: {exc}", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: cannot open transcript for {run_id}: {exc}",
+                file=sys.stderr,
+            )
             return None
         with self._lock:
             self._open[run_id] = _OpenTranscript(record=record, handle=handle)
@@ -304,7 +313,9 @@ class SessionStore:
                 json.dumps(record.to_dict(), indent=2), encoding="utf-8", newline="\n"
             )
         except OSError as exc:
-            print(f"SAIPENVIEW: cannot write session meta {path}: {exc}", file=sys.stderr)
+            print(
+                f"SAIPENVIEW: cannot write session meta {path}: {exc}", file=sys.stderr
+            )
 
     def _prune(self, key: str) -> None:
         metas = self._meta_files(key)

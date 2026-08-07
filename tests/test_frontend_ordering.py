@@ -10,15 +10,10 @@ tests lock the structural boundary the fix enforces.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 APP_JS = (
-    Path(__file__).resolve().parent.parent
-    / "saipenview"
-    / "ui"
-    / "static"
-    / "app.js"
+    Path(__file__).resolve().parent.parent / "saipenview" / "ui" / "static" / "app.js"
 )
 INDEX_HTML = (
     Path(__file__).resolve().parent.parent
@@ -93,8 +88,8 @@ def test_agent_panel_call_is_inside_an_error_boundary():
 
 def test_frontend_error_capture_is_registered():
     src = APP_JS.read_text(encoding="utf-8")
-    assert "window.addEventListener(\"error\"" in src
-    assert "window.addEventListener(\"unhandledrejection\"" in src
+    assert 'window.addEventListener("error"' in src
+    assert 'window.addEventListener("unhandledrejection"' in src
     assert "function reportRenderError" in src
     assert "renderErrorRegion" in src
 

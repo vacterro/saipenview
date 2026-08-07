@@ -477,9 +477,7 @@ class MainWindow:
         except (AttributeError, OSError, ValueError):
             pass  # no console under pythonw; the file below is the real record
         try:
-            (config_path().parent / "force_exit.log").write_text(
-                note, encoding="utf-8"
-            )
+            (config_path().parent / "force_exit.log").write_text(note, encoding="utf-8")
         except OSError:
             pass
 

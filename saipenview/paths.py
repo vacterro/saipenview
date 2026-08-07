@@ -91,12 +91,17 @@ def validate_file_path(
     every known root, or its extension is not in the whitelist. Empty
     ``known_roots`` rejects everything -- fail closed, never open.
     """
-    allowed = allowed_extensions if allowed_extensions is not None else _ALLOWED_EXTENSIONS
+    allowed = (
+        allowed_extensions if allowed_extensions is not None else _ALLOWED_EXTENSIONS
+    )
     if not known_roots:
         return False, "no known roots configured"
     ext = os.path.splitext(os.fspath(path))[1].lower()
     if ext not in allowed:
-        return False, f"extension {ext or '(none)'!r} not allowed (only {sorted(allowed)})"
+        return (
+            False,
+            f"extension {ext or '(none)'!r} not allowed (only {sorted(allowed)})",
+        )
     for root in known_roots:
         if is_inside(root, path):
             return True, ""

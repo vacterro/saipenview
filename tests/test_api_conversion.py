@@ -19,7 +19,18 @@ class TestPhaseRank:
     def test_work_phases_ranked_middle(self):
         from saipenview.api import _phase_rank
 
-        for phase in ("INIT", "HUNT", "BUILD", "REVIEW", "PLAN", "SCOUT", "ADD", "CLEAN", "TRANSLATE", "VALIDATE"):
+        for phase in (
+            "INIT",
+            "HUNT",
+            "BUILD",
+            "REVIEW",
+            "PLAN",
+            "SCOUT",
+            "ADD",
+            "CLEAN",
+            "TRANSLATE",
+            "VALIDATE",
+        ):
             assert _phase_rank(phase) == 2, f"{phase} should be rank 2"
 
     def test_verification_phases_ranked_third(self):
@@ -50,9 +61,19 @@ class TestPhaseRank:
         """Verify the full rank ordering: ACTIVE < BLOCKED < WORK < VERIFY < DONE < UNKNOWN."""
         from saipenview.api import _phase_rank
 
-        ranks = [("ACTIVE", 0), ("BLOCKED", 1), ("INIT", 2), ("VERIFY", 3), ("SHIP", 3), ("DONE", 4), ("NOPE", 5)]
+        ranks = [
+            ("ACTIVE", 0),
+            ("BLOCKED", 1),
+            ("INIT", 2),
+            ("VERIFY", 3),
+            ("SHIP", 3),
+            ("DONE", 4),
+            ("NOPE", 5),
+        ]
         for phase, expected in ranks:
-            assert _phase_rank(phase) == expected, f"{phase}: expected {expected}, got {_phase_rank(phase)}"
+            assert _phase_rank(phase) == expected, (
+                f"{phase}: expected {expected}, got {_phase_rank(phase)}"
+            )
 
 
 class TestReversed:
@@ -61,7 +82,9 @@ class TestReversed:
     def test_reverses_comparison(self):
         from saipenview.api import _Reversed
 
-        assert _Reversed("b") < _Reversed("a")  # b < a because Reversed swaps the comparison
+        assert _Reversed("b") < _Reversed(
+            "a"
+        )  # b < a because Reversed swaps the comparison
         assert not (_Reversed("a") < _Reversed("b"))
 
     def test_reverses_numeric(self):
@@ -137,8 +160,12 @@ class TestProjectSortKey:
     def test_smart_sort_alphabetical_tiebreaker(self):
         from saipenview.api import _project_sort_key
 
-        a_proj = self.make_project(phase="DONE", mtime=100, git_dirty=False, name="alpha")
-        b_proj = self.make_project(phase="DONE", mtime=100, git_dirty=False, name="beta")
+        a_proj = self.make_project(
+            phase="DONE", mtime=100, git_dirty=False, name="alpha"
+        )
+        b_proj = self.make_project(
+            phase="DONE", mtime=100, git_dirty=False, name="beta"
+        )
         assert _project_sort_key(a_proj) < _project_sort_key(b_proj)
 
     def test_name_asc_sort(self):
@@ -176,4 +203,6 @@ class TestProjectSortKey:
         pinned = self.make_project(is_pinned=True, name="zzz")
         unpinned = self.make_project(is_pinned=False, name="aaa")
         for order in ("smart", "name_asc", "name_desc", "recent", "oldest"):
-            assert _project_sort_key(pinned, order) < _project_sort_key(unpinned, order), f"pinned should sort first in {order}"
+            assert _project_sort_key(pinned, order) < _project_sort_key(
+                unpinned, order
+            ), f"pinned should sort first in {order}"

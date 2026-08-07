@@ -36,6 +36,7 @@ def _cleanup_mocked_modules():
 
 # ── __main__.py ──
 
+
 class TestMainModule:
     """__main__.py entry point — import and verify main() exists."""
 
@@ -50,8 +51,9 @@ class TestMainModule:
     def test_main_returns_int(self):
         """main() should return an int (exit code) — mock run() to avoid side effects."""
         _ensure_mock("webview")
-        with patch("saipenview.app.run", return_value=0), patch.object(
-            sys, "argv", ["saipenview"]
+        with (
+            patch("saipenview.app.run", return_value=0),
+            patch.object(sys, "argv", ["saipenview"]),
         ):
             from saipenview.__main__ import main
 
@@ -70,12 +72,15 @@ class TestMainModule:
         from saipenview.__main__ import _dry_run
         from saipenview.config import load_config, save_config
 
-        save_config({"scan_roots": [str(tmp_config_path.parent / "no-such-drive-root")]})
+        save_config(
+            {"scan_roots": [str(tmp_config_path.parent / "no-such-drive-root")]}
+        )
         _ = load_config()  # canonicalizes; path won't exist
         assert _dry_run() == 1
 
 
 # ── app.py ──
+
 
 class TestAppModule:
     """app.py wires tray, hotkeys, and window with single-instance guard."""
@@ -104,6 +109,7 @@ class TestAppModule:
 
 
 # ── ui/window.py ──
+
 
 class TestWindowModule:
     """ui/window.py requires webview — verify import and class structure."""
@@ -211,6 +217,7 @@ class TestWindowModule:
 
 # ── tray.py ──
 
+
 class TestTrayModule:
     """tray.py requires pystray + PIL — verify with mocks."""
 
@@ -219,7 +226,6 @@ class TestTrayModule:
         _ensure_mock("pystray", ["Menu", "MenuItem", "Icon"])
         _ensure_mock("PIL")
         _ensure_mock("PIL.Image")
-
 
         import saipenview.tray  # noqa: F811
 
@@ -253,14 +259,19 @@ class TestTrayModule:
             on_toggle = MagicMock()
             on_quit = MagicMock()
 
-            result = saipenview.tray.build_tray_icon(on_toggle=on_toggle, on_quit=on_quit)
+            result = saipenview.tray.build_tray_icon(
+                on_toggle=on_toggle, on_quit=on_quit
+            )
             assert result == mock_icon
             mock_open.assert_called_once_with(icon_dir / "tray_icon.png")
             mock_pystray.Menu.assert_called_once()
-            mock_pystray.Icon.assert_called_once_with("saipenview", mock_image, "SAIPENVIEW", mock_menu)
+            mock_pystray.Icon.assert_called_once_with(
+                "saipenview", mock_image, "SAIPENVIEW", mock_menu
+            )
 
 
 # ── zone_picker.py ──
+
 
 class TestZonePickerModule:
     """zone_picker.py requires tkinter + ctypes — verify with mocks."""

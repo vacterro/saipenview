@@ -56,8 +56,15 @@ def test_responsive_bands_are_present(css: str) -> None:
 
 @pytest.mark.parametrize(
     "token",
-    ["--sidebarW", "--fieldLabelW", "--searchW", "--excludeW", "--filterW",
-     "--subNameW", "--subIndentW"],
+    [
+        "--sidebarW",
+        "--fieldLabelW",
+        "--searchW",
+        "--excludeW",
+        "--filterW",
+        "--subNameW",
+        "--subIndentW",
+    ],
 )
 def test_fluid_metric_tokens_are_declared(css: str, token: str) -> None:
     assert re.search(rf"^\s*{re.escape(token)}\s*:", css, re.MULTILINE), (
@@ -73,8 +80,14 @@ def test_fluid_metrics_are_clamped_not_fixed(css: str) -> None:
     `--subIndentW` is exempt -- it deliberately aliases `--fieldLabelW` so the
     sub-agent rows line up under the fields above them.
     """
-    for token in ["--sidebarW", "--fieldLabelW", "--searchW", "--excludeW",
-                  "--filterW", "--subNameW"]:
+    for token in [
+        "--sidebarW",
+        "--fieldLabelW",
+        "--searchW",
+        "--excludeW",
+        "--filterW",
+        "--subNameW",
+    ]:
         match = re.search(rf"^\s*{re.escape(token)}\s*:\s*([^;]+);", css, re.MULTILINE)
         assert match, f"{token} not declared"
         assert match.group(1).strip().startswith("clamp("), (

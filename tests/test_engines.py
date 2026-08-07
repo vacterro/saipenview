@@ -27,7 +27,14 @@ INSTR = "saipen continue"
 # CLIs installed on the development machine (gemini, codex, aider, opencode);
 # the rest are the documented invocations for their tool.
 EXPECTED = {
-    "claude-code": ["claude", "--print", INSTR, "--output-format", "stream-json", "--verbose"],
+    "claude-code": [
+        "claude",
+        "--print",
+        INSTR,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ],
     "aider": ["aider", "-m", INSTR, "--yes-always"],
     "cline": ["cline", "-y", INSTR],
     "goose": ["goose", "run", "-t", INSTR],
@@ -55,7 +62,9 @@ class TestBuiltCommands:
     def test_claude_code_passes_no_project_dir_flag(self):
         # Never a Claude Code flag. The project directory is the cwd, which
         # runtime.py sets from project_root.
-        assert "--project-dir" not in get_engine("claude-code").build_command(ROOT, INSTR)
+        assert "--project-dir" not in get_engine("claude-code").build_command(
+            ROOT, INSTR
+        )
 
     def test_opencode_is_registered(self):
         # It was installed and already owned tickets on this project's board

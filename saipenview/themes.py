@@ -40,15 +40,39 @@ DEFAULT_THEME = "goldendefault"
 
 #: Every custom property `style.css` reads that a theme is responsible for.
 #: `--uiFont` is not here: it is a font, set from the `font_family` config key.
-REQUIRED_TOKENS = frozenset({
-    "background", "backgroundSoft", "surface", "surfaceRaised", "surfaceAlt",
-    "surfaceSoft", "borderDark", "borderHighlight", "borderMuted",
-    "textPrimary", "textSecondary", "textMuted", "accentTeal", "accentTealDeep",
-    "success", "warning", "danger", "dangerText", "selection", "compareBack",
-    "goldStar",
-    "phase-init", "phase-plan", "phase-scout", "phase-hunt", "phase-add",
-    "phase-clean", "phase-translate", "phase-validate",
-})
+REQUIRED_TOKENS = frozenset(
+    {
+        "background",
+        "backgroundSoft",
+        "surface",
+        "surfaceRaised",
+        "surfaceAlt",
+        "surfaceSoft",
+        "borderDark",
+        "borderHighlight",
+        "borderMuted",
+        "textPrimary",
+        "textSecondary",
+        "textMuted",
+        "accentTeal",
+        "accentTealDeep",
+        "success",
+        "warning",
+        "danger",
+        "dangerText",
+        "selection",
+        "compareBack",
+        "goldStar",
+        "phase-init",
+        "phase-plan",
+        "phase-scout",
+        "phase-hunt",
+        "phase-add",
+        "phase-clean",
+        "phase-translate",
+        "phase-validate",
+    }
+)
 
 _HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
@@ -92,8 +116,14 @@ def _all() -> dict[str, dict]:
 def list_themes() -> list[dict]:
     """Slug, label and order for every readable palette, in menu order."""
     themes = sorted(_all().values(), key=lambda t: (t.get("order", 999), t["slug"]))
-    return [{"slug": t["slug"], "label": t.get("label", t["slug"]),
-             "order": t.get("order", 999)} for t in themes]
+    return [
+        {
+            "slug": t["slug"],
+            "label": t.get("label", t["slug"]),
+            "order": t.get("order", 999),
+        }
+        for t in themes
+    ]
 
 
 def load_theme(slug: str) -> dict[str, str] | None:

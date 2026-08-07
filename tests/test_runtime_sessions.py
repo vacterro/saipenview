@@ -22,9 +22,7 @@ class _EchoEngine(AgentEngine):
 
     def __init__(self, script: str | None = None, name: str = "echo-test") -> None:
         self._script = script or (
-            "import sys\n"
-            "for i in range(3):\n"
-            "    print('line %d' % i, flush=True)\n"
+            "import sys\nfor i in range(3):\n    print('line %d' % i, flush=True)\n"
         )
         self._name = name
 
