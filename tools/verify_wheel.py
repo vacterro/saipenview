@@ -54,7 +54,9 @@ def main() -> int:
         meta_ver = meta_match.group(1).strip()
 
         pyproj = (checkout / "pyproject.toml").read_text(encoding="utf-8")
-        pyproj_ver = re.search(r'^version\s*=\s*"([^"]+)"', pyproj, re.MULTILINE).group(1)
+        pyproj_ver = re.search(r'^version\s*=\s*"([^"]+)"', pyproj, re.MULTILINE).group(
+            1
+        )
 
         target = base / "inst"
         subprocess.run(
@@ -101,7 +103,9 @@ def main() -> int:
         ):
             __import__(mod)
 
-        print("wheel verify PASS: version triple matches, installed wheel imports clean")
+        print(
+            "wheel verify PASS: version triple matches, installed wheel imports clean"
+        )
         return 0
 
 
