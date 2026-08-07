@@ -1685,14 +1685,32 @@ function render(projects, scanned) {
   });
 
   // If selected project is not in filtered list, clear selection
+  // T-121: never clear the selection out from under an open edit form.
+  // If the user is mid-edit, keep everything as-is -- the poll will
+  // retry when they're done. Discarding typed work is worse than a
+  // briefly stale list.
   if (selectedRoot && !filtered.some(p => p.root.toLowerCase() === selectedRoot.toLowerCase())) {
-    selectedRoot = null;
-    renderDetailPane(null);
+    if (!stateEditActive) {
+      selectedRoot = null;
+      renderDetailPane(null);
+    }
   }
 
   // If selected project is in list, trigger detail load
-  if (selectedRoot) {
+  // T-121: skip the async get_project_detail + renderDetailPane chain
+  // while the inline state editor is open. renderDetailPane's own
+  // stateEditActive guard already protects it (T-066), but the guard
+  // fires *inside* the callback -- after the API call and after the
+  // callback is scheduled, by which point a change to stateEditActive
+  // cannot be seen. Skipping here is deterministic.
+  if (selectedRoot && !stateEditActive) {
     loadDetail(selectedRoot);
+  } else if (selectedRoot) {
+    // selectedRoot is set but we skipped loadDetail: the sidebar row
+    // still needs its .selected class and handlers. applyProjectRowHandlers
+    // already runs above (attaches to every row in the list), and
+    // selectedRoot is unchanged, so the previously-attached handlers
+    // and selection class are still current.
   } else if (filtered.length > 0) {
     selectProject(filtered[0].root);
   }

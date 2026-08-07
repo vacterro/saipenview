@@ -4,6 +4,11 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.14] - 2026-08-07
+
+### Fixed
+- **Edit form no longer collapses during live poll (T-121).** The 5-second poll cycle called `loadDetail(selectedRoot)` unconditionally from `render()`, which kicked off an async detail fetch + `renderDetailPane` chain. The `stateEditActive` guard from T-066 fires inside the `.then()` callback, but by then the callback is already scheduled and a concurrent state change cannot be seen — the detail pane could rebuild and destroy the inline edit form. `render()` now skips `loadDetail` entirely when `stateEditActive` is true, making the decision deterministic. The same function's filtered-list-eviction path (`renderDetailPane(null)` when the selected project disappears from the list) also now honours `stateEditActive` instead of discarding the user's typed work.
+
 ## [0.1.13] - 2026-08-06
 
 ### Added
