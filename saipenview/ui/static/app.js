@@ -917,7 +917,7 @@ function renderDetailPane(detail) {
         <span>${title} (${tickets.length}) <span class="dblclick-hint">📄</span></span>
         ${canCollapse ? '<span class="collapse-icon">▼</span>' : ""}
       </div>
-      <div class="ticket-list collapsible-body">
+      <div class="ticket-list collapsible-body" data-section="${escapeHtml(title)}">
         ${tickets.map((t) => {
           const act = actionFor[title];
           const chkState = checkedFor[title];
@@ -928,7 +928,7 @@ function renderDetailPane(detail) {
           const blockerNote = (title === "BLOCKED" && t.blocker)
             ? `<div class="ticket-blocker">${escapeHtml(t.blocker)}</div>`
             : "";
-          return `<div class="ticket-item">${chk}<span class="ticket-id">${escapeHtml(t.id)}</span><span class="ticket-desc">${escapeHtml(t.desc)}</span>${blockBtn}</div>${blockerNote}`;
+          return `<div class="ticket-item" draggable="true" data-tid="${escapeHtml(t.id)}">${chk}<span class="ticket-id">${escapeHtml(t.id)}</span><span class="ticket-desc">${escapeHtml(t.desc)}</span>${blockBtn}</div>${blockerNote}`;
         }).join("")}
       </div>
     </div>`;
@@ -1460,6 +1460,61 @@ function renderDetailPane(detail) {
       const reason = prompt("Blocker reason for " + tid + ":");
       if (reason === null) return;           // cancelled
       toggleTicket(tid, "block", reason);
+    });
+  });
+
+  // T-175: drag-to-reorder within a section. Board order is priority, so the
+  // dropped order is a re-prioritisation and must reach BOARD.md.
+  let dragState = null;
+  document.querySelectorAll('.ticket-item').forEach(row => {
+    row.addEventListener('dragstart', (e) => {
+      const list = row.closest('.ticket-list');
+      if (!list) return;
+      dragState = { tid: row.getAttribute('data-tid'), section: list.getAttribute('data-section') };
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('drag-source');
+    });
+    row.addEventListener('dragend', () => {
+      dragState = null;
+      document.querySelectorAll('.ticket-item').forEach(r => r.classList.remove('drag-source', 'drag-over'));
+    });
+    row.addEventListener('dragover', (e) => {
+      const list = row.closest('.ticket-list');
+      if (!dragState || !list || list.getAttribute('data-section') !== dragState.section) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const list = row.closest('.ticket-list');
+      const targetTid = row.getAttribute('data-tid');
+      if (!dragState || !list || list.getAttribute('data-section') !== dragState.section) return;
+      if (dragState.tid === targetTid) return;
+      window.pywebview.api.reorder_ticket(detail.root, dragState.tid, dragState.section, targetTid).then((updatedDetail) => {
+        if (updatedDetail) {
+          renderDetailPane(updatedDetail);
+          window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
+        }
+      });
+    });
+  });
+  // Dropping on empty space below the rows appends to the end of the section.
+  document.querySelectorAll('.ticket-list').forEach(list => {
+    list.addEventListener('dragover', (e) => {
+      if (dragState && list.getAttribute('data-section') === dragState.section) e.preventDefault();
+    });
+    list.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (!dragState || list.getAttribute('data-section') !== dragState.section) return;
+      window.pywebview.api.reorder_ticket(detail.root, dragState.tid, dragState.section, null).then((updatedDetail) => {
+        if (updatedDetail) {
+          renderDetailPane(updatedDetail);
+          window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
+        }
+      });
     });
   });
 

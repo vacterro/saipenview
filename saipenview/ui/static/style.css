@@ -510,6 +510,9 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .ticket-chk { width: 12px; height: 12px; margin: 0; flex-shrink: 0; cursor: pointer; }
 .ticket-block-btn { color: var(--dangerText); }
 .ticket-blocker { font-size: 9px; color: var(--dangerText); padding: 1px 6px 4px 24px; word-break: break-word; }
+.ticket-item[draggable="true"] { cursor: grab; }
+.ticket-item.drag-source { opacity: 0.4; }
+.ticket-item.drag-over { outline: 1px dashed var(--borderHighlight); outline-offset: -1px; }
 
 /* Contextual quick-action buttons — accent teal, slightly smaller */
 .quick-action-btn { font-size: 9px; padding: 1px 4px; min-height: 16px; color: var(--accentTeal); }

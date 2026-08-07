@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from saipenview.parser import move_ticket, parse_board
+from saipenview.parser import move_ticket, parse_board, reorder_ticket
 from saipenview.textio import read_doc
 
 
@@ -130,3 +130,42 @@ class TestBlockerParsing:
             for line in body.splitlines():
                 if re.match(r"^- \[", line.strip()):
                     assert line.strip().startswith(f"- [{ch}]"), (section, line.strip())
+
+
+class TestReorder:
+    def _todo_ids(self, project) -> list[str]:
+        return [t.ticket_id for t in parse_board(_board(project)).todo]
+
+    def test_move_to_front(self, project):
+        assert reorder_ticket(project, "T-003", "TODO", before_ticket_id="T-001")
+        assert self._todo_ids(project) == ["T-003", "T-001"]
+
+    def test_move_to_end(self, project):
+        assert reorder_ticket(project, "T-001", "TODO", before_ticket_id=None)
+        assert self._todo_ids(project) == ["T-003", "T-001"]
+
+    def test_move_down(self, project):
+        # T-001 before T-003? already the order; move T-001 after T-003 by
+        # targeting nothing (end) -- T-003 is the last TODO, so appending
+        # T-001 to the end puts it after T-003.
+        assert reorder_ticket(project, "T-001", "TODO", before_ticket_id=None)
+        assert self._todo_ids(project) == ["T-003", "T-001"]
+
+    def test_cross_section_target_stays_in_own_section(self, project):
+        # A target in another section (T-004 under DONE) must never drag the
+        # ticket there -- reorder only ever touches its own section. The
+        # frontend guards same-section drops, so this is defensive.
+        reorder_ticket(project, "T-001", "TODO", before_ticket_id="T-004")
+        assert "T-001" in _board(project).split("## TODO")[1].split("## DOING")[0]
+        assert "T-001" not in _board(project).split("## DONE")[1].split("## BLOCKED")[0]
+        assert "T-001" in self._todo_ids(project)
+
+    def test_unknown_section_rejected(self, project):
+        assert reorder_ticket(project, "T-001", "NOPE") is False
+
+    def test_other_sections_untouched(self, project):
+        reorder_ticket(project, "T-001", "TODO", before_ticket_id=None)
+        text = _board(project)
+        assert "- [/] T-002 doing ticket" in text
+        assert "- [x] T-004 finished" in text
+        assert "- [ ] T-005 stuck | blocker: external dep" in text

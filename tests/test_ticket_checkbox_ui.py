@@ -69,3 +69,19 @@ def test_style_css_covers_the_new_controls():
     ).read_text(encoding="utf-8")
     assert ".ticket-chk" in css
     assert ".ticket-blocker" in css
+
+
+def test_ticket_rows_are_draggable_and_wired():
+    src = APP_JS.read_text(encoding="utf-8")
+    body = _function_body(src, "renderDetailPane")
+    assert 'draggable="true"' in body, "ticket rows are not draggable"
+    assert 'data-section="${escapeHtml(title)}"' in body, (
+        "ticket lists lack a section key"
+    )
+    assert "dragstart" in body and "dragover" in body and "drop" in body
+    assert "reorder_ticket(detail.root, dragState.tid, dragState.section" in body
+    # same-section guard: a cross-section drop must not fire the reorder
+    assert (
+        "dragState.section !== dragState.section" in body
+        or "!== dragState.section" in body
+    )

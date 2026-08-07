@@ -1355,6 +1355,27 @@ class Api:
                 )
         return results
 
+    def reorder_ticket(
+        self,
+        root_str: str,
+        ticket_id: str,
+        section: str,
+        before_ticket_id: str | None = None,
+    ) -> dict | None:
+        """Reorder a ticket within its section (drag-drop, T-175). Returns the
+        updated project detail or None on failure."""
+        from saipenview.parser import reorder_ticket
+
+        root = self._resolve_root(root_str)
+        if not root:
+            return None
+        p = Path(root)
+        if reorder_ticket(p, ticket_id, section, before_ticket_id):
+            # No full rescan: the watcher (T-124) picks up the BOARD.md change
+            # and targeted-refreshes the cache row; the detail is fresh here.
+            return self.get_project_detail(root)
+        return None
+
     def toggle_ticket_status(
         self,
         root_str: str,

@@ -264,6 +264,68 @@ def move_ticket(
     return True
 
 
+def reorder_ticket(
+    root: Path, ticket_id: str, section: str, before_ticket_id: str | None = None
+) -> bool:
+    """Move a ticket line to a new position WITHIN its section (T-175).
+
+    ``before_ticket_id`` is the ticket the dragged row should land before;
+    None appends to the end of the section. Order inside a section is the
+    order of its lines -- and board order is priority (RFC 1.6), so a
+    drag-reordered board is a re-prioritised one. Only ever touches the one
+    ticket's line, never other lines, so the single-writer path holds.
+    """
+    if section not in _SECTION_LISTS:
+        return False
+    board_path = root / ".saipen" / "BOARD.md"
+    if not board_path.is_file():
+        return False
+    text, enc, newline = read_doc_meta(board_path)
+    lines = text.splitlines(True)
+
+    section_start = -1
+    section_end = len(lines)
+    ticket_idx = -1
+    before_idx = -1
+    current: str | None = None
+    for i, line in enumerate(lines):
+        heading = SECTION_HEADING_RE.match(line.strip())
+        if heading:
+            current = heading.group(1)
+            if current == section:
+                section_start = i
+            elif section_start >= 0:
+                section_end = i
+                break
+            continue
+        if current == section and section_start >= 0:
+            t = TICKET_RE.match(line.strip())
+            if t:
+                if t.group(2) == ticket_id:
+                    ticket_idx = i
+                elif t.group(2) == before_ticket_id:
+                    before_idx = i
+
+    if section_start < 0 or ticket_idx < 0 or ticket_idx < section_start:
+        return False
+    if before_idx >= 0 and before_idx >= section_end:
+        return False
+
+    ticket_line = lines.pop(ticket_idx)
+    if before_idx > ticket_idx:
+        before_idx -= 1
+    section_end_adj = section_end - 1 if section_end > ticket_idx else section_end
+    insert_pos = before_idx if before_idx >= 0 else section_end_adj
+    # No-op: already in place.
+    if insert_pos == ticket_idx:
+        lines.insert(ticket_idx, ticket_line)
+        return True
+    lines.insert(insert_pos, ticket_line)
+
+    write_doc(board_path, "".join(lines), enc, newline)
+    return True
+
+
 def parse_board(text: str) -> Board:
     board = Board()
     current: str | None = None
