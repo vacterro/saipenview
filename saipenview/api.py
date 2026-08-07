@@ -397,13 +397,14 @@ class Api:
 
     def rescan(self) -> list[dict]:
         self._set_scanning(True)
-        self._scan_linked_worktrees()
         projects = scan(
             self._config["scan_roots"],
             max_depth=self._config.get("scan_depth", 6),
             delay=self._config.get("scan_delay_ms", 10) / 1000.0,
             extra_excludes=set(self._config.get("exclude_dirs", [])),
         )
+        # _set_cache owns the linked-worktree scan (T-165): calling it here too
+        # would run the same worktree walk twice per rescan.
         self._set_cache(projects, force=True)
         return self.get_projects()
 
@@ -962,15 +963,18 @@ class Api:
             self._set_scanning(False)
             return self.get_projects()
 
-        folder_str = str(Path(folder).resolve())
+        folder_str = canonical(folder)
 
         existing = self._config.get("scan_roots")
         if existing is None:
             # was "auto all local drives" -- make that explicit so adding a folder
             # expands the source set instead of silently replacing it
             existing = _auto_roots()
-        else:
-            existing = [str(Path(r).resolve()) for r in existing if os.path.exists(r)]
+        # Keep stale roots (T-165): a root whose drive is currently missing is
+        # quarantined by scan(), not forgotten here -- dropping it on every
+        # browse would defeat the auto-repick-on-return invariant T-138 built.
+        # dedupe() canonicalises and collapses case/slash variants.
+        existing = dedupe(existing)
         if folder_str not in existing:
             existing.append(folder_str)
         self._config["scan_roots"] = existing
@@ -983,8 +987,9 @@ class Api:
             delay=self._config.get("scan_delay_ms", 10) / 1000.0,
             extra_excludes=set(self._config.get("exclude_dirs", [])),
         )
+        # _set_cache owns the linked-worktree scan (T-165); the explicit call
+        # removed here used to run the same walk a second time per browse.
         self._set_cache(projects, force=True)
-        self._scan_linked_worktrees()
 
         self.background_scanner.stop()
         self.background_scanner = BackgroundScanner(

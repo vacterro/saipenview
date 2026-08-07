@@ -931,3 +931,55 @@ class TestGetLocalDrives:
         with patch("saipenview.scanner.local_drives", return_value=["C:\\", "D:\\"]):
             drives = api.get_local_drives()
             assert "C:\\" in drives
+
+
+class TestBrowseFolderQuarantine:
+    """browse_folder must not forget stale roots (T-165)."""
+
+    def test_missing_root_survives_browse_folder(self, api, tmp_path):
+        stale = str(tmp_path / "gone-drive")
+        new_dir = tmp_path / "picked"
+        new_dir.mkdir()
+        api._config["scan_roots"] = [stale]
+
+        with (
+            patch("saipenview.api.tk.Tk"),
+            patch("saipenview.api.filedialog.askdirectory", return_value=str(new_dir)),
+            patch("saipenview.api.scan", return_value=[]),
+            patch("saipenview.api.save_config"),
+        ):
+            api.browse_folder()
+
+        roots = api._config["scan_roots"]
+        assert any("gone-drive" in r for r in roots), (
+            "a missing root was dropped from scan_roots by browse_folder -- "
+            "the quarantine invariant T-138 built requires it to stay"
+        )
+        assert any("picked" in r for r in roots), "the newly picked folder was not added"
+
+    def test_single_worktree_scan_in_rescan(self, api, api_patches):
+        with (
+            patch("saipenview.api.scan", return_value=[]),
+            patch.object(api, "_scan_linked_worktrees") as mock_wt,
+        ):
+            api.rescan()
+            assert mock_wt.call_count == 1, (
+                f"_scan_linked_worktrees ran {mock_wt.call_count} times per rescan -- "
+                "_set_cache is its single owner, rescan must not repeat it"
+            )
+
+    def test_single_worktree_scan_in_browse_folder(self, api, tmp_path):
+        new_dir = tmp_path / "picked"
+        new_dir.mkdir()
+        with (
+            patch("saipenview.api.tk.Tk"),
+            patch("saipenview.api.filedialog.askdirectory", return_value=str(new_dir)),
+            patch("saipenview.api.scan", return_value=[]),
+            patch("saipenview.api.save_config"),
+            patch.object(api, "_scan_linked_worktrees") as mock_wt,
+        ):
+            api.browse_folder()
+        assert mock_wt.call_count == 1, (
+            f"_scan_linked_worktrees ran {mock_wt.call_count} times per browse -- "
+            "_set_cache is its single owner"
+        )
