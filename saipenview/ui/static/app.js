@@ -26,6 +26,31 @@ let currentAgentPanelRoot = null;
 // typed into it) within seconds -- that was T-066's "Edit does nothing" AND
 // "form collapses itself". Live refresh pauses for this pane while it's true.
 
+// T-122: visible, persistent frontend error capture. A render failure used to
+// land only in the console (or nowhere under pythonw.exe), so a broken optional
+// panel looked like "the button does nothing" for months. Errors now surface
+// in a persistent region with the failing render stage and the current root.
+function reportRenderError(stage, message) {
+  try {
+    const region = document.getElementById("renderErrorRegion");
+    if (region) {
+      region.textContent = "[" + stage + "] " + (message || "unknown error")
+        + (currentDetailRoot ? " @ " + currentDetailRoot : "");
+      region.style.display = "block";
+    }
+  } catch (_e) { /* the region itself must never re-throw */ }
+  try {
+    console.error("[SAIPENVIEW render error] " + stage + ": " + (message || "unknown"));
+  } catch (_e) { /* console may be absent under pythonw.exe */ }
+}
+
+window.addEventListener("error", function (e) {
+  reportRenderError("window.onerror", (e && e.error && e.error.message) || (e && e.message) || "uncaught");
+});
+window.addEventListener("unhandledrejection", function (e) {
+  reportRenderError("unhandledrejection", (e && e.reason && e.reason.message) || String((e && e.reason) || ""));
+});
+
 // Flash highlight: snapshot-based change detection, hexBlend decay over ~20s
 let flashChangesEnabled = true;
 const FLASH_DECAY_SECONDS = 20;
@@ -1083,8 +1108,6 @@ function renderDetailPane(detail) {
       ${logHtml}
     `;
 
-    renderAgentPanel(detail.root, document.getElementById("agentPanelContainer"));
-
   document.getElementById("openFolderBtn")?.addEventListener("click", () => {
     window.pywebview.api.open_folder(detail.root);
   });
@@ -1421,6 +1444,18 @@ function renderDetailPane(detail) {
   }
 
   restoreCollapseState(detail.root);
+
+  // T-122: the optional Agent Panel runs LAST, after every core Detail Pane
+  // control (Edit/Folder/Terminal/Code/STATE/BOARD/LOG/Pin/Hide) is already
+  // bound -- and inside an error boundary, so a throw inside it can never
+  // leave the Edit button unbound again. Before this change the panel was
+  // rendered in the middle of the function and its failure silently skipped
+  // the bindings below it.
+  try {
+    renderAgentPanel(detail.root, document.getElementById("agentPanelContainer"));
+  } catch (err) {
+    reportRenderError("renderAgentPanel", (err && err.message) || String(err));
+  }
 
   // If deep search requested a specific section, expand it
   if (_expandSectionAfterLoad) {
