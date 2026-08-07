@@ -4,6 +4,12 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.17] - 2026-08-07
+
+### Fixed
+
+- **The app can no longer "not start" with an off-screen window (T-176).** The saved window position could be Windows' own off-screen sentinel (-32000,-32000) or a coordinate on a monitor that was unplugged since the last save. The app launched and ran perfectly -- the WINDOW was just parked where no monitor exists, so a second launch handed off to it and nothing appeared anywhere. The saved position is now validated against the visible desktop (the union of every monitor) before it is restored; an off-screen position is dropped and the OS positions the window on a real monitor instead. The stale position also self-heals: the next save overwrites it.
+
 ## [0.1.16] - 2026-08-07
 
 ### Added
