@@ -4,6 +4,18 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.16] - 2026-08-07
+
+### Added
+
+- **Real-time interactive ticket checkboxes (T-174).** Every ticket row now carries a real checkbox that IS its status: click a TODO ticket's box to start it (moves to DOING as an indeterminate `[/]`), click a DOING one to mark it done, click a DONE one to reopen, click a BLOCKED one to unblock. TODO/DOING rows also get a **Block** button that asks for a blocker reason and moves the ticket to BLOCKED with that reason recorded as a `| blocker:` field. All moves go through the single-writer board path and keep the checkbox-vs-section agreement the protocol requires.
+- **Drag-to-reorder BOARD tasks (T-175).** A ticket row can be dragged to a new position within its section; the dropped order is written straight to BOARD.md, and since board order is priority, a drag is a re-prioritisation. Same-section only, drop-on-row inserts before the target, drop on empty space appends to the end.
+- **SubSaipen readability pass (T-126).** Each sub gets an orientation glyph (saihunt 🔍, saiwiki 📖, saipython 🐍, saitranslate 🌐, saitest 🧪, crew 🔧, fallback 🤖) in both the sidebar row and the detail card, and each sub card now carries a phase-coloured left edge using the same tokens as the project rows — state reads at a glance.
+
+### Fixed
+
+- **The file-viewer reader no longer hides the ticket fields (T-125).** The reader view of BOARD.md stripped everything after the first `|`, so `| verify:` and `| blocker:` evidence — the whole point of a reviewer reading the board — was invisible. The field tail is now kept and rendered as a muted sub-line, and STATE.md's known protocol keys (phase/task/next_action/blocker/agent/updated) are highlighted.
+
 ## [0.1.15] - 2026-08-07
 
 ### Fixed
