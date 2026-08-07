@@ -3513,11 +3513,11 @@ function parseTestLine(root, line) {
     const m = l.match(/(\d+) passed.*(\d+) failed/);
     if (parseInt(m[2]) > 0) ts.status = 'fail';
     else ts.status = 'pass';
-  } else if (/(\d+) failed/.test(l)) {
+  } else if (/\b(\d+) failed\b/.test(l)) {
     ts.status = 'fail';
-  } else if (/(\d+) passed/.test(l)) {
+  } else if (/\b(\d+) passed\b/.test(l)) {
     if (ts.status !== 'fail') ts.status = 'pass';
-  } else if (/^fail\s+/.test(line) || l.includes('test failed')) {
+  } else if (/^failed\b/.test(l) || l.includes('test failed')) {
     ts.status = 'fail';
   } else if (/^ok\s+/.test(line)) {
     if (ts.status !== 'fail') ts.status = 'pass';
