@@ -80,6 +80,28 @@ def _work_area() -> tuple[int, int, int, int]:
         return fallback
 
 
+def _position_is_on_screen(x: int, y: int, w: int, h: int) -> bool:
+    """True when the rect (x, y, w, h) intersects the visible desktop.
+
+    A saved geometry that points at a removed monitor (or a window that was
+    parked at Windows' off-screen sentinel -32000,-32000) must never be
+    restored verbatim -- the app would "not start" while the process happily
+    runs with a window nobody can see (T-176). The virtual screen is the
+    union of every monitor; a rect that intersects none of it is off-screen.
+    """
+    try:
+        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN = 76, 77
+        SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 78, 79
+        get = ctypes.windll.user32.GetSystemMetrics
+        vx, vy = get(SM_XVIRTUALSCREEN), get(SM_YVIRTUALSCREEN)
+        vw, vh = get(SM_CXVIRTUALSCREEN), get(SM_CYVIRTUALSCREEN)
+    except Exception:  # noqa: BLE001 - metric query failure degrades to "keep"
+        return True
+    if vw <= 0 or vh <= 0:
+        return True
+    return not (x + w <= vx or x >= vx + vw or y + h <= vy or y >= vy + vh)
+
+
 class MainWindow:
     def __init__(self, api=None, api_ref=None):
         self._api = api
@@ -100,8 +122,20 @@ class MainWindow:
             "on_top": cfg.get("always_on_top", True),
         }
         if x is not None and y is not None:
-            kwargs["x"] = x
-            kwargs["y"] = y
+            # T-176: a saved position that no longer sits on any monitor (a
+            # removed display, or Windows' own -32000,-32000 sentinel) would
+            # render the window invisible -- the app "does not start" while
+            # the process runs fine. Drop the coordinates and let the OS
+            # default-position the window instead.
+            if _position_is_on_screen(x, y, width, height):
+                kwargs["x"] = x
+                kwargs["y"] = y
+            else:
+                print(
+                    f"SAIPENVIEW: saved position {(x, y)} is off-screen; "
+                    "positioning the window on a visible monitor",
+                    file=sys.stderr,
+                )
 
         self._icon_path = STATIC_DIR / "saipen_icon.ico"
         self._window = webview.create_window(**kwargs)
