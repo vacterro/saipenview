@@ -156,6 +156,10 @@ def write_doc(
 
     Temp file plus `os.replace`, because the earlier plain write left a
     truncated file when it was interrupted and the next start choked on it.
+    The temp name is unique per call (T-164: no two writers race over one
+    shared ``<name>.tmp``) and is removed in ``finally`` so a failed encode or
+    a failed ``os.replace`` cannot leave debris -- and a failed write never
+    touches the target, so the original stays byte-identical.
     Takes the encoding names `read_doc_meta` hands back, including its
     `-nobom` suffix. The UTF-16 and UTF-32 codecs named with an explicit byte
     order do NOT emit a BOM of their own, so writing back what was read from a
@@ -164,6 +168,8 @@ def write_doc(
     shape `_bomless_utf16` exists to catch.
     """
     import os
+    import stat
+    import tempfile
 
     path = Path(path)
     if newline != "\n":
@@ -179,9 +185,23 @@ def write_doc(
             if enc == codec and not raw.startswith(bom):
                 raw = bom + raw
                 break
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(raw)
-    os.replace(tmp, path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+        if path.exists():
+            try:
+                os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def encoding_of(path: Path | str) -> str:

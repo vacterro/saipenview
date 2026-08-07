@@ -34,7 +34,7 @@ from saipenview.parser import (
     parse_board,
     update_state,
 )
-from saipenview.paths import dedupe, validate_file_path
+from saipenview.paths import canonical, dedupe, validate_file_path
 from saipenview.runtime import ProcessManager
 from saipenview.scanner import (
     BackgroundScanner,
@@ -46,7 +46,7 @@ from saipenview.scanner import (
     get_scan_progress,
     scan,
 )
-from saipenview.textio import read_doc
+from saipenview.textio import read_doc, read_doc_meta, write_doc
 
 _OUTBOX_STATUS_ORDER = {"ready": 0, "blocked": 1, "draft": 2, "stale": 3, "reviewed": 4}
 
@@ -617,32 +617,51 @@ class Api:
         return [_project_to_dict(p, pinned_set) for p in raw]
 
     def open_folder(self, root_str: str) -> bool:
-        if os.path.exists(root_str):
+        root = self._resolve_root(root_str)
+        if not root:
+            print(
+                f"SAIPENVIEW: open_folder rejected {root_str!r}: not a verified project root",
+                file=sys.stderr,
+            )
+            return False
+        if os.path.exists(root):
             try:
                 # S606: os.startfile IS the no-shell Windows API (ShellExecute);
                 # the path is an existing dir from our own scan, never user text.
-                os.startfile(root_str)  # noqa: S606
+                os.startfile(root)  # noqa: S606
                 return True
             except OSError as e:
-                print(
-                    f"SAIPENVIEW: open_folder({root_str}) failed: {e}", file=sys.stderr
-                )
+                print(f"SAIPENVIEW: open_folder({root}) failed: {e}", file=sys.stderr)
         return False
 
     def open_terminal(self, root_str: str) -> bool:
-        if os.path.exists(root_str):
+        root = self._resolve_root(root_str)
+        if not root:
+            print(
+                f"SAIPENVIEW: open_terminal rejected {root_str!r}: not a verified project root",
+                file=sys.stderr,
+            )
+            return False
+        if os.path.exists(root):
             try:
-                subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root_str}"'])
+                subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root}"'])
                 return True
             except (OSError, subprocess.SubprocessError) as e:
                 print(
-                    f"SAIPENVIEW: open_terminal({root_str}) failed: {e}",
+                    f"SAIPENVIEW: open_terminal({root}) failed: {e}",
                     file=sys.stderr,
                 )
         return False
 
     def open_editor(self, root_str: str) -> bool:
-        if os.path.exists(root_str):
+        root = self._resolve_root(root_str)
+        if not root:
+            print(
+                f"SAIPENVIEW: open_editor rejected {root_str!r}: not a verified project root",
+                file=sys.stderr,
+            )
+            return False
+        if os.path.exists(root):
             try:
                 # shell=True used to be needed because `code` is really
                 # code.cmd on Windows and Popen won't resolve it otherwise --
@@ -660,13 +679,11 @@ class Api:
                     return False
                 # 0x08000000 = CREATE_NO_WINDOW
                 subprocess.Popen(  # noqa: S603 - resolved absolute path, no shell
-                    [code_exe, root_str], creationflags=0x08000000
+                    [code_exe, root], creationflags=0x08000000
                 )
                 return True
             except (OSError, FileNotFoundError) as e:
-                print(
-                    f"SAIPENVIEW: open_editor({root_str}) failed: {e}", file=sys.stderr
-                )
+                print(f"SAIPENVIEW: open_editor({root}) failed: {e}", file=sys.stderr)
         return False
 
     def read_file_text(self, file_path: str) -> str | None:
@@ -698,33 +715,73 @@ class Api:
             )
             return False
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content)
+            path = Path(file_path)
+            # Normalise line endings so write_doc re-applies exactly one
+            # convention: a CRLF file whose editor content already carries
+            # \r\n would otherwise get doubled \r\r\n.
+            content = content.replace("\r\n", "\n").replace("\r", "\n")
+            if path.is_file():
+                # Preserve the original encoding and newline so saving one
+                # field never re-encodes a UTF-16/BOM/CRLF file (T-164). New
+                # files default to UTF-8 LF.
+                _, enc, newline = read_doc_meta(path)
+                write_doc(path, content, enc, newline)
+            else:
+                write_doc(path, content)
             return True
         except OSError as e:
             print(
                 f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr
             )
-        return False
+            return False
 
-    def _known_roots(self) -> list[str]:
-        """Canonical set of roots the file viewer may open files under.
+    def _verified_project_roots(self) -> list[str]:
+        """Canonical roots the app may actually act on.
 
-        Everything currently scanned, everything pinned/hidden, and any
-        browse/scan config roots -- all canonicalised, deduplicated. The
-        frontend file viewer only ever opens STATE/BOARD/LOG/MANIFEST.md and
-        OUTBOX.md under one of these; anything else is a rejection, fail-closed.
-        """
+        Scanned, pinned and hidden roots that genuinely hold a
+        ``.saipen/STATE.md``. A scan root alone -- potentially a whole drive --
+        is DISCOVERY scope, never file-access scope, so it grants nothing
+        until it is verified to be a project root (T-164)."""
         roots: list[str] = []
         with self._lock:
             roots.extend(str(p["root"]) for p in self._projects)
         roots.extend(self._config.get("pinned_roots") or [])
         roots.extend(self._config.get("hidden_roots") or [])
-        roots.extend(self._config.get("scan_roots") or [])
-        return dedupe(roots)
+        verified: list[str] = []
+        for r in dedupe(roots):
+            c = canonical(r)
+            if (Path(c) / ".saipen" / "STATE.md").is_file():
+                verified.append(c)
+        return verified
+
+    def _known_roots(self) -> list[str]:
+        """Canonical set of roots the file viewer may open files under.
+
+        Only verified project roots -- anything the app knows about that does
+        not hold a ``.saipen/STATE.md`` (a bare scan root such as ``V:\\``)
+        is excluded, fail-closed."""
+        return self._verified_project_roots()
+
+    def _resolve_root(self, root_str: str) -> str | None:
+        """The one resolver every root-taking JS method goes through (T-164).
+
+        Returns the canonical spelling when *root_str* is a verified project
+        root the app knows about; None for anything unknown, escaped, or not a
+        real project. Callers must return a controlled error on None -- never
+        a side effect."""
+        try:
+            c = canonical(root_str)
+        except Exception:  # noqa: BLE001 - any path resolution failure denies
+            return None
+        if c not in self._verified_project_roots():
+            return None
+        return c
 
     def get_project_detail(self, root_str: str) -> dict | None:
-        p = Path(root_str)
+        root = self._resolve_root(root_str)
+        if not root:
+            return None
+        p = Path(root)
         proj = load_project(p)
         if not proj:
             return None
@@ -746,11 +803,14 @@ class Api:
     def update_project_state(self, root_str: str, updates: dict) -> dict | None:
         from saipenview.parser import update_state
 
-        p = Path(root_str)
+        root = self._resolve_root(root_str)
+        if not root:
+            return None
+        p = Path(root)
         if update_state(p, updates):
             # force cache update
             self.rescan()
-            return self.get_project_detail(root_str)
+            return self.get_project_detail(root)
         return None
 
     def set_hotkey_callback(self, callback) -> None:
@@ -1006,23 +1066,33 @@ class Api:
         project. Returns the result dict from collect_outbox_entry()."""
         from saipenview.parser import collect_outbox_entry
 
-        p = Path(root_str)
+        root = self._resolve_root(root_str)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
+        p = Path(root)
         result = collect_outbox_entry(p, sub_name, entry_id)
         if result.get("ok"):
             # Refresh cache so the UI shows updated state
             self.rescan()
-            result["updated_detail"] = self.get_project_detail(root_str)
+            result["updated_detail"] = self.get_project_detail(root)
         return result
 
     def run_command(self, root_str: str, command: str) -> bool:
         """Open a new cmd.exe window in the project root and run a command.
         The window stays open (/k) so the user can see output."""
+        root = self._resolve_root(root_str)
+        if not root:
+            print(
+                f"SAIPENVIEW: run_command rejected {root_str!r}: not a verified project root",
+                file=sys.stderr,
+            )
+            return False
         try:
-            subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root_str}" && {command}'])
+            subprocess.Popen(["cmd.exe", "/k", f'cd /d "{root}" && {command}'])
             return True
         except (OSError, subprocess.SubprocessError) as e:
             print(
-                f"SAIPENVIEW: run_command({root_str}, {command}) failed: {e}",
+                f"SAIPENVIEW: run_command({root}, {command}) failed: {e}",
                 file=sys.stderr,
             )
             return False
@@ -1144,10 +1214,13 @@ class Api:
         or None on failure."""
         from saipenview.parser import move_ticket
 
-        p = Path(root_str)
+        root = self._resolve_root(root_str)
+        if not root:
+            return None
+        p = Path(root)
         if move_ticket(p, ticket_id, action):
             self.rescan()
-            return self.get_project_detail(root_str)
+            return self.get_project_detail(root)
         return None
 
     def minimize_window(self) -> None:
@@ -1195,10 +1268,16 @@ class Api:
                 "ok": False,
                 "error": f"Engine '{engine.display_name}' not found on this machine",
             }
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return self._process_manager.launch(engine, root, instruction)
 
     def stop_agent(self, root: str) -> dict:
         """Kill a running agent process."""
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return self._process_manager.kill(root)
 
     def add_human_note(self, root: str, note: str) -> dict:
@@ -1220,6 +1299,9 @@ class Api:
         Newlines are stripped: the frontmatter is flat one-key-per-line, so an
         embedded newline would silently split the note into a bogus second key.
         """
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         state_md = Path(root) / ".saipen" / "STATE.md"
         if not state_md.exists():
             return {"ok": False, "error": "STATE.md not found"}
@@ -1235,32 +1317,53 @@ class Api:
 
     def get_diff(self, root: str) -> dict:
         """Full preview: tracked diff + untracked content + mutation scope."""
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return get_working_diff(root)
 
     def commit_agent_work(
         self, root: str, message: str, fingerprint: str | None = None
     ) -> dict:
         """Commit exactly the scope the preview showed (T-162)."""
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return commit_agent_work(root, message, fingerprint)
 
     def revert_agent_work(self, root: str, fingerprint: str | None = None) -> dict:
         """Restore tracked changes only; untracked files are untouched."""
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return revert_agent_work(root, fingerprint)
 
     def delete_untracked_files(self, root: str, fingerprint: str | None = None) -> dict:
         """Explicit separate operation: delete untracked files (T-162)."""
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return delete_untracked_files(root, fingerprint)
 
     def send_agent_input(self, root: str, text: str) -> dict:
         """Send text to a running agent's stdin."""
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return self._process_manager.send_input(root, text)
 
     def get_agent_output(self, root: str, since_line: int = 0) -> dict:
         """Return new output lines since a given line number."""
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return self._process_manager.get_output(root, since_line)
 
     def get_agent_status(self, root: str) -> dict:
         """Return status info for an agent process on a project."""
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
         return self._process_manager.get_status(root)
 
     def list_running_agents(self) -> list[dict]:
@@ -1269,6 +1372,9 @@ class Api:
 
     def get_agent_history(self, root: str, limit: int = 20) -> list[dict]:
         """Past agent runs for a project, newest first, across restarts."""
+        root = self._resolve_root(root)
+        if not root:
+            return []
         return self._process_manager.sessions.history(root, limit=limit)
 
     def get_agent_transcript(self, run_id: str, max_lines: int = 2000) -> dict:
@@ -1282,6 +1388,9 @@ class Api:
         restart presents an empty console and no evidence an agent was ever
         here, which is the whole defect this exists to close.
         """
+        root = self._resolve_root(root)
+        if not root:
+            return {"found": False}
         last = self._process_manager.sessions.last_run(root)
         if not last:
             return {"found": False}

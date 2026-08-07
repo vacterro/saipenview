@@ -74,7 +74,14 @@ def api(api_patches) -> Api:
     return Api()
 
 
-def _make_project(name: str, root: str, phase: str, mtime: int, git_dirty: bool = False, is_pinned: bool = False) -> dict:
+def _make_project(
+    name: str,
+    root: str,
+    phase: str,
+    mtime: int,
+    git_dirty: bool = False,
+    is_pinned: bool = False,
+) -> dict:
     return {
         "name": name,
         "root": root,
@@ -96,6 +103,25 @@ def _make_project(name: str, root: str, phase: str, mtime: int, git_dirty: bool 
     }
 
 
+def _seed_verified_root(api, root: Path) -> Path:
+    """Make *root* a verified project root the Api will act on (T-164).
+
+    The T-164 boundary means scan roots grant nothing: a root is actionable
+    only when it holds a real .saipen/STATE.md and the Api knows about it.
+    This helper builds both halves -- the file and a pinned-root entry."""
+    saipen = root / ".saipen"
+    saipen.mkdir(parents=True, exist_ok=True)
+    (saipen / "STATE.md").write_text(
+        "---\nphase: DONE\ntask: none\nnext_action: RUN: noop\nblocker: none\n---\n",
+        encoding="utf-8",
+    )
+    (saipen / "BOARD.md").write_text(
+        "# BOARD\n\n## DOING\n\n## TODO\n\n## DONE\n\n## BLOCKED\n", encoding="utf-8"
+    )
+    api._config["pinned_roots"] = [str(root)]
+    return root
+
+
 @pytest.fixture
 def api_with_projects(api, tmp_path) -> Api:
     """Api with pre-populated _projects cache sorted in smart order."""
@@ -104,7 +130,14 @@ def api_with_projects(api, tmp_path) -> Api:
     api._config["pinned_roots"] = [str(tmp_path / "beta")]
     api._projects = [
         _make_project("alpha", str(tmp_path / "alpha"), "DONE", 500),
-        _make_project("beta", str(tmp_path / "beta"), "BUILD", 1000, git_dirty=True, is_pinned=True),
+        _make_project(
+            "beta",
+            str(tmp_path / "beta"),
+            "BUILD",
+            1000,
+            git_dirty=True,
+            is_pinned=True,
+        ),
         _make_project("gamma", str(tmp_path / "gamma"), "BLOCKED", 100),
     ]
     # Sort to match what _set_cache would produce
@@ -149,7 +182,9 @@ class TestTogglePin:
         root = str(tmp_path / "alpha")
         api_with_projects.toggle_pin(root)
         assert root in api_with_projects._config.get("pinned_roots", [])
-        alpha = next(p for p in api_with_projects.get_projects() if p["name"] == "alpha")
+        alpha = next(
+            p for p in api_with_projects.get_projects() if p["name"] == "alpha"
+        )
         assert alpha["is_pinned"] is True
 
     def test_unpin_project(self, api_with_projects, tmp_path):
@@ -157,7 +192,9 @@ class TestTogglePin:
         api_with_projects.toggle_pin(root)
         api_with_projects.toggle_pin(root)
         assert root not in api_with_projects._config.get("pinned_roots", [])
-        alpha = next(p for p in api_with_projects.get_projects() if p["name"] == "alpha")
+        alpha = next(
+            p for p in api_with_projects.get_projects() if p["name"] == "alpha"
+        )
         assert alpha["is_pinned"] is False
 
     def test_pin_persists_to_config(self, api_with_projects, api_patches, tmp_path):
@@ -276,7 +313,9 @@ class TestRefreshKnown:
             result = api_with_projects.refresh_known()
             assert len(result) == 3
 
-    def test_refreshes_with_new_data(self, api_with_projects, tmp_path, mock_project_status):
+    def test_refreshes_with_new_data(
+        self, api_with_projects, tmp_path, mock_project_status
+    ):
         """When load_project returns new data, it replaces the row."""
         mock_project_status.root = tmp_path / "alpha"
         mock_project_status.state = {"phase": "BUILD", "task": "rebuilding"}
@@ -298,7 +337,9 @@ class TestRefreshKnown:
             roots_called = [call.args[0].name for call in mock_load.call_args_list]
             assert "alpha" not in roots_called
 
-    def test_carries_git_state_forward(self, api_with_projects, tmp_path, mock_project_status):
+    def test_carries_git_state_forward(
+        self, api_with_projects, tmp_path, mock_project_status
+    ):
         """Git branch/dirty from previous row is carried forward."""
         api_with_projects._projects[0]["git_branch"] = "feature-x"
         api_with_projects._projects[0]["git_dirty"] = True
@@ -311,7 +352,9 @@ class TestRefreshKnown:
             assert alpha["git_branch"] == "feature-x"
             assert alpha["git_dirty"] is True
 
-    def test_writes_cache_when_changed(self, api_with_projects, tmp_path, mock_project_status):
+    def test_writes_cache_when_changed(
+        self, api_with_projects, tmp_path, mock_project_status
+    ):
         """When projects change, cache is written."""
         mock_project_status.root = tmp_path / "alpha"
 
@@ -372,7 +415,9 @@ class TestQuickSearch:
 
     def test_matches_multiple_projects(self, api_with_projects):
         """Multiple projects can match the same query."""
-        api_with_projects._projects.append(_make_project("alpha-plus", "/some/alpha-plus", "INIT", 0))
+        api_with_projects._projects.append(
+            _make_project("alpha-plus", "/some/alpha-plus", "INIT", 0)
+        )
         result = api_with_projects.quick_search("alpha")
         assert len(result) == 2
 
@@ -394,7 +439,9 @@ class TestQuickSearch:
     def test_ticket_search_via_mock(self, api_with_projects):
         """Ticket search path via _search_board_for_tickets can be verified with a mock."""
         matched = [{"id": "T-001", "desc": "fix parser", "section": "DOING"}]
-        with patch.object(api_with_projects, "_search_board_for_tickets", return_value=matched):
+        with patch.object(
+            api_with_projects, "_search_board_for_tickets", return_value=matched
+        ):
             result = api_with_projects.quick_search("fix")
             assert len(result) >= 1
             r = result[0]
@@ -463,17 +510,11 @@ class TestGetProjectDetail:
 
     def test_includes_custom_commands(self, api, tmp_path, mock_project_status):
         mock_project_status.root = tmp_path / "test-proj"
-        (tmp_path / "test-proj" / ".saipen").mkdir(parents=True)
-        (tmp_path / "test-proj" / ".saipen" / "STATE.md").write_text(
-            "---\nphase: BUILD\n---\n", encoding="utf-8"
-        )
-        (tmp_path / "test-proj" / ".saipen" / "BOARD.md").write_text(
-            "# BOARD\n\n## TODO\n\n## DOING\n\n## DONE\n\n", encoding="utf-8"
-        )
+        root = _seed_verified_root(api, tmp_path / "test-proj")
         api._config["custom_commands"] = [{"label": "Deploy", "command": "deploy.bat"}]
 
         with patch("saipenview.api.load_project", return_value=mock_project_status):
-            result = api.get_project_detail(str(tmp_path / "test-proj"))
+            result = api.get_project_detail(str(root))
             assert result is not None
             assert len(result["custom_commands"]) == 1
             assert result["custom_commands"][0]["label"] == "Deploy"
@@ -486,19 +527,26 @@ class TestOpenFolder:
         assert api.open_folder("Z:\\nonexistent") is False
 
     def test_returns_true_for_existing_path(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with patch("os.startfile") as mock_startfile:
             result = api.open_folder(str(d))
             assert result is True
-            mock_startfile.assert_called_once_with(str(d))
+            from saipenview.paths import canonical
+
+            assert mock_startfile.call_args.args[0].lower() == canonical(d).lower()
 
     def test_handles_startfile_exception(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with patch("os.startfile", side_effect=OSError("access denied")):
             result = api.open_folder(str(d))
             assert result is False
+
+    def test_unverified_root_rejected(self, api, tmp_path):
+        d = tmp_path / "plain-dir"
+        d.mkdir()
+        with patch("os.startfile") as mock_startfile:
+            assert api.open_folder(str(d)) is False
+            mock_startfile.assert_not_called()
 
 
 class TestOpenTerminal:
@@ -508,16 +556,14 @@ class TestOpenTerminal:
         assert api.open_terminal("Z:\\nonexistent") is False
 
     def test_returns_true_and_opens_cmd(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with patch("subprocess.Popen") as mock_popen:
             result = api.open_terminal(str(d))
             assert result is True
             mock_popen.assert_called_once()
 
     def test_handles_popen_exception(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with patch("subprocess.Popen", side_effect=OSError("cmd not found")):
             result = api.open_terminal(str(d))
             assert result is False
@@ -530,15 +576,13 @@ class TestOpenEditor:
         assert api.open_editor("Z:\\nonexistent") is False
 
     def test_returns_false_when_code_not_found(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with patch("shutil.which", return_value=None):
             result = api.open_editor(str(d))
             assert result is False
 
     def test_returns_true_and_launches_code(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with (
             patch("shutil.which", return_value="C:\\Program Files\\VS Code\\code.exe"),
             patch("subprocess.Popen") as mock_popen,
@@ -548,8 +592,7 @@ class TestOpenEditor:
             mock_popen.assert_called_once()
 
     def test_handles_popen_exception(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with (
             patch("shutil.which", return_value="code.exe"),
             patch("subprocess.Popen", side_effect=OSError("launch failed")),
@@ -562,8 +605,7 @@ class TestReadWriteFile:
     """read_file_text and write_file_text are contained to known roots (T-138)."""
 
     def _seed_root(self, api, tmp_path):
-        api._config["scan_roots"] = [str(tmp_path)]
-        return tmp_path
+        return _seed_verified_root(api, tmp_path)
 
     def test_read_existing_file(self, api, tmp_path):
         self._seed_root(api, tmp_path)
@@ -744,16 +786,14 @@ class TestRunCommand:
     """run_command opens cmd.exe with the given command."""
 
     def test_runs_command(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with patch("subprocess.Popen") as mock_popen:
             result = api.run_command(str(d), "npm test")
             assert result is True
             mock_popen.assert_called_once()
 
     def test_handles_exception(self, api, tmp_path):
-        d = tmp_path / "test-dir"
-        d.mkdir()
+        d = _seed_verified_root(api, tmp_path / "test-dir")
         with patch("subprocess.Popen", side_effect=OSError("cmd failed")):
             result = api.run_command(str(d), "npm test")
             assert result is False
@@ -763,22 +803,19 @@ class TestCollectOutboxAPI:
     """collect_outbox delegates to parser.collect_outbox_entry and rescans."""
 
     def test_collect_calls_entry_and_rescans(self, api, tmp_path):
-        d = str(tmp_path / "proj")
-        (tmp_path / "proj" / ".saipen").mkdir(parents=True)
-        (tmp_path / "proj" / ".saipen" / "STATE.md").write_text(
-            "---\nphase: BUILD\n---\n", encoding="utf-8"
-        )
-        (tmp_path / "proj" / ".saipen" / "BOARD.md").write_text(
-            "# BOARD\n\n## TODO\n\n## DONE\n\n", encoding="utf-8"
-        )
+        d = _seed_verified_root(api, tmp_path / "proj")
 
         with (
             patch("saipenview.parser.collect_outbox_entry") as mock_collect,
             patch.object(api, "rescan"),
             patch.object(api, "get_project_detail", return_value={"name": "proj"}),
         ):
-            mock_collect.return_value = {"ok": True, "ticket_id": "T-001", "message": "created"}
-            result = api.collect_outbox(d, "saihunt", "HUNT-001")
+            mock_collect.return_value = {
+                "ok": True,
+                "ticket_id": "T-001",
+                "message": "created",
+            }
+            result = api.collect_outbox(str(d), "saihunt", "HUNT-001")
             assert result["ok"] is True
             assert "updated_detail" in result
 
@@ -787,20 +824,17 @@ class TestToggleTicketStatus:
     """toggle_ticket_status calls move_ticket and returns updated detail."""
 
     def test_returns_detail_on_success(self, api, tmp_path):
-        d = str(tmp_path / "proj")
-        (tmp_path / "proj" / ".saipen").mkdir(parents=True)
-        (tmp_path / "proj" / ".saipen" / "STATE.md").write_text(
-            "---\nphase: BUILD\n---\n", encoding="utf-8"
-        )
+        d = _seed_verified_root(api, tmp_path / "proj")
         (tmp_path / "proj" / ".saipen" / "BOARD.md").write_text(
-            "# BOARD\n\n## TODO\n- [ ] T-001 | test\n\n## DOING\n\n## DONE\n\n", encoding="utf-8"
+            "# BOARD\n\n## TODO\n- [ ] T-001 | test\n\n## DOING\n\n## DONE\n\n",
+            encoding="utf-8",
         )
 
         with (
             patch("saipenview.parser.move_ticket", return_value=True),
             patch.object(api, "get_project_detail", return_value={"name": "proj"}),
         ):
-            result = api.toggle_ticket_status(d, "T-001", "start")
+            result = api.toggle_ticket_status(str(d), "T-001", "start")
             assert result is not None
             assert result["name"] == "proj"
 
