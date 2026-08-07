@@ -4,6 +4,12 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.20] - 2026-08-07
+
+### Added
+
+- **Record manual work (T-127).** When a project's `.saipen/` files change from OUTSIDE the app — a hand edit, an external tool, a commit the app did not make — the detail pane shows a persistent "Unrecorded external change" bar with a **Record manual work** button. Clicking it asks for a short description and writes an explicit, user-attributed record: a `T-### Manual: <desc> | owner: user` ticket on the board, a valid LOG evidence line, and best-effort git context (current HEAD + dirty-file count). SAIPENVIEW never guesses who changed a file: the prompt is the attribution. The app's own writes are tracked so its actions never trigger the prompt.
+
 ## [0.1.19] - 2026-08-07
 
 ### Added
