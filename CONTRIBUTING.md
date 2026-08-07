@@ -102,20 +102,24 @@ saipenview/
 ├── textio.py       — One reader for every .saipen/ file (BOM, UTF-16, cp1251)
 ├── protocol.py     — The protocol's closed vocabularies + BASELINE_VERSION
 ├── conformance.py  — Grades a project against those vocabularies
-├── api.py          — JS-facing pywebview bridge (66 public methods)
+├── api.py          — JS-facing pywebview bridge (85 public methods)
 ├── config.py       — Settings load/save (atomic writes)
 ├── tray.py         — pystray system-tray icon + context menu
 ├── hotkey.py       — Global hotkey registration (keyboard lib)
 ├── autostart.py    — Windows Registry autostart management
-├── zone_picker.py  — Alt+F14 corner-snap zone picker (tkinter)
+├── zone_picker.py  — Ctrl+Q corner-snap zone picker (tkinter)
 ├── events.py       — In-process event bus
 ├── guard.py        — Single-instance lock + show-request handoff
 ├── git_diff.py     — Working-tree diff / commit / revert for agent actions
 ├── runtime.py      — Agent Engine process manager
+├── sessions.py     — Agent run history + stored transcripts
 ├── watcher.py      — Watchdog file watcher on .saipen/ files
+├── themes.py       — Colour themes — palette + hexBlend computation
+├── paths.py        — Path resolution helpers (executable/launcher discovery)
+├── protocol_write.py — Write coordinator — atomic .saipen mutations, CAS + E/T allocation
 ├── __init__.py     — Version constant
 ├── __main__.py     — CLI entry point
-├── engines/        — Agent Engine: supported CLI engines (claude-code, codex, aider, gemini, cline, goose, agy, generic_cli)
+├── engines/        — Agent Engine: supported CLI engines (claude-code, codex, aider, gemini, cline, goose, agy, generic_cli, opencode)
 ├── ui/
 │   ├── window.py   — pywebview window show/hide/toggle/drag/snap
 │   └── static/     — Frontend assets
@@ -133,7 +137,7 @@ saipenview/
 - **Atomic writes** — config and cache use `temp-file + os.replace` so a crash can never truncate them.
 - **Stale-read safe** — the 5s UI poll calls `refresh_known()` (re-reads only `.saipen/` files, no directory walk), so edits to `STATE.md` appear within seconds without a full drive scan.
 - **No CSS transitions** — all visual effects (flash, heat, hover) are JavaScript-driven `hexBlend` recomputations, strictly following the vintage no-animation constraint.
-- **Agent Engine layer** — `runtime.py`, `engines/`, `events.py`, `guard.py`, `git_diff.py`, `watcher.py` follow the same conventions as the rest of the package; `api.py` exposes its 66 public methods to the frontend.
+- **Agent Engine layer** — `runtime.py`, `engines/`, `events.py`, `guard.py`, `git_diff.py`, `watcher.py` follow the same conventions as the rest of the package; `api.py` exposes its 85 public methods to the frontend.
 
 ---
 

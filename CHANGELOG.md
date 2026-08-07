@@ -14,6 +14,19 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## [0.1.23] - 2026-08-07
+
+### Fixed
+
+- **README/CONTRIBUTING code-mapping drift (T-194).** Architecture and
+  Features doc claims reconciled with the tree at HEAD: engines list now
+  includes `opencode` (9 adapters live, README and CONTRIBUTING both),
+  both architecture trees list `sessions.py`, `themes.py`, `paths.py` and
+  `protocol_write.py`, CONTRIBUTING's api method count corrected
+  `66` → `85`, and its corner-snap hotkey claim updated `Alt+F14` → `Ctrl+Q`
+  (T-180 shipped the ctrl+q default). Wiki package WIKI-013 from saiwiki,
+  collected and verified fresh at 71ed3a5.
+
 ## [0.1.22] - 2026-08-07
 
 ### Added

@@ -56,7 +56,7 @@
 - **Outbox counts** — ready/blocked/draft/reviewed at a glance
 - **One-click collect** — fold ready entries into main project
 - **Stale warning** — detects out-of-date protocol files
-- **Agent Engine** — launch `claude-code` (or other engines: codex, aider, gemini, cline, goose, agy, generic_cli) in a project
+- **Agent Engine** — launch `claude-code` (or other engines: codex, aider, gemini, cline, goose, agy, generic_cli, opencode) in a project
   - **Live status** — running/exit state, CPU, elapsed time per project
   - **Output console** — buffered agent output (default 5000 lines), stdin input only for engines with proven stdin support
   - **Kill / stop all** — per-project kill and global stop
@@ -318,9 +318,13 @@ saipenview/
 ├── guard.py            Single-instance lock + show-request handoff
 ├── git_diff.py         Working-tree diff / commit / revert for agent actions
 ├── runtime.py          Agent Engine — process manager for launched agents
+├── sessions.py         Agent run history + stored transcripts
 ├── watcher.py          Watchdog file watcher on .saipen/ files
+├── themes.py           Colour themes — palette + hexBlend computation
+├── paths.py            Path resolution helpers (executable/launcher discovery)
+├── protocol_write.py   Write coordinator — atomic .saipen mutations, CAS + E/T allocation
 ├── engines/            Agent Engine — supported CLI engines (claude-code, codex,
-│                       aider, gemini, cline, goose, agy, generic_cli)
+│                       aider, gemini, cline, goose, agy, generic_cli, opencode)
 ├── ui/
 │   ├── window.py       pywebview window — show/hide/toggle/snap
 │   └── static/
