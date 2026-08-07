@@ -507,6 +507,9 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .ticket-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; }
 .ticket-id { color: var(--borderHighlight); font-family: monospace; font-size: 10px; font-weight: bold; flex-shrink: 0; min-width: 50px; }
 .ticket-desc { color: var(--textPrimary); font-size: 10px; flex: 1 1 auto; word-break: break-word; }
+.ticket-chk { width: 12px; height: 12px; margin: 0; flex-shrink: 0; cursor: pointer; }
+.ticket-block-btn { color: var(--dangerText); }
+.ticket-blocker { font-size: 9px; color: var(--dangerText); padding: 1px 6px 4px 24px; word-break: break-word; }
 
 /* Contextual quick-action buttons — accent teal, slightly smaller */
 .quick-action-btn { font-size: 9px; padding: 1px 4px; min-height: 16px; color: var(--accentTeal); }

@@ -936,7 +936,8 @@ class Api:
             {"id": t.ticket_id, "desc": t.description} for t in proj.board.todo
         ]
         d["blocked_tickets"] = [
-            {"id": t.ticket_id, "desc": t.description} for t in proj.board.blocked
+            {"id": t.ticket_id, "desc": t.description, "blocker": t.blocker}
+            for t in proj.board.blocked
         ]
         d["done_tickets"] = [
             {"id": t.ticket_id, "desc": t.description} for t in proj.board.done[-5:]
@@ -1355,18 +1356,23 @@ class Api:
         return results
 
     def toggle_ticket_status(
-        self, root_str: str, ticket_id: str, action: str
+        self,
+        root_str: str,
+        ticket_id: str,
+        action: str,
+        blocker_reason: str | None = None,
     ) -> dict | None:
         """Move a ticket between sections on BOARD.md: start (TODO->DOING),
-        done (DOING->DONE), reopen (DONE->TODO). Returns updated project detail
-        or None on failure."""
+        done (DOING->DONE), reopen (DONE->TODO), block (->BLOCKED, with the
+        reason appended as `| blocker:`), unblock (BLOCKED->TODO). Returns
+        updated project detail or None on failure."""
         from saipenview.parser import move_ticket
 
         root = self._resolve_root(root_str)
         if not root:
             return None
         p = Path(root)
-        if move_ticket(p, ticket_id, action):
+        if move_ticket(p, ticket_id, action, blocker_reason=blocker_reason):
             self.rescan()
             return self.get_project_detail(root)
         return None

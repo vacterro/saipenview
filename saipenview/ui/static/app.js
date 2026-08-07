@@ -897,10 +897,21 @@ function renderDetailPane(detail) {
       </div>
     </div>`;
   };
+  // T-174: every ticket row carries a real checkbox -- the checkbox is the
+  // status, and clicking it advances it through the cycle (TODO->DOING->DONE->
+  // TODO, BLOCKED->TODO). DOING renders as indeterminate (`[/]`). TODO/DOING
+  // rows additionally offer a Block button that prompts for the blocker reason.
   const renderTicketGroupWithActions = (title, tickets, root) => {
     if (!tickets || !tickets.length) return "";
     const sectionKey = "tickets-" + title.toLowerCase().replace(/[^a-z]+/g, "-");
     const canCollapse = tickets.length > 5;
+    const actionFor = {
+      DOING: "done",
+      TODO: "start",
+      "Recent DONE": "reopen",
+      BLOCKED: "unblock",
+    };
+    const checkedFor = { DOING: "ind", "Recent DONE": "on", TODO: "", BLOCKED: "" };
     return `<div class="collapsible" data-section="${sectionKey}">
       <div class="card-title${canCollapse ? " collapsible-header" : ""}">
         <span>${title} (${tickets.length}) <span class="dblclick-hint">📄</span></span>
@@ -908,16 +919,21 @@ function renderDetailPane(detail) {
       </div>
       <div class="ticket-list collapsible-body">
         ${tickets.map((t) => {
-          const isDoing = title === "DOING";
-          const actionBtn = isDoing
-            ? `<button class="ticket-action-btn ticket-done-btn" data-tid="${escapeHtml(t.id)}" data-action="done" title="Mark ticket done">Done</button>`
+          const act = actionFor[title];
+          const chkState = checkedFor[title];
+          const chk = `<input type="checkbox" class="ticket-chk" data-tid="${escapeHtml(t.id)}" data-action="${act}"${chkState === "on" ? " checked" : ""}${chkState === "ind" ? ' data-ind="1"' : ""} title="Click to toggle ticket status">`;
+          const blockBtn = (title === "TODO" || title === "DOING")
+            ? `<button class="ticket-action-btn ticket-block-btn" data-tid="${escapeHtml(t.id)}" data-action="block" title="Move to BLOCKED">Block</button>`
             : "";
-          return `<div class="ticket-item"><span class="ticket-id">${escapeHtml(t.id)}</span><span class="ticket-desc">${escapeHtml(t.desc)}</span>${actionBtn}</div>`;
+          const blockerNote = (title === "BLOCKED" && t.blocker)
+            ? `<div class="ticket-blocker">${escapeHtml(t.blocker)}</div>`
+            : "";
+          return `<div class="ticket-item">${chk}<span class="ticket-id">${escapeHtml(t.id)}</span><span class="ticket-desc">${escapeHtml(t.desc)}</span>${blockBtn}</div>${blockerNote}`;
         }).join("")}
       </div>
     </div>`;
   };    ticketsHtml += renderTicketGroupWithActions("DOING", detail.doing_tickets, detail.root);
-  ticketsHtml += renderTicketGroup("BLOCKED", detail.blocked_tickets);
+  ticketsHtml += renderTicketGroupWithActions("BLOCKED", detail.blocked_tickets, detail.root);
   ticketsHtml += renderTicketGroupWithActions("TODO", detail.todo_tickets, detail.root);
   ticketsHtml += renderTicketGroupWithActions("Recent DONE", detail.done_tickets, detail.root);
 
@@ -1412,28 +1428,38 @@ function renderDetailPane(detail) {
     });
   });
 
-  // Interactive ticket action buttons: Start / Done / Reopen
-  document.querySelectorAll('.ticket-action-btn').forEach(btn => {
+  // T-174: real-time ticket checkboxes. Clicking a checkbox advances the
+  // ticket's status (start/done/reopen/unblock); Block prompts for a reason.
+  function toggleTicket(tid, action, reason) {
+    window.pywebview.api.toggle_ticket_status(detail.root, tid, action, reason || null).then((updatedDetail) => {
+      if (updatedDetail) {
+        renderDetailPane(updatedDetail);
+        window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
+      } else {
+        showToast("Toggle failed", "error");
+      }
+    }).catch(() => showToast("Toggle failed", "error"));
+  }
+
+  document.querySelectorAll('.ticket-chk').forEach(chk => {
+    if (chk.getAttribute('data-ind') === '1') chk.indeterminate = true;
+    chk.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const tid = chk.getAttribute('data-tid');
+      const action = chk.getAttribute('data-action');
+      if (!tid || !action) return;
+      toggleTicket(tid, action, null);
+    });
+  });
+
+  document.querySelectorAll('.ticket-block-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const tid = btn.getAttribute('data-tid');
-      const action = btn.getAttribute('data-action');
-      if (!tid || !action) return;
-      const origText = btn.textContent;
-      btn.textContent = "...";
-      btn.disabled = true;
-      window.pywebview.api.toggle_ticket_status(detail.root, tid, action).then((updatedDetail) => {
-        if (updatedDetail) {
-          renderDetailPane(updatedDetail);
-          window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
-        } else {
-          btn.textContent = origText;
-          btn.disabled = false;
-        }
-      }).catch(() => {
-        btn.textContent = origText;
-        btn.disabled = false;
-      });
+      if (!tid) return;
+      const reason = prompt("Blocker reason for " + tid + ":");
+      if (reason === null) return;           // cancelled
+      toggleTicket(tid, "block", reason);
     });
   });
 

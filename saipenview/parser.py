@@ -141,6 +141,7 @@ class Ticket:
     ticket_id: str
     status: str  # " " open, "x" done, "/" in-progress
     description: str
+    blocker: str = ""
 
 
 @dataclass
@@ -167,9 +168,13 @@ _SECTION_LISTS = {
 }
 
 _TICKET_ACTIONS = {
-    "start": (" ", "/"),  # TODO -> DOING: [ ] -> [/]
-    "done": ("/", "x"),  # DOING -> DONE: [/] -> [x]
-    "reopen": ("x", " "),  # DONE -> TODO: [x] -> [ ]
+    "start": (" ", "/", "DOING"),
+    "done": ("/", "x", "DONE"),
+    "reopen": ("x", " ", "TODO"),
+    # T-174: BLOCKED tickets carry `[ ]` like TODO ones, so the target section
+    # cannot be derived from the checkbox alone -- it is explicit per action.
+    "block": (None, " ", "BLOCKED"),
+    "unblock": (" ", " ", "TODO"),
 }
 
 _TICKET_SECTION_FOR_STATUS = {
@@ -179,14 +184,16 @@ _TICKET_SECTION_FOR_STATUS = {
 }
 
 
-def move_ticket(root: Path, ticket_id: str, action: str) -> bool:
+def move_ticket(
+    root: Path, ticket_id: str, action: str, blocker_reason: str | None = None
+) -> bool:
     """Changes a ticket's status on BOARD.md and moves it to the correct section.
-    Action is one of: start (TODO->DOING), done (DOING->DONE), reopen (DONE->TODO).
+    Action is one of: start (TODO->DOING), done (DOING->DONE), reopen (DONE->TODO),
+    block (TODO/DOING->BLOCKED, appends `| blocker:`), unblock (BLOCKED->TODO).
     Returns True on success."""
     if action not in _TICKET_ACTIONS:
         return False
-    old_ch, new_ch = _TICKET_ACTIONS[action]
-    target_section = _TICKET_SECTION_FOR_STATUS.get(new_ch)
+    old_ch, new_ch, target_section = _TICKET_ACTIONS[action]
     if not target_section:
         return False
 
@@ -231,6 +238,13 @@ def move_ticket(root: Path, ticket_id: str, action: str) -> bool:
     # Update the status marker
     ticket_line = ticket_line.replace(f"[{actual_status}]", f"[{new_ch}]", 1)
 
+    # T-174: blocking appends the reason as a `| blocker:` ticket field. The
+    # field list is closed, so a literal pipe in the reason is escaped as \|.
+    if action == "block" and blocker_reason and blocker_reason.strip():
+        reason = blocker_reason.strip().replace("|", "\\|")
+        newline = "\n" if ticket_line.endswith("\n") else ""
+        ticket_line = ticket_line.rstrip("\n") + f" | blocker: {reason}" + newline
+
     # Insert into the target section (after its heading, before next heading or end)
     insert_pos = len(lines)  # default: end of file
     if target_section in section_starts:
@@ -261,8 +275,15 @@ def parse_board(text: str) -> Board:
         ticket = TICKET_RE.match(line.strip())
         if ticket and current:
             status, ticket_id, description = ticket.groups()
+            # A `| blocker:` field rides on the end of the line; show it
+            # separately so a BLOCKED row can display WHY it is blocked.
+            blocker = ""
+            field = re.search(r"\s*\|\s*blocker:\s*(.+)$", description)
+            if field:
+                blocker = field.group(1).strip()
+                description = description[: field.start()]
             getattr(board, _SECTION_LISTS[current]).append(
-                Ticket(ticket_id, status, description)
+                Ticket(ticket_id, status, description, blocker)
             )
     return board
 
