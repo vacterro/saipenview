@@ -3615,7 +3615,12 @@ function pollAgentOutput() {
               panel.scrollTop = panel.scrollHeight;
             }
           }
-          agentSinceLineNum[root] = since + res.lines.length;
+        }
+        // The cursor is the backend's canonical next_since, never
+        // since + lines.length -- on buffer rollover that arithmetic
+        // would resend lines (T-166).
+        if (res && typeof res.next_since === "number") {
+          agentSinceLineNum[root] = res.next_since;
         }
       });
     }
