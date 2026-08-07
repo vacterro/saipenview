@@ -1407,6 +1407,20 @@ class Api:
             return self.get_project_detail(root)
         return None
 
+    def record_manual_work(self, root_str: str, description: str) -> dict:
+        """Record a user's manual edit as a board entry (T-127)."""
+        from saipenview.parser import record_manual_work
+
+        root = self._resolve_root(root_str)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
+        result = record_manual_work(Path(root), description)
+        if result.get("ok"):
+            # The watcher (T-124) picks up the BOARD/LOG change and
+            # targeted-refreshes the cache row.
+            self._refresh_one_project(root)
+        return result
+
     def toggle_ticket_status(
         self,
         root_str: str,

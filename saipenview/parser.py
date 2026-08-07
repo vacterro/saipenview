@@ -326,6 +326,100 @@ def reorder_ticket(
     return True
 
 
+def record_manual_work(root: Path, description: str) -> dict:
+    """Record a user's manual edit as a board entry (T-127).
+
+    The user did something by hand -- edited a project's STATE/BOARD/LOG in an
+    editor, made a commit, ran a script. SAIPENVIEW cannot attribute the
+    change to a person (the watcher never knows who wrote the file), so it
+    does not try: the UI asks, the user confirms, and THIS function writes the
+    explicit record. One board ticket + one LOG evidence line, both through
+    the single-writer atomic path. Returns ``{"ok": True}`` or an error dict.
+    """
+    description = " ".join(str(description or "").split())
+    if not description:
+        return {"ok": False, "error": "description is empty"}
+
+    board_path = root / ".saipen" / "BOARD.md"
+    log_path = root / ".saipen" / "LOG.md"
+    if not board_path.is_file():
+        return {"ok": False, "error": "BOARD.md not found"}
+
+    # Next T-### across the whole board (T-### must never be reused). Zero-
+    # padded to three digits, the board's own convention.
+    board_text, enc, newline = read_doc_meta(board_path)
+    existing_ids = [int(m) for m in re.findall(r"\bT-(\d+)\b", board_text)]
+    next_ticket = max(existing_ids) + 1 if existing_ids else 1
+    ticket_id = f"T-{next_ticket:03d}"
+
+    ticket = f"- [ ] {ticket_id} Manual: {description} | owner: user"
+    if "\n## TODO" in "\n" + board_text:
+        # Insert under ## TODO (after its heading, before the next heading).
+        lines = board_text.splitlines(True)
+        insert_at = len(lines)
+        in_todo = False
+        for i, line in enumerate(lines):
+            heading = SECTION_HEADING_RE.match(line.strip())
+            if heading:
+                if heading.group(1) == "TODO":
+                    in_todo = True
+                    insert_at = i + 1
+                elif in_todo:
+                    insert_at = i
+                    break
+        lines.insert(insert_at, ticket + "\n")
+        board_text = "".join(lines)
+    else:
+        board_text = board_text.rstrip("\n") + "\n\n## TODO\n" + ticket + "\n"
+    write_doc(board_path, board_text, enc, newline)
+
+    # LOG evidence line (valid skeleton: dated, monotonic E-N, RUN taxonomy).
+    log_text, log_enc, log_nl = read_doc_meta(log_path)
+    existing_events = [int(m) for m in re.findall(r"\[E-(\d+)\]", log_text)]
+    next_event = max(existing_events) + 1 if existing_events else 1
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%d.%m.%y %H:%M")
+    git_note = _manual_work_git_note(root)
+    log_line = (
+        f"- {stamp} [E-{next_event}] [{ticket_id}] RUN: manual work recorded "
+        f"-- {description}{git_note}"
+    )
+    log_text = (
+        (log_text.rstrip("\n") + "\n" if log_text.strip() else "") + log_line + "\n"
+    )
+    write_doc(log_path, log_text, log_enc, log_nl)
+
+    return {"ok": True, "ticket_id": ticket_id, "event": f"E-{next_event}"}
+
+
+def _manual_work_git_note(root: Path) -> str:
+    """Best-effort git context for a manual-work record: HEAD + dirty count."""
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if head.returncode != 0:
+        return ""
+    dirty = (
+        len([ln for ln in status.stdout.splitlines() if ln.strip()])
+        if status.returncode == 0
+        else 0
+    )
+    return f" -- at {head.stdout.strip()} ({dirty} dirty files)"
+
+
 def parse_board(text: str) -> Board:
     board = Board()
     current: str | None = None

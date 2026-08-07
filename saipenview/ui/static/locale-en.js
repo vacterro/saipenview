@@ -292,4 +292,7 @@ const LOCALE_EN = {
   "agent.history.empty": "no past runs",
   "agent.restoredHistory": "— stored transcript, ${count} lines —",
   "agent.noTranscript": "no stored transcript for this run",
+  "agent.unrecorded": "Unrecorded external change to this project's .saipen files",
+  "agent.unrecorded.title": "You edited the project yourself -- record it so the board reflects the manual work",
+  "agent.unrecorded.record": "Record manual work",
 };

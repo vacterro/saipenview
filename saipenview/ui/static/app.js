@@ -1042,6 +1042,11 @@ function renderDetailPane(detail) {
     }
 
     contentDiv.innerHTML = `
+      ${unrecordedChangeRoot === detail.root ? `<div id="unrecordedBar" style="display:flex; gap:6px; align-items:center; padding:3px 6px; margin-bottom:3px; background:var(--surfaceRaised); border:1px solid var(--goldStar); color:var(--textPrimary); font-size:10px;">
+        <span style="color:var(--goldStar); font-weight:bold;">!</span>
+        <span style="flex:1;">${escapeHtml(t("agent.unrecorded"))}</span>
+        <button id="recordManualWorkBtn" style="font-size:9px; padding:1px 4px; color:var(--success);" title="${escapeHtml(t("agent.unrecorded.title"))}">${escapeHtml(t("agent.unrecorded.record"))}</button>
+      </div>` : ""}
       <div class="detail-header">
         <div class="detail-title">
           <span class="detail-name-group">
@@ -1341,6 +1346,8 @@ function renderDetailPane(detail) {
     const updates = { "next_action": nextA, "task": taskV };
     btn.textContent = "Saving...";
     window.pywebview.api.update_project_state(detail.root, updates).then((updatedDetail) => {
+      // T-127: this is a self-write; consume the watcher event it will raise.
+      markSelfWrite(detail.root);
       // Clear the freeze only once the write actually came back, otherwise the
       // next poll could repaint over the editor before the save landed.
       stateEditActive = false;
@@ -1445,6 +1452,7 @@ function renderDetailPane(detail) {
   // T-174: real-time ticket checkboxes. Clicking a checkbox advances the
   // ticket's status (start/done/reopen/unblock); Block prompts for a reason.
   function toggleTicket(tid, action, reason) {
+    markSelfWrite(detail.root);
     window.pywebview.api.toggle_ticket_status(detail.root, tid, action, reason || null).then((updatedDetail) => {
       if (updatedDetail) {
         renderDetailPane(updatedDetail);
@@ -1477,6 +1485,28 @@ function renderDetailPane(detail) {
     });
   });
 
+  // T-127: the user records a manual change they made themselves. The
+  // transaction (board ticket + LOG evidence + git context) runs in the
+  // backend; here we only ask for the description and consume the watcher
+  // event it produces so the unrecorded prompt does not re-appear.
+  const recordBtn = document.getElementById("recordManualWorkBtn");
+  if (recordBtn) {
+    recordBtn.addEventListener("click", () => {
+      const desc = prompt("Describe what you changed manually:");
+      if (desc === null || !desc.trim()) return;
+      markSelfWrite(detail.root);
+      window.pywebview.api.record_manual_work(detail.root, desc.trim()).then((res) => {
+        if (res && res.ok) {
+          unrecordedChangeRoot = null;
+          showToast("Recorded as " + (res.ticket_id || "ticket"), "success");
+          window.pywebview.api.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
+        } else {
+          showToast("Record failed: " + ((res && res.error) || "unknown"), "error");
+        }
+      }).catch(() => showToast("Record failed", "error"));
+    });
+  }
+
   // T-175: drag-to-reorder within a section. Board order is priority, so the
   // dropped order is a re-prioritisation and must reach BOARD.md.
   let dragState = null;
@@ -1507,6 +1537,7 @@ function renderDetailPane(detail) {
       const targetTid = row.getAttribute('data-tid');
       if (!dragState || !list || list.getAttribute('data-section') !== dragState.section) return;
       if (dragState.tid === targetTid) return;
+      markSelfWrite(detail.root);
       window.pywebview.api.reorder_ticket(detail.root, dragState.tid, dragState.section, targetTid).then((updatedDetail) => {
         if (updatedDetail) {
           renderDetailPane(updatedDetail);
@@ -1523,6 +1554,7 @@ function renderDetailPane(detail) {
     list.addEventListener('drop', (e) => {
       e.preventDefault();
       if (!dragState || list.getAttribute('data-section') !== dragState.section) return;
+      markSelfWrite(detail.root);
       window.pywebview.api.reorder_ticket(detail.root, dragState.tid, dragState.section, null).then((updatedDetail) => {
         if (updatedDetail) {
           renderDetailPane(updatedDetail);
@@ -2048,10 +2080,40 @@ window.__saipenSetVisible = function (visible) {
   if (windowVisible && !was) poll();
 };
 
+// T-127: SAIPENVIEW's own writes to a project's .saipen files. The watcher
+// cannot tell who changed a file -- this set marks the roots THIS process just
+// wrote, so a watcher event for a self-write is not shown as "unrecorded
+// external change", while a change from outside (a hand edit, an external
+// tool) leaves the root unmarked and raises the persistent prompt.
+const selfWriteRoots = new Set();
+let unrecordedChangeRoot = null;
+
+function markSelfWrite(root) {
+  if (root) selfWriteRoots.add(root);
+}
+
+function showUnrecordedChange(root) {
+  unrecordedChangeRoot = root;
+  // Re-render the detail so the persistent bar appears for the current root.
+  const detailEl = document.getElementById("detailPane");
+  if (detailEl && currentDetailRoot === root) {
+    window.pywebview.api.get_project_detail(root).then((d) => {
+      if (d && currentDetailRoot === root) renderDetailPane(d);
+    }).catch(() => {});
+  }
+}
+
 let fileChangeDebounce = null;
 window.onSaipenFileChanged = function(root, fileName) {
   if (fileChangeDebounce) clearTimeout(fileChangeDebounce);
   fileChangeDebounce = setTimeout(() => {
+    // T-127: a change this process did not cause is "unrecorded external
+    // change" -- show the persistent prompt. Self-writes are consumed here.
+    if (selfWriteRoots.has(root)) {
+      selfWriteRoots.delete(root);
+    } else if (currentDetailRoot === root) {
+      showUnrecordedChange(root);
+    }
     // The backend already re-read the changed project (one targeted refresh,
     // T-124) before pushing this notification. Reading the fresh cache here --
     // NOT calling refresh_known() again -- is the one-refresh-per-event rule;
@@ -3318,6 +3380,7 @@ document.getElementById("saveFileViewerBtn")?.addEventListener("click", () => {
   const content = document.getElementById("fileViewerContent").value;
   const btn = document.getElementById("saveFileViewerBtn");
   btn.textContent = "Saving...";
+  if (currentDetailRoot) markSelfWrite(currentDetailRoot);
   window.pywebview.api.write_file_text(currentFilePath, content).then((ok) => {
     if (ok) {
       btn.textContent = "Saved";
@@ -3727,6 +3790,7 @@ ${testBadgeHtml}
       humanNoteBtn.addEventListener("click", () => {
         const note = prompt("Enter human note to append to STATE.md:");
         if (note) {
+          markSelfWrite(root);
           window.pywebview.api.add_human_note(root, note).then(res => {
             if (res.ok) showToast("Note added", "success");
             else showToast("Failed to add note: " + res.error, "error");
