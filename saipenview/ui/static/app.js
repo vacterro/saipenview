@@ -705,11 +705,25 @@ function timeWithHeat(isoStr, kind) {
 function subRowHtml(sub) {
   const sp = sub.path || "";
   return `<div class="sub-row" data-sub-path="${escapeHtml(sp)}">
+    <span class="sub-icon">${escapeHtml(subIcon(sub.name))}</span>
     <span class="name">${escapeHtml(sub.name)}</span>
     <span class="phase-dot phase-${escapeHtml(sub.phase)}"></span>
     <span class="phase phase-${escapeHtml(sub.phase)}">${escapeHtml(sub.phase)}</span>
     <span class="task">${escapeHtml(sub.task)}</span>
   </div>`;
+}
+
+// T-126: an icon per sub kind so the rows orient at a glance -- the name is
+// where a reader looks, and a glyph there is faster than reading the word.
+function subIcon(name) {
+  const n = String(name || "").toLowerCase();
+  if (n.includes("hunt")) return "\uD83D\uDD0D";        // 🔍
+  if (n.includes("wiki")) return "\uD83D\uDCD6";        // 📖
+  if (n.includes("python") || n.includes("sai py")) return "\uD83D\uDC0D"; // 🐍
+  if (n.includes("translate") || n.endsWith(" ee")) return "\uD83C\uDF10"; // 🌐
+  if (n.includes("test")) return "\uD83E\uDDEA";        // 🧪
+  if (n.includes("crew")) return "\uD83D\uDD27";        // 🔧
+  return "\uD83E\uDD16";                                 // 🤖
 }
 
 function outboxCountsSummary(counts) {
@@ -982,9 +996,9 @@ function renderDetailPane(detail) {
                 : '';
               const sp = escapeHtml(s.path || '');
               return `
-              <div class="sub-detail-item" data-sub-path="${sp}">
+              <div class="sub-detail-item sub-phase-${escapeHtml(s.phase)}" data-sub-path="${sp}">
                 <div class="sub-item-head">
-                  <span class="sub-name">${escapeHtml(s.name)}</span>
+                  <span class="sub-name">${escapeHtml(subIcon(s.name))} ${escapeHtml(s.name)}</span>
                   <span class="sub-file-btns">
                     <button class="sub-file-btn" data-sub-path="${sp}" data-file="STATE.md" title="Open STATE.md">S</button>
                     <button class="sub-file-btn" data-sub-path="${sp}" data-file="BOARD.md" title="Open BOARD.md">B</button>

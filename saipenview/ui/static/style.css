@@ -248,8 +248,8 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 
 .sub-row { margin-left: 14px; padding: 1px 2px; display: flex; align-items: center; gap: 3px; height: 14px; overflow: hidden; color: var(--textMuted); font-size: 9px; }
 .sub-row .name { flex: 0 0 auto; max-width: var(--subNameW); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sub-row .name::before { content: "\21B3 "; }
-.sub-row .phase { flex: 0 0 auto; font-size: 8px; }
+.sub-row .sub-icon { flex: 0 0 auto; font-size: 9px; line-height: 1; }
+.sub-row .phase { flex: 0 0 auto; font-size: 8px; font-weight: bold; }
 .sub-row .task { flex: 1 1 auto; min-width: 0; padding-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .detail-pane { flex: 1 1 auto; min-width: 0; overflow-y: auto; overflow-x: hidden; background: var(--surfaceSoft); padding: 4px; display: flex; flex-direction: column; gap: 3px; }
@@ -447,7 +447,21 @@ body.collapsed .detail-path,
 body.collapsed .detail-header .action-bar { display: none !important; }
 body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 
-.sub-detail-item { margin-bottom:4px; padding-bottom:4px; border-bottom:1px solid var(--borderMuted); }
+.sub-detail-item { margin-bottom:4px; padding-bottom:4px; padding-left:6px; border-bottom:1px solid var(--borderMuted); border-left:3px solid var(--surfaceSoft); }
+/* T-126: a phase-coloured left edge on each sub card so the state reads at a
+   glance, reusing the same phase tokens the project rows use. */
+.sub-detail-item.sub-phase-BLOCKED { border-left-color: var(--danger); }
+.sub-detail-item.sub-phase-DONE, .sub-detail-item.sub-phase-VERIFY,
+.sub-detail-item.sub-phase-SHIP { border-left-color: var(--borderMuted); }
+.sub-detail-item.sub-phase-INIT { border-left-color: var(--phase-init); }
+.sub-detail-item.sub-phase-PLAN { border-left-color: var(--phase-plan); }
+.sub-detail-item.sub-phase-SCOUT { border-left-color: var(--phase-scout); }
+.sub-detail-item.sub-phase-HUNT { border-left-color: var(--phase-hunt); }
+.sub-detail-item.sub-phase-ADD { border-left-color: var(--phase-add); }
+.sub-detail-item.sub-phase-CLEAN { border-left-color: var(--phase-clean); }
+.sub-detail-item.sub-phase-TRANSLATE { border-left-color: var(--phase-translate); }
+.sub-detail-item.sub-phase-VALIDATE { border-left-color: var(--phase-validate); }
+.sub-detail-item.sub-phase-BUILD, .sub-detail-item.sub-phase-REVIEW { border-left-color: var(--accentTeal); }
 /* Name on the left, the S/B/L buttons and the phase pill on the right. It was
    an inline `justify-content:space-between` flex with nothing allowed to
    shrink, so at a narrow pane the button cluster pushed straight out of the
@@ -457,7 +471,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .sub-detail-item .sub-name { font-size:12px; font-weight:bold; color:var(--borderHighlight); letter-spacing:0.3px;
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub-detail-item .sub-file-btns { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
-.sub-detail-item .sub-phase { font-size:10px; }
+.sub-detail-item .sub-phase { font-size:10px; font-weight:bold; }
 
 .collapsible-header { cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; }
 .collapsible-header:hover { color: var(--borderHighlight); }
