@@ -173,3 +173,57 @@ def test_detail_content_is_a_class_not_an_inline_style() -> None:
     assert "flex-direction" not in match.group(0), (
         "layout is inline again; the responsive bands cannot override it"
     )
+
+
+def test_the_detail_pane_is_its_own_query_container(css: str) -> None:
+    """Pane-internal rows must ask the PANE how much room there is.
+
+    `@container app` asks `body`. A 1920px window routinely holds a 400px
+    detail pane, so every app-band rule reads "plenty of room" while the pane
+    is starving -- which is how a conformance row ended up rendering its
+    message one character per line on a maximised window.
+    """
+    block = re.search(r"\.detail-pane \{[^}]*\}", css)
+    assert block, ".detail-pane rule is gone"
+    assert "container-type: inline-size" in block.group(0)
+    assert "container-name: pane" in block.group(0)
+    assert re.search(r"@container pane \(", css), "no pane band uses the container"
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [r"\.conf-where", r"\.conf-cite", r"\.conf-rule", r"\.error-time"],
+)
+def test_row_metadata_can_always_shrink(css: str, selector: str) -> None:
+    """The squeezed-message bug lives in the sibling, not in the message.
+
+    `.conf-where` holds a path and was `flex: 0 0 auto`, so it took its full
+    max-content width; the message was the only flexible thing left and
+    absorbed the entire shortfall. Measured on the pre-fix stylesheet at a
+    291px pane: `.conf-msg` computed to **0px wide and 76 lines for 79
+    characters** -- exactly one letter per line -- while `.conf-where` sat at
+    268px. `min-width: 0` on the message could not help; it was already
+    willing to shrink, and shrinking is what killed it.
+    """
+    block = re.search(selector + r" \{[^}]*\}", css)
+    assert block, f"{selector} rule is gone"
+    rule = block.group(0)
+    assert not re.search(r"flex:\s*0\s+0\s", rule), (
+        f"{selector} refuses to shrink; whatever grows beside it eats the loss"
+    )
+    assert not re.search(r"flex-shrink:\s*0", rule), f"{selector} cannot shrink"
+
+
+@pytest.mark.parametrize("selector", [r"\.conf-msg", r"\.error-message"])
+def test_message_columns_have_a_floor_in_characters(css: str, selector: str) -> None:
+    """A floor in `ch` is the only basis that means anything for text.
+
+    Below roughly twelve characters a row stops being a message and becomes a
+    column of letters, so the floor is stated in the unit the failure is
+    measured in.
+    """
+    block = re.search(selector + r" \{[^}]*\}", css)
+    assert block, f"{selector} rule is gone"
+    assert re.search(r"min-width:\s*\d+ch", block.group(0)), (
+        f"{selector} has no character floor and can be squeezed to nothing"
+    )

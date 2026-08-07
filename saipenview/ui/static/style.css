@@ -252,7 +252,13 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .sub-row .phase { flex: 0 0 auto; font-size: 8px; font-weight: bold; }
 .sub-row .task { flex: 1 1 auto; min-width: 0; padding-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.detail-pane { flex: 1 1 auto; min-width: 0; overflow-y: auto; overflow-x: hidden; background: var(--surfaceSoft); padding: 4px; display: flex; flex-direction: column; gap: 3px; }
+/* The pane is its own query container, not just a flex child.
+   `body` alone was not enough: the pane is a fraction of the window, so a
+   1920px window can still hold a 400px detail pane, and a rule that asks the
+   BODY how much room there is gets the wrong answer for everything drawn in
+   here. Rows inside the pane ask `@container pane` instead. */
+.detail-pane { flex: 1 1 auto; min-width: 0; overflow-y: auto; overflow-x: hidden; background: var(--surfaceSoft); padding: 4px; display: flex; flex-direction: column; gap: 3px;
+  container-type: inline-size; container-name: pane; }
 /* renderDetailPane's wrapper. It used to carry these three properties as an
    inline style, which meant the column stack could never be conditioned on
    width -- an inline declaration outranks any rule here. It is a class now so
@@ -586,8 +592,12 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .error-card .card-title { color: var(--dangerText); }
 .error-item { display: flex; gap: 6px; align-items: flex-start; font-size: 10px; padding: 2px 4px; border-bottom: 1px solid var(--borderDark); }
 .error-item:last-child { border-bottom: none; }
-.error-time { color: var(--textMuted); font-family: monospace; font-size: 9px; flex-shrink: 0; min-width: 110px; }
-.error-message { min-width: 0; color: var(--textPrimary); word-break: break-word; }
+/* Same shape as .conf-item, same failure available to it: a 110px column that
+   refuses to shrink beside a message that will. */
+.error-time { color: var(--textMuted); font-family: monospace; font-size: 9px;
+  flex: 0 1 auto; min-width: 0; white-space: nowrap; }
+.error-message { flex: 1 1 12ch; min-width: 12ch; color: var(--textPrimary);
+  word-break: break-word; overflow-wrap: anywhere; }
 
 /* Sub-agent detail card enhancements */
 .sub-file-btns { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
@@ -884,10 +894,26 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   border: 1px solid currentColor; }
 .conf-sev.fail { color: var(--dangerText); }
 .conf-sev.warn { color: var(--warning); }
-.conf-rule { flex: 0 0 auto; color: var(--textMuted); font-size: 9px; }
-.conf-msg { flex: 1 1 auto; min-width: 0; color: var(--textSecondary); word-break: break-word; }
-.conf-where { flex: 0 0 auto; color: var(--textMuted); font-size: 9px; }
-.conf-cite { flex: 0 0 auto; color: var(--accentTeal); font-size: 9px; }
+/* Nothing in this row may refuse to shrink.
+   `.conf-where` holds a path -- `.saipen/extensions/subs/saitranslate/kitchen/
+   OUTBOX.md` -- and it was `flex: 0 0 auto`, so it took its full max-content
+   width and left the message about one character wide. `min-width: 0` on the
+   message does not save it: the message was already willing to shrink, and it
+   shrank all the way, rendering the text as a vertical column of single
+   letters. The fix has to be on the sibling that would not budge.
+   `overflow-wrap: anywhere` because a path has no space to break at, and
+   `word-break: break-word` alone will not break inside a long slug. */
+.conf-rule { flex: 0 1 auto; min-width: 0; color: var(--textMuted); font-size: 9px;
+  overflow-wrap: anywhere; }
+/* `1 1 12ch`, not `1 1 auto`: a floor in characters is the only basis that
+   means anything for text. Below roughly twelve the row stops being a message
+   and becomes a column of letters, which is the bug this rule exists for. */
+.conf-msg { flex: 1 1 12ch; min-width: 12ch; color: var(--textSecondary);
+  word-break: break-word; overflow-wrap: anywhere; }
+.conf-where { flex: 0 1 auto; min-width: 0; color: var(--textMuted); font-size: 9px;
+  overflow-wrap: anywhere; }
+.conf-cite { flex: 0 1 auto; min-width: 0; color: var(--accentTeal); font-size: 9px;
+  overflow-wrap: anywhere; }
 .conf-baseline { color: var(--textMuted); font-size: 9px; font-style: italic;
   padding-top: 3px; border-top: 1px solid var(--borderMuted); margin-top: 3px; }
 
@@ -971,4 +997,26 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   .detail-field .label { min-width: 0; margin-right: 4px; }
   .sub-detail-row { --subIndentW: 0px; }
   .sub-detail-row .sd-counts { display: none; }
+}
+
+/* --- Pane bands: the detail pane's width, not the window's ---------------
+   `@container app` asks the BODY how much room there is, which is the wrong
+   question for anything drawn inside the detail pane: the pane is a fraction
+   of the window, so a 1920px window routinely holds a 400px pane and every
+   app-band rule reads as "plenty of room" while the pane is starving. These
+   query `.detail-pane` itself.
+
+   The rows below are all the same shape -- a fixed-ish label, a message that
+   grows, and some metadata -- and all of them fail the same way when the
+   metadata is a long path: the message is the only thing willing to shrink,
+   so it takes the entire loss and renders one character per line. Above the
+   floor the metadata simply moves to its own row instead. */
+@container pane (max-width: 640px) {
+  .conf-item, .error-item { flex-wrap: wrap; }
+  .conf-msg, .error-message { flex: 1 1 100%; }
+  .conf-where, .conf-cite { font-size: 8px; }
+  .ticket-item { flex-wrap: wrap; }
+  .ticket-desc { flex: 1 1 100%; white-space: normal; overflow-wrap: anywhere; }
+  .outbox-item { flex-wrap: wrap; }
+  .outbox-summary { flex: 1 1 100%; white-space: normal; overflow-wrap: anywhere; }
 }
