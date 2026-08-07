@@ -3494,14 +3494,18 @@ ${testBadgeHtml}
         }
         window.pywebview.api.launch_agent(root, engine, instruction.trim()).then(res => {
           if (res.ok) {
-            showToast("Agent launched", "success");
             agentSinceLineNum[root] = 0;
             // Drop the restored transcript: the console now belongs to the
             // run that just started, not to the one before it.
             agentRestoredRoots.delete(root);
-            const lines = document.getElementById("agentOutputLines");
-            if (lines) lines.innerHTML = "";
-            pollAgentOutput();
+            // T-169: the user may have switched projects while the launch was
+            // in flight -- do not clear the new project's console.
+            if (currentDetailRoot === root) {
+              const lines = document.getElementById("agentOutputLines");
+              if (lines) lines.innerHTML = "";
+              pollAgentOutput();
+            }
+            showToast("Agent launched", "success");
           } else {
             showToast("Launch failed: " + res.error, "error");
           }
@@ -3551,13 +3555,24 @@ function parseTestLine(root, line) {
 // re-render does not fetch and re-append it every poll tick.
 const agentRestoredRoots = new Set();
 
+// T-169: an async callback that captured `root` before an await must verify
+// the user is still looking at that project before it mutates the panel. A
+// stale response must never write into a different project's Detail Pane.
+function isCurrentProjectPanel(root) {
+  if (currentDetailRoot !== root) return false;
+  const panel = document.getElementById("agentPanelContainer");
+  if (!panel) return true;
+  return panel.dataset.root === root;
+}
+
 function restoreLastTranscript(root, container) {
   if (agentRestoredRoots.has(root)) return;
-  agentRestoredRoots.add(root);
   const api = window.pywebview && window.pywebview.api;
   if (!api || !api.get_last_agent_transcript) return;
   api.get_last_agent_transcript(root).then((res) => {
     if (!res || !res.found) return;
+    // T-169: the user may have switched projects while this was in flight.
+    if (!isCurrentProjectPanel(root)) return;
     // The panel may have been rebuilt, or a live run may have started, while
     // this was in flight. Either way the stored lines are no longer wanted.
     const linesContainer = document.getElementById("agentOutputLines");
@@ -3590,7 +3605,13 @@ function restoreLastTranscript(root, container) {
     }
     const panel = linesContainer.parentElement;
     if (panel) panel.scrollTop = panel.scrollHeight;
-  }).catch((e) => console.error("transcript restore failed:", e));
+    // Marked only after a SUCCESSFUL restore (T-169): on a transient failure
+    // or found=false the root stays unmarked, so a later poll retries instead
+    // of being blocked from ever restoring.
+    agentRestoredRoots.add(root);
+  }).catch(() => {
+    // Transient failure: not marked, the next poll retries (T-169).
+  });
 }
 
 function pollAgentOutput() {
@@ -3610,6 +3631,9 @@ function pollAgentOutput() {
   const root = currentDetailRoot;
   
   window.pywebview.api.get_agent_status(root).then(status => {
+    // T-169: a project switch while this was in flight must not let the old
+    // project's status rebuild the current panel.
+    if (currentDetailRoot !== root) return;
     agentStatusCache[root] = status;
     const container = document.getElementById("agentPanelContainer");
     if (container) {
@@ -3619,6 +3643,7 @@ function pollAgentOutput() {
     if (status && (status.status === "running" || status.status === "done" || status.status === "failed" || status.status === "killed")) {
       let since = agentSinceLineNum[root] || 0;
       window.pywebview.api.get_agent_output(root, since).then(res => {
+        if (currentDetailRoot !== root) return;
         if (res && res.lines && res.lines.length > 0) {
           const linesContainer = document.getElementById("agentOutputLines");
           if (linesContainer) {
@@ -3727,7 +3752,11 @@ function refreshDiff() {
   if (!currentDiffRoot) return;
   const content = document.getElementById("diffViewerContent");
   const status = document.getElementById("diffViewerStatus");
-  window.pywebview.api.get_diff(currentDiffRoot).then(res => {
+  const requestedRoot = currentDiffRoot;
+  window.pywebview.api.get_diff(requestedRoot).then(res => {
+    // T-169: the modal may have been reopened for another project while this
+    // was in flight -- a stale response must not overwrite it.
+    if (currentDiffRoot !== requestedRoot) return;
     if (res.ok) {
       currentDiffFingerprint = res.fingerprint || null;
       currentDiffScope = res.scope || null;
