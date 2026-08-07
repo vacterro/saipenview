@@ -3641,6 +3641,8 @@ document.body.addEventListener("mouseup", () => {
 
 
 let currentDiffRoot = null;
+let currentDiffFingerprint = null;
+let currentDiffScope = null;
 
 function colorizeDiff(diffText) {
   if (!diffText.trim()) return "<div style='color:var(--textMuted);'>No changes.</div>";
@@ -3653,25 +3655,62 @@ function colorizeDiff(diffText) {
   }).join("");
 }
 
+function diffScopeSummary(scope) {
+  if (!scope) return "";
+  const c = scope.counts || {};
+  const parts = [];
+  if (c.staged) parts.push(c.staged + " staged");
+  if (c.modified) parts.push(c.modified + " modified");
+  if (c.deleted) parts.push(c.deleted + " deleted");
+  if (c.renamed) parts.push(c.renamed + " renamed");
+  const tracked = (c.staged || 0) + (c.modified || 0) + (c.deleted || 0) + (c.renamed || 0);
+  const lines = [];
+  if (tracked) lines.push(tracked + " tracked file(s) changed (" + parts.join(", ") + ")");
+  if (c.untracked) lines.push(c.untracked + " untracked file(s)");
+  lines.push("Ignored files are excluded from every operation.");
+  return lines.join("  |  ");
+}
+
+function diffScopeFileList(scope) {
+  if (!scope) return "";
+  const rows = [];
+  if (scope.staged && scope.staged.length) rows.push("<b>Staged:</b> " + scope.staged.map(escapeHtml).join(", "));
+  if (scope.modified && scope.modified.length) rows.push("<b>Modified:</b> " + scope.modified.map(escapeHtml).join(", "));
+  if (scope.deleted && scope.deleted.length) rows.push("<b>Deleted:</b> " + scope.deleted.map(escapeHtml).join(", "));
+  if (scope.renamed && scope.renamed.length) rows.push("<b>Renamed:</b> " + scope.renamed.map(r => escapeHtml(r.from) + " -> " + escapeHtml(r.to)).join(", "));
+  if (scope.untracked && scope.untracked.length) rows.push("<b>Untracked:</b> " + scope.untracked.map(escapeHtml).join(", "));
+  if (!rows.length) return "";
+  return rows.join("<br>");
+}
+
 function openDiffViewer(root) {
   currentDiffRoot = root;
+  currentDiffFingerprint = null;
+  currentDiffScope = null;
   const modal = document.getElementById("diffViewerModal");
   const content = document.getElementById("diffViewerContent");
   const status = document.getElementById("diffViewerStatus");
   modal.style.display = "flex";
   content.innerHTML = "Loading...";
   status.textContent = "";
-  
   refreshDiff();
 }
 
 function refreshDiff() {
   if (!currentDiffRoot) return;
   const content = document.getElementById("diffViewerContent");
+  const status = document.getElementById("diffViewerStatus");
   window.pywebview.api.get_diff(currentDiffRoot).then(res => {
     if (res.ok) {
-      content.innerHTML = colorizeDiff(res.diff);
+      currentDiffFingerprint = res.fingerprint || null;
+      currentDiffScope = res.scope || null;
+      status.textContent = diffScopeSummary(res.scope);
+      const list = diffScopeFileList(res.scope);
+      content.innerHTML = (list ? `<div style="font-size:10px; padding:2px 4px; margin-bottom:4px; background:var(--surfaceSoft);">${list}</div>` : "") + colorizeDiff(res.diff);
     } else {
+      currentDiffFingerprint = null;
+      currentDiffScope = null;
+      status.textContent = "";
       content.innerHTML = `<div style="color:var(--danger)">Error: ${escapeHtml(res.error)}</div>`;
     }
   });
@@ -3684,28 +3723,61 @@ document.getElementById("refreshDiffBtn")?.addEventListener("click", refreshDiff
 
 document.getElementById("commitChangesBtn")?.addEventListener("click", () => {
   if (!currentDiffRoot) return;
+  if (!currentDiffScope || !currentDiffFingerprint) { showToast("Open the diff first", "error"); return; }
   const msg = prompt("Enter commit message:");
-  if (msg) {
-    window.pywebview.api.commit_agent_work(currentDiffRoot, msg).then(res => {
+  if (!msg) return;
+  const c = currentDiffScope.counts || {};
+  const tracked = (c.staged || 0) + (c.modified || 0) + (c.deleted || 0) + (c.renamed || 0);
+  const total = tracked + (c.untracked || 0);
+  showConfirm("Commit " + total + " file(s)? (tracked " + tracked + ", untracked " + (c.untracked || 0) + "). Ignored files excluded. This is everything the preview shows.", () => {
+    window.pywebview.api.commit_agent_work(currentDiffRoot, msg, currentDiffFingerprint).then(res => {
       if (res.ok) {
         showToast("Committed", "success");
         refreshDiff();
       } else {
         showToast("Commit failed: " + res.error, "error");
+        refreshDiff();
       }
     });
-  }
+  });
 });
 
 document.getElementById("revertChangesBtn")?.addEventListener("click", () => {
   if (!currentDiffRoot) return;
-  showConfirm("Are you sure you want to revert all changes?", () => {
-    window.pywebview.api.revert_agent_work(currentDiffRoot).then(res => {
+  if (!currentDiffScope || !currentDiffFingerprint) { showToast("Open the diff first", "error"); return; }
+  const c = currentDiffScope.counts || {};
+  const tracked = (c.staged || 0) + (c.modified || 0) + (c.deleted || 0) + (c.renamed || 0);
+  const untracked = c.untracked || 0;
+  showConfirm("Restore " + tracked + " tracked file(s) to the last commit? " + untracked + " untracked file(s) will NOT be touched.", () => {
+    window.pywebview.api.revert_agent_work(currentDiffRoot, currentDiffFingerprint).then(res => {
       if (res.ok) {
-        showToast("Reverted", "info");
+        showToast("Restored tracked changes", "info");
         refreshDiff();
       } else {
         showToast("Revert failed: " + res.error, "error");
+        refreshDiff();
+      }
+    });
+  });
+});
+
+document.getElementById("deleteUntrackedBtn")?.addEventListener("click", () => {
+  if (!currentDiffRoot) return;
+  if (!currentDiffScope || !currentDiffFingerprint) { showToast("Open the diff first", "error"); return; }
+  const untracked = (currentDiffScope.untracked || []).slice(0, 30);
+  const total = (currentDiffScope.counts || {}).untracked || 0;
+  if (!total) { showToast("No untracked files", "info"); return; }
+  const listed = untracked.join("\n");
+  const msg = "DELETE " + total + " untracked file(s)? This cannot be undone. Ignored files are safe."
+    + (total > 30 ? " First 30 listed:" : " Listed:") + "\n" + listed;
+  showConfirm(msg, () => {
+    window.pywebview.api.delete_untracked_files(currentDiffRoot, currentDiffFingerprint).then(res => {
+      if (res.ok) {
+        showToast("Untracked files deleted", "info");
+        refreshDiff();
+      } else {
+        showToast("Delete failed: " + res.error, "error");
+        refreshDiff();
       }
     });
   });

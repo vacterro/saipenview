@@ -19,7 +19,12 @@ from saipenview.config import config_path, load_config, save_config
 from saipenview.conformance import check_project
 from saipenview.engines import get_engine, list_engines
 from saipenview.events import event_bus
-from saipenview.git_diff import commit_agent_work, get_working_diff, revert_agent_work
+from saipenview.git_diff import (
+    commit_agent_work,
+    delete_untracked_files,
+    get_working_diff,
+    revert_agent_work,
+)
 from saipenview.parser import (
     OutboxEntry,
     ProjectStatus,
@@ -1229,13 +1234,22 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def get_diff(self, root: str) -> dict:
+        """Full preview: tracked diff + untracked content + mutation scope."""
         return get_working_diff(root)
 
-    def commit_agent_work(self, root: str, message: str) -> dict:
-        return commit_agent_work(root, message)
+    def commit_agent_work(
+        self, root: str, message: str, fingerprint: str | None = None
+    ) -> dict:
+        """Commit exactly the scope the preview showed (T-162)."""
+        return commit_agent_work(root, message, fingerprint)
 
-    def revert_agent_work(self, root: str) -> dict:
-        return revert_agent_work(root)
+    def revert_agent_work(self, root: str, fingerprint: str | None = None) -> dict:
+        """Restore tracked changes only; untracked files are untouched."""
+        return revert_agent_work(root, fingerprint)
+
+    def delete_untracked_files(self, root: str, fingerprint: str | None = None) -> dict:
+        """Explicit separate operation: delete untracked files (T-162)."""
+        return delete_untracked_files(root, fingerprint)
 
     def send_agent_input(self, root: str, text: str) -> dict:
         """Send text to a running agent's stdin."""
