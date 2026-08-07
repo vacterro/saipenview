@@ -4,6 +4,17 @@ All notable changes to SAIPENVIEW are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Semantic versioning — see `saipenview/__init__.py`.
 
+## [0.1.19] - 2026-08-07
+
+### Added
+
+- **Agent run history browser (T-177).** The session store has always kept up to 50 runs per project, but the panel only ever auto-restored the last transcript — past runs were invisible. The Agent Control panel now has a history selector listing past runs (time, engine, status, line count); selecting one renders its stored lines into the output pane, guarded by the same project-switch check that protects live output.
+- **`engine_overrides` settings editor (T-178).** The per-engine override surface (`path` / `extra_args` / `env`) was implemented in 0.1.15 but only reachable by hand-editing `config.json`. Settings now has an "Engine overrides (JSON)" editor; the save path uses the exact same validation as launch, so an invalid override is refused with a visible error and the saved value stays untouched.
+
+### Fixed
+
+- **The T-169 project-switch guard read the wrong element and was silently always-false.** `isCurrentProjectPanel` read `dataset.root` off the `#agentPanelContainer`, but the `data-root` lives on the `.agent-panel` *child* — so in the real DOM the guard never matched, which quietly disabled both the transcript auto-restore and (newly) the history picker. The node test stubbed the container with the attribute and passed while the app failed. Fixed to query the child; the test harness now mirrors the real DOM.
+
 ## [0.1.17] - 2026-08-07
 
 ### Fixed
