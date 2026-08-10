@@ -14,6 +14,25 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## [0.1.24] - 2026-08-11
+
+### Changed
+
+- **README public-product pass (T-200, T-201).** Top positioning reworded from
+  "desktop tray viewer" to "Local Windows control center for SAIPEN projects".
+  New near-top sections: *Why SAIPENVIEW*, *At a glance*, *Engineering
+  evidence*, *Safety boundaries*. Conformance section keeps its honest
+  "second opinion, not a replacement for `tools/validate.py`" framing, now
+  linking the canonical SAIPEN repository. Quick Start states plainly that
+  `pip install saipenview` is not published yet. The 33 translated READMEs
+  carry a lag notice pointing at the canonical English original.
+
+### Fixed
+
+- **Release-gate test is version-agnostic (T-197).** `tools/release_gate.py`
+  gains a `--root` override; `test_release_gate_passes` runs the gate against
+  a sandboxed bumped-version tree so it is green at every shipped HEAD.
+
 ## [0.1.23] - 2026-08-07
 
 ### Fixed
