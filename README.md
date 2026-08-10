@@ -2,6 +2,9 @@
   🌍 <strong>EN</strong> | <a href="docs/i18n/README.ar.md">AR</a> | <a href="docs/i18n/README.bg.md">BG</a> | <a href="docs/i18n/README.cs.md">CS</a> | <a href="docs/i18n/README.da.md">DA</a> | <a href="docs/i18n/README.de.md">DE</a> | <a href="docs/i18n/README.ee.md">EE</a> | <a href="docs/i18n/README.el.md">EL</a> | <a href="docs/i18n/README.es.md">ES</a> | <a href="docs/i18n/README.fi.md">FI</a> | <a href="docs/i18n/README.fr.md">FR</a> | <a href="docs/i18n/README.he.md">HE</a> | <a href="docs/i18n/README.hi.md">HI</a> | <a href="docs/i18n/README.hr.md">HR</a> | <a href="docs/i18n/README.hu.md">HU</a> | <a href="docs/i18n/README.id.md">ID</a> | <a href="docs/i18n/README.it.md">IT</a> | <a href="docs/i18n/README.ja.md">JA</a> | <a href="docs/i18n/README.ko.md">KO</a> | <a href="docs/i18n/README.nl.md">NL</a> | <a href="docs/i18n/README.no.md">NO</a> | <a href="docs/i18n/README.pl.md">PL</a> | <a href="docs/i18n/README.pt.md">PT</a> | <a href="docs/i18n/README.ro.md">RO</a> | <a href="docs/i18n/README.ru.md">RU</a> | <a href="docs/i18n/README.sk.md">SK</a> | <a href="docs/i18n/README.sv.md">SV</a> | <a href="docs/i18n/README.th.md">TH</a> | <a href="docs/i18n/README.tr.md">TR</a> | <a href="docs/i18n/README.uk.md">UK</a> | <a href="docs/i18n/README.vi.md">VI</a> | <a href="docs/i18n/README.zh.md">ZH</a> | <a href="docs/i18n/README.zh-CN.md">ZH-CN</a> | <a href="docs/i18n/README.ded.md">ДЕД</a>
 </div>
 
+<img width="1269" height="773" alt="clipboard_20260811_005248_90e89167" src="https://github.com/user-attachments/assets/d6c0a626-d7d2-4df0-a147-fc1c34f944a4" />
+
+
 <div align="center">
   <img src="screenshots/saipen_icon.png" alt="SAIPENVIEW" width="120" height="120">
   <h1 align="center">SAIPENVIEW</h1>
