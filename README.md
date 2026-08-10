@@ -1,16 +1,10 @@
-<div align="right">
-  🌍 <strong>EN</strong> | <a href="docs/i18n/README.ar.md">AR</a> | <a href="docs/i18n/README.bg.md">BG</a> | <a href="docs/i18n/README.cs.md">CS</a> | <a href="docs/i18n/README.da.md">DA</a> | <a href="docs/i18n/README.de.md">DE</a> | <a href="docs/i18n/README.ee.md">EE</a> | <a href="docs/i18n/README.el.md">EL</a> | <a href="docs/i18n/README.es.md">ES</a> | <a href="docs/i18n/README.fi.md">FI</a> | <a href="docs/i18n/README.fr.md">FR</a> | <a href="docs/i18n/README.he.md">HE</a> | <a href="docs/i18n/README.hi.md">HI</a> | <a href="docs/i18n/README.hr.md">HR</a> | <a href="docs/i18n/README.hu.md">HU</a> | <a href="docs/i18n/README.id.md">ID</a> | <a href="docs/i18n/README.it.md">IT</a> | <a href="docs/i18n/README.ja.md">JA</a> | <a href="docs/i18n/README.ko.md">KO</a> | <a href="docs/i18n/README.nl.md">NL</a> | <a href="docs/i18n/README.no.md">NO</a> | <a href="docs/i18n/README.pl.md">PL</a> | <a href="docs/i18n/README.pt.md">PT</a> | <a href="docs/i18n/README.ro.md">RO</a> | <a href="docs/i18n/README.ru.md">RU</a> | <a href="docs/i18n/README.sk.md">SK</a> | <a href="docs/i18n/README.sv.md">SV</a> | <a href="docs/i18n/README.th.md">TH</a> | <a href="docs/i18n/README.tr.md">TR</a> | <a href="docs/i18n/README.uk.md">UK</a> | <a href="docs/i18n/README.vi.md">VI</a> | <a href="docs/i18n/README.zh.md">ZH</a> | <a href="docs/i18n/README.zh-CN.md">ZH-CN</a> | <a href="docs/i18n/README.ded.md">ДЕД</a>
-</div>
-
-<div align="center">
+<p align="center">
   <img src="screenshots/saipen_icon.png" alt="SAIPENVIEW" width="120" height="120">
   <h1 align="center">SAIPENVIEW</h1>
   <p align="center">
-    <strong>Desktop tray viewer for every SAIPEN project on your machine</strong>
-    <br>
-    Autodiscovers <code>.saipen/</code> projects across local drives — live phase, task, blocker, git status, tickets, and sub-agents.
-    <br>
-    One vintage dark-golden Win95-themed dashboard.
+    <strong>Desktop tray viewer for every SAIPEN project on your machine.</strong><br>
+    Autodiscovers <code>.saipen/</code> projects across local drives — live phase, task,
+    blocker, git status, tickets, sub-agents. One vintage dark-golden Win95 dashboard.
   </p>
   <p>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
@@ -18,90 +12,74 @@
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
-      </p>
-</div>
+  </p>
+</p>
 
-<br>
+<p align="center">
+  <img src="screenshots/dashboard.png" alt="SAIPENVIEW dashboard" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
+</p>
 
 ---
 
-## 🚀 Features
+## Features
 
-<table>
-<tr>
-<td width="50%">
+### Discovery
 
-### 🔍 Discovery
 - **Auto-scan** local drives for `.saipen/` projects
 - **Custom roots** — pick folders or entire drives
 - **Smart excludes** — `node_modules`, `.git`, system dirs
 - **Background rescan** — configurable interval (default 300s)
 - **Linked worktrees** — detects git worktrees for easy setup
 
-### 📊 Dashboard
+### Dashboard
+
 - Live **phase**, **task**, **next action**, **blocker**
 - **Git branch** + dirty-state indicator per project
 - **Filter** by phase (All / Active / Done / Stuck / custom)
 - **Sort** — Smart, Recent, Oldest, A–Z, Z–A
 - **Search** — name/root filter + deep ticket search
 - **Pin** projects to top, **hide** irrelevant ones
-- **Flash highlight** — changed projects glow & fade over 20s
+- **Flash highlight** — changed projects glow and fade over 20s
 - **Heat coloring** — stale projects cool, fresh projects warm
 
-</td>
-<td width="50%">
+### Sub-Agents
 
-### 🧩 Sub-Agents
-- **Nested display** — `saiwiki`, `saihunt`, `saitranslate` indented under parent
-- **Outbox counts** — ready/blocked/draft/reviewed at a glance
-- **One-click collect** — fold ready entries into main project
+- **Nested display** — `saiwiki`, `saihunt`, `saitranslate` indented under their parent
+- **Outbox counts** — ready / blocked / draft / reviewed at a glance
+- **One-click collect** — fold ready entries into the main project
 - **Stale warning** — detects out-of-date protocol files
 - **Agent Engine** — launch `claude-code` (or other engines: codex, aider, gemini, cline, goose, agy, generic_cli, opencode) in a project
   - **Live status** — running/exit state, CPU, elapsed time per project
-  - **Output console** — buffered agent output (default 5000 lines), stdin input only for engines with proven stdin support
+  - **Output console** — buffered agent output (default 5000 lines); stdin input only for engines with proven stdin support
   - **Kill / stop all** — per-project kill and global stop
   - **Generic CLI is a shell command** — `generic-cli` runs the instruction through `cmd.exe /d /s /c` with the project as working directory; quotes, pipes and `&&` work. Send is not offered for one-shot engines (codex exec, gemini --prompt, opencode run, ...) until stdin support is proven
-  - **`engine_overrides`** — per-engine `{"path": <exe>, "extra_args": [...], "env": {...}}` validated before launch (config.py)
-  - **Single-instance guard** — only one app instance; second launch re-shows window
+  - **`engine_overrides`** — per-engine `{"path": <exe>, "extra_args": [...], "env": {...}}` validated before launch
+  - **Single-instance guard** — only one app instance; a second launch re-shows the window
 
-### 🎮 Interaction
-- **File viewer** — read & edit STATE.md, BOARD.md, LOG.md
-  - Source mode (editable) + Reader mode (rendered)
+### Interaction
+
+- **File viewer** — read & edit STATE.md, BOARD.md, LOG.md; source mode (editable) + reader mode (rendered)
 - **Interactive tickets** — Start / Done buttons update BOARD.md live
 - **Quick actions** — contextual `npm run dev`, `cargo test`, etc.
 - **Custom commands** — user-defined action buttons
-- **Collapsible sections** — per-project, persisted
+- **Collapsible sections** — per project, persisted
 - **Resizable sidebar** — drag to resize
 
-### ⌨️ Hotkeys & Window
+### Hotkeys & Window
+
 - **Show/Hide** — `Ctrl+Alt+X` (configurable)
 - **Snap corners** — `Ctrl+Q` cycles TL → TR → BL → BR
-- **Zoom** — `Ctrl+MouseWheel`, `Ctrl+`+`/`-`
+- **Zoom** — `Ctrl+MouseWheel`, `Ctrl` + `+` / `-`
 - **System tray** — minimize to tray, start hidden
 - **Always-on-top** toggle
 - **Autostart** — optional Windows startup
-- **Frameless mode** — toggle titlebar off for ultra-minimal view
-
-</td>
-</tr>
-</table>
-
-<br>
+- **Frameless mode** — toggle the titlebar off for an ultra-minimal view
 
 ---
 
-<br>
+## Quick Start
 
-## 🎯 Quick Start
-
-<table>
-<tr>
-<th width="33%">🐍 Run from source</th>
-<th width="33%">📜 Launch scripts</th>
-<th width="33%">📦 Install (future)</th>
-</tr>
-<tr>
-<td>
+From source:
 
 ```bash
 git clone https://github.com/vacterro/saipenview.git
@@ -111,33 +89,16 @@ python -m venv .venv
 .venv\Scripts\python -m saipenview
 ```
 
-</td>
-<td>
+Or use the bundled launch scripts — both auto-create `.venv` and install dependencies:
 
 | Script | Behavior |
 |---|---|
 | `run.vbs` | Hidden (tray-only), silent |
 | `run.bat` | Tray-only launch; console visible only during one-time venv/deps bootstrap |
-Both auto-create `.venv` & install deps.
-
-</td>
-<td>
-
-```bash
-pip install saipenview
-saipenview
-```
-Coming soon ✨
-
-</td>
-</tr>
-</table>
-
-<br>
 
 ---
 
-## ⌨️ Usage
+## Usage
 
 | Action | How |
 |---|---|
@@ -147,10 +108,10 @@ Coming soon ✨
 | **Zoom in / out** | `Ctrl+MouseWheel` or `Ctrl` + `+` / `-` |
 | **Zoom reset** | `Ctrl+0` |
 | **Toggle toolbar** | `Alt+D` — collapse/expand the toolbar panel |
-| **Search projects** | Type in search box; tick `D` for deep ticket search |
+| **Search projects** | Type in the search box; tick `D` for deep ticket search |
 | **Filter** | Dropdown: All / Live / Done / Stuck, or click a phase pill |
 | **Sort** | Smart / Recent / Oldest / A–Z / Z–A |
-| **Rescan** | Click `Rescan` or wait for background timer (default 300s) |
+| **Rescan** | Click `Rescan` or wait for the background timer (default 300s) |
 | **Browse folder** | Click `Browse` to add a folder to the scan set |
 | **Settings** | ⚙ button opens the settings modal |
 | **Help wiki** | `?` button opens the built-in mini-wiki |
@@ -167,11 +128,9 @@ Coming soon ✨
 | **Help** | Comprehensive mini-wiki covering every feature, shortcut, and concept |
 | **Confirm** | Vintage-styled DOM dialog (replaces native `confirm()`) |
 
-<br>
-
 ---
 
-## 🧬 SAIPEN Protocol
+## SAIPEN Protocol
 
 SAIPENVIEW is a companion for projects using the **SAIPEN Protocol** — a state-machine framework that guides AI agents through project work in defined phases:
 
@@ -180,6 +139,7 @@ INIT → PLAN → SCOUT → BUILD → REVIEW → VERIFY → SHIP → DONE
                  ↓              ↓
             HUNT / CLEAN    VALIDATE
 ```
+
 `ADD`, `MARKHUNT`, `TRANSLATE`, `PREPARE` also exist — the full vocabulary and transition table live in `saipenview/protocol.py` (with `BLOCKED` reachable from most phases).
 
 Each SAIPEN project stores its state in three canonical files:
@@ -218,11 +178,9 @@ not allowed to lag it quietly.
 
 > 💡 *The name "SAIPENVIEW" says it all — it provides a **view** into every **SAIPEN** project on your machine.*
 
-<br>
-
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Config is portable — stored next to the app, not `%APPDATA%`:
 
@@ -256,16 +214,16 @@ Key defaults (abridged — the full `DEFAULTS` dict lives in `saipenview/config.
 }
 ```
 
-Set `scan_roots: null` to autodetect all local drives.  
-Set to a list of paths (e.g. `["V:\\", "D:\\projects"]`) to limit scanning.  
-`default_engine` / `engine_overrides` / `agent_output_buffer_size` drive the Agent Engine (see Features).  
+Set `scan_roots: null` to autodetect all local drives.
+Set it to a list of paths (e.g. `["V:\\", "D:\\projects"]`) to limit scanning.
+`default_engine` / `engine_overrides` / `agent_output_buffer_size` drive the Agent Engine (see Features).
 `theme` is a slug from `saipenview/assets/themes/` — 16 palettes ship with the app
 (Dark Golden, Claude Code, Antigravity, K-Lite, FreeBuff, CodeNomad, Default,
 Golden Vintage, Golden Default, Vintage Dark, Vintage Classic, OLED, Dracula,
 Nord, Solarized Dark, Custom). Switching is live and needs no restart; the
 palette is applied by setting CSS custom properties at runtime, so `style.css`
 is never rewritten to change a colour. `goldendefault` reproduces the
-stylesheet's own defaults exactly, and an unknown slug falls back to it.  
+stylesheet's own defaults exactly, and an unknown slug falls back to it.
 All settings are also configurable through the **Settings** modal in the app.
 
 ### Path safety & dry-run
@@ -294,11 +252,9 @@ python -m saipenview --dry-run
 Exit code `0` = config clean, `1` = missing/quarantined roots or a canonical
 mismatch, each named on stdout.
 
-<br>
-
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 saipenview/
@@ -345,27 +301,21 @@ saipenview/
 - **No CSS transitions** — all visual effects (flash, heat, hover) are JavaScript-driven `hexBlend` recomputations, strictly following the vintage theme's zero-animation constraint
 - **Vintage theme** — dark brown surfaces, golden text/accents, 3D beveled borders, zero anti-aliasing, Verdana_m1 font
 
-<br>
-
 ---
 
-## 🧪 Development
+## Development
 
 ```bash
-# Clone & enter
 git clone https://github.com/vacterro/saipenview.git
 cd saipenview
-
-# Create venv & install
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Run
 python -m saipenview
 ```
 
-For detailed setup, coding conventions, and PR workflow, see [CONTRIBUTING.md](CONTRIBUTING.md).
+For detailed setup, coding conventions, and the PR workflow, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Requirements
 
@@ -373,26 +323,9 @@ For detailed setup, coding conventions, and PR workflow, see [CONTRIBUTING.md](C
 - **Python 3.10+**
 - Dependencies: `pystray`, `keyboard`, `pywebview`, `Pillow`, `watchdog`, `psutil`
 
-<br>
-
 ---
 
-## 📄 License
-
-MIT — see [LICENSE](LICENSE).
-
-<br>
-
----
-
-<div align="center">
-  <sub>Built with 🐍 Python • 🖼️ pywebview • 🎨 Vintage Win95 aesthetic</sub>
-
-<br>
-
----
-
-## 📸 More Screenshots
+## Screenshots
 
 <p align="center">
   <img src="screenshots/detail-pane.png" alt="SAIPENVIEW Detail Pane" width="85%" style="border-radius: 4px; border: 1px solid #3a3020;">
@@ -400,6 +333,33 @@ MIT — see [LICENSE](LICENSE).
   <em>Detail pane with tickets, sub-agents, and file viewer.</em>
 </p>
 
-<br>
+---
 
-</div>
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+## Translations
+
+<details>
+<summary>Read this README in your language</summary>
+
+| Code | Link | Code | Link | Code | Link |
+|---|---|---|---|---|---|
+| AR | [README.ar.md](docs/i18n/README.ar.md) | IT | [README.it.md](docs/i18n/README.it.md) | SV | [README.sv.md](docs/i18n/README.sv.md) |
+| BG | [README.bg.md](docs/i18n/README.bg.md) | JA | [README.ja.md](docs/i18n/README.ja.md) | TH | [README.th.md](docs/i18n/README.th.md) |
+| CS | [README.cs.md](docs/i18n/README.cs.md) | KO | [README.ko.md](docs/i18n/README.ko.md) | TR | [README.tr.md](docs/i18n/README.tr.md) |
+| DA | [README.da.md](docs/i18n/README.da.md) | NL | [README.nl.md](docs/i18n/README.nl.md) | UK | [README.uk.md](docs/i18n/README.uk.md) |
+| DE | [README.de.md](docs/i18n/README.de.md) | NO | [README.no.md](docs/i18n/README.no.md) | VI | [README.vi.md](docs/i18n/README.vi.md) |
+| EE | [README.ee.md](docs/i18n/README.ee.md) | PL | [README.pl.md](docs/i18n/README.pl.md) | ZH | [README.zh.md](docs/i18n/README.zh.md) |
+| EL | [README.el.md](docs/i18n/README.el.md) | PT | [README.pt.md](docs/i18n/README.pt.md) | ZH-CN | [README.zh-CN.md](docs/i18n/README.zh-CN.md) |
+| ES | [README.es.md](docs/i18n/README.es.md) | RO | [README.ro.md](docs/i18n/README.ro.md) | ДЕД | [README.ded.md](docs/i18n/README.ded.md) |
+| FI | [README.fi.md](docs/i18n/README.fi.md) | RU | [README.ru.md](docs/i18n/README.ru.md) | | |
+| FR | [README.fr.md](docs/i18n/README.fr.md) | SK | [README.sk.md](docs/i18n/README.sk.md) | | |
+| HE | [README.he.md](docs/i18n/README.he.md) | HR | [README.hr.md](docs/i18n/README.hr.md) | | |
+| HI | [README.hi.md](docs/i18n/README.hi.md) | HU | [README.hu.md](docs/i18n/README.hu.md) | | |
+| ID | [README.id.md](docs/i18n/README.id.md) | | | | |
+
+</details>
