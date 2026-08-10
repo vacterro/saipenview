@@ -26,8 +26,8 @@ CHANGELOG_HEAD_RE = re.compile(r"^## \[(\d+\.\d+\.\d+)\]")
 VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']")
 
 
-def _version() -> str:
-    init = ROOT / "saipenview" / "__init__.py"
+def _version(root: Path) -> str:
+    init = root / "saipenview" / "__init__.py"
     m = VERSION_RE.match(init.read_text(encoding="utf-8"))
     if not m:
         print(f"FAIL: {init} carries no __version__")
@@ -35,8 +35,8 @@ def _version() -> str:
     return m.group(1)
 
 
-def _changelog_head() -> str | None:
-    text = ROOT / "CHANGELOG.md"
+def _changelog_head(root: Path) -> str | None:
+    text = root / "CHANGELOG.md"
     for line in text.read_text(encoding="utf-8").splitlines():
         m = CHANGELOG_HEAD_RE.match(line.strip())
         if m:
@@ -44,29 +44,38 @@ def _changelog_head() -> str | None:
     return None
 
 
-def _git(args: list[str]) -> str:
+def _git(root: Path, args: list[str]) -> str:
     r = subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=False
+        ["git", *args], cwd=root, capture_output=True, text=True, check=False
     )
     return (r.stdout or "").strip()
 
 
-def _tags() -> list[str]:
-    return _git(["tag", "-l", "v[0-9]*"]).splitlines()
+def _tags(root: Path) -> list[str]:
+    return _git(root, ["tag", "-l", "v[0-9]*"]).splitlines()
 
 
 def main() -> int:
-    version = _version()
+    argv = sys.argv[1:]
+    if len(argv) == 2 and argv[0] == "--root":
+        root = Path(argv[1])
+    elif argv:
+        print(f"usage: {sys.argv[0]} [--root <repo-path>]")
+        return 2
+    else:
+        root = ROOT
+
+    version = _version(root)
     problems: list[str] = []
 
-    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     proj_block = pyproject.split("[project]", 1)[1].split("\n[", 1)[0]
     if re.search(r"^\s*version\s*=\s*[\"']", proj_block, re.MULTILINE):
         problems.append("pyproject still declares a static version; use dynamic")
     if 'dynamic = ["version"]' not in proj_block:
         problems.append("pyproject does not declare version as dynamic")
 
-    head = _changelog_head()
+    head = _changelog_head(root)
     if head is None:
         problems.append("CHANGELOG.md has no version heading")
     elif head != version:
@@ -74,10 +83,10 @@ def main() -> int:
 
     # Tag identity. Normalise the tag list to plain versions.
     tag_versions = sorted(
-        (t[1:] for t in _tags() if re.match(r"^v\d+\.\d+\.\d+$", t)),
+        (t[1:] for t in _tags(root) if re.match(r"^v\d+\.\d+\.\d+$", t)),
         key=lambda v: [int(x) for x in v.split(".")],
     )
-    current_tag = _git(["tag", "--points-at", "HEAD"]).splitlines()
+    current_tag = _git(root, ["tag", "--points-at", "HEAD"]).splitlines()
     v_tags = [t for t in current_tag if t == f"v{version}"]
     newest_tag = tag_versions[-1] if tag_versions else None
 

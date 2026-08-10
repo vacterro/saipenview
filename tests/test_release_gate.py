@@ -1,19 +1,29 @@
-"""T-188: the release identity gate and the single version source.
+"""T-188/T-197: the release identity gate and the single version source.
 
 v0.1.18..v0.1.20 shipped tags while pyproject/__init__ stayed at 0.1.17, so a
 wheel carried METADATA that named the wrong release. These tests pin the
 replacement: one version source (saipenview.__version__, derived dynamically)
 and a gate that fails whenever the four identity surfaces disagree.
+
+T-197: test_release_gate_passes used to assert exit 0 against the LIVE repo,
+which is state-dependent -- at any untagged commit after a shipped release the
+version equals the newest tag and the gate correctly refuses ("re-shipping an
+old release"), so the test went red until the next bump. The pass assertion
+now runs the gate against a sandboxed tree with a bumped version, so it is
+green at every HEAD; the two failure modes are pinned by their own sandboxed
+tests.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+GATE = ROOT / "tools" / "release_gate.py"
 VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']")
 CHANGELOG_HEAD_RE = re.compile(r"^## \[(\d+\.\d+\.\d+)\]")
 
@@ -25,6 +35,12 @@ def _version() -> str:
     return m.group(1)
 
 
+def _bumped_version() -> str:
+    parts = [int(x) for x in _version().split(".")]
+    parts[-1] += 1
+    return ".".join(str(x) for x in parts)
+
+
 def _changelog_head() -> str:
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     for line in text.splitlines():
@@ -32,6 +48,37 @@ def _changelog_head() -> str:
         if m:
             return m.group(1)
     raise AssertionError("CHANGELOG.md has no version heading")
+
+
+def _make_sandbox(tmp_path: Path, version: str) -> Path:
+    (tmp_path / "saipenview").mkdir()
+    (tmp_path / "saipenview" / "__init__.py").write_text(
+        f'__version__ = "{version}"', encoding="utf-8"
+    )
+    (tmp_path / "CHANGELOG.md").write_text(f"## [{version}]", encoding="utf-8")
+    shutil.copy(ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
+    return tmp_path
+
+
+def _git_init_and_tag(path: Path, tag: str) -> None:
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "saipenview@test"],
+        ["config", "user.name", "saipenview"],
+        ["add", "-A"],
+        ["commit", "-q", "-m", "sandbox"],
+        ["tag", tag],
+    ):
+        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
+
+
+def _run_gate(sandbox: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(GATE), "--root", str(sandbox)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
 
 
 def test_version_has_one_source():
@@ -49,14 +96,33 @@ def test_changelog_head_matches_version():
     assert _changelog_head() == _version()
 
 
-def test_release_gate_passes():
-    r = subprocess.run(
-        [sys.executable, str(ROOT / "tools" / "release_gate.py")],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-    )
+def test_release_gate_passes_at_shipped_head(tmp_path):
+    # Version-agnostic (T-197): the sandbox carries a version above the newest
+    # tag and no git history, so the live repo's tag state cannot flip the
+    # verdict -- green at a tagged release commit, at a post-ship commit, and
+    # at a pre-bump HEAD alike.
+    sandbox = _make_sandbox(tmp_path, _bumped_version())
+    r = _run_gate(sandbox)
     assert r.returncode == 0, r.stdout + r.stderr
+    assert "PASS" in r.stdout
+
+
+def test_release_gate_fails_when_version_behind_newest_tag(tmp_path):
+    # Sandbox is its own git repo tagged far above the declared version, so
+    # the gate must refuse regardless of the real repo's tags.
+    sandbox = _make_sandbox(tmp_path, _version())
+    _git_init_and_tag(sandbox, "v999.0.0")
+    r = _run_gate(sandbox)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "BEHIND" in r.stdout
+
+
+def test_release_gate_fails_when_identity_surfaces_disagree(tmp_path):
+    sandbox = _make_sandbox(tmp_path, "1.2.3")
+    (sandbox / "CHANGELOG.md").write_text("## [9.9.9]", encoding="utf-8")
+    r = _run_gate(sandbox)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "CHANGELOG head [9.9.9] != __version__ [1.2.3]" in r.stdout
 
 
 def test_new_release_must_not_be_behind_newest_tag():
