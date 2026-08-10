@@ -14,6 +14,22 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## [0.1.25] - 2026-08-11
+
+### Fixed
+
+- **Full-suite shutdown crash (T-198).** `test_hotkey` lifecycle tests
+  registered REAL global keyboard hooks via `keyboard.add_hotkey`, leaving
+  the library's listener thread alive for the whole pytest process. At
+  interpreter shutdown a live hook callback raised
+  `STATUS_FATAL_USER_CALLBACK_EXCEPTION` (exit `0xC000041D`), and the same
+  leak under pytest's capture layer produced the intermittent
+  `OSError: [Errno 9] Bad file descriptor` on the terminal flush. The
+  lifecycle tests now use a `_NoOpKeyboard` shim (mirroring the existing
+  `TestListenerRegistration` fake), so the suite never installs a global
+  hook. `test_hotkey` 19/19; three consecutive full-suite runs green with
+  no `INTERNALERROR` and no `0xC000041D`.
+
 ## [0.1.24] - 2026-08-11
 
 ### Changed

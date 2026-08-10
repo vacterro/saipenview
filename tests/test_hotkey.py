@@ -164,8 +164,42 @@ class TestListenerRegistration:
         assert "not registered" in capsys.readouterr().err
 
 
+class _NoOpKeyboard:
+    """Shim every start() that would otherwise register a REAL global hook.
+
+    `keyboard.add_hotkey` installs a Windows low-level hook and leaves its
+    listener thread alive for the whole process -- even after remove_hotkey.
+    A hook thread still running at interpreter shutdown can raise
+    STATUS_FATAL_USER_CALLBACK_EXCEPTION (0xC000041D) as the process tears
+    down, which is the T-198 full-suite crash. Tests of OUR debounce/stop
+    logic never need a real hook; TestListenerRegistration above already
+    proves the real add_hotkey contract with a fake. Keep these lifecycle
+    tests on the shim so the suite never installs a global hook."""
+
+    def __init__(self):
+        self.added = []
+        self.removed = []
+
+    def add_hotkey(self, parsed, _cb):
+        self.added.append(parsed)
+        return lambda: None
+
+    def remove_hotkey(self, remover):
+        self.removed.append(remover)
+
+
+@pytest.fixture
+def _shim_keyboard(monkeypatch):
+    import saipenview.hotkey as hk
+
+    shim = _NoOpKeyboard()
+    monkeypatch.setattr(hk.keyboard, "add_hotkey", shim.add_hotkey)
+    monkeypatch.setattr(hk.keyboard, "remove_hotkey", shim.remove_hotkey)
+    return shim
+
+
 class TestHotkeyListener:
-    def test_create_and_stop(self):
+    def test_create_and_stop(self, _shim_keyboard):
         """Creating and stopping a HotkeyListener doesn't crash."""
         from saipenview.hotkey import HotkeyListener
 
@@ -175,24 +209,28 @@ class TestHotkeyListener:
         )
         listener.start()
         listener.stop()
+        assert len(_shim_keyboard.added) == 1
+        assert len(_shim_keyboard.removed) == 1
         # No assertion on events — hotkey won't fire without actual keypress
 
-    def test_stop_before_start(self):
+    def test_stop_before_start(self, _shim_keyboard):
         """Stopping a listener that was never started is safe."""
         from saipenview.hotkey import HotkeyListener
 
         listener = HotkeyListener(on_toggle=lambda: None)
         listener.stop()  # Should not raise
 
-    def test_set_hotkeys(self):
+    def test_set_hotkeys(self, _shim_keyboard):
         """Changing hotkeys stops old listener and starts new one."""
         from saipenview.hotkey import HotkeyListener
 
         listener = HotkeyListener(on_toggle=lambda: None)
         listener.set_hotkeys(["ctrl+alt+z"])  # Should not crash
         listener.stop()
+        assert len(_shim_keyboard.added) == 1
+        assert len(_shim_keyboard.removed) == 1
 
-    def test_multiple_hotkeys(self):
+    def test_multiple_hotkeys(self, _shim_keyboard):
         """Listener can accept multiple hotkey combos."""
         from saipenview.hotkey import HotkeyListener
 
@@ -202,6 +240,8 @@ class TestHotkeyListener:
         assert listener._hotkeys == ["ctrl+alt+x", "alt+f15"]
         listener.start()
         listener.stop()
+        assert len(_shim_keyboard.added) == 2
+        assert len(_shim_keyboard.removed) == 2
 
     def test_default_hotkeys(self):
         """Default hotkeys come from DEFAULTS."""
