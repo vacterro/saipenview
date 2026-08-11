@@ -835,17 +835,26 @@ class TestToggleTicketStatus:
         )
 
         with (
-            patch("saipenview.parser.move_ticket", return_value=True),
+            patch(
+                "saipenview.parser.move_ticket",
+                return_value={"ok": True, "code": "CLAIMED"},
+            ),
             patch.object(api, "get_project_detail", return_value={"name": "proj"}),
         ):
             result = api.toggle_ticket_status(str(d), "T-001", "start")
             assert result is not None
             assert result["name"] == "proj"
 
-    def test_returns_none_on_failure(self, api):
-        with patch("saipenview.parser.move_ticket", return_value=False):
-            result = api.toggle_ticket_status("/test", "T-001", "invalid")
-            assert result is None
+    def test_returns_refusal_on_failure(self, api, tmp_path):
+        d = _seed_verified_root(api, tmp_path / "proj")
+        with patch(
+            "saipenview.parser.move_ticket",
+            return_value={"ok": False, "code": "ILLEGAL_PHASE", "message": "no"},
+        ):
+            result = api.toggle_ticket_status(str(d), "T-001", "done")
+            assert result is not None
+            assert result["ok"] is False
+            assert result["code"] == "ILLEGAL_PHASE"
 
 
 class TestGetLinkedWorktrees:

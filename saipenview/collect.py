@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import struct
 import subprocess
@@ -35,7 +36,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from saipenview import protocol
-from saipenview.parser import OutboxEntry
 
 
 class FreshnessError(RuntimeError):
@@ -472,6 +472,12 @@ def compute_generic_role_revision(protocol_path: Path | str) -> str:
 
 # --- the package gate -------------------------------------------------------
 
+# Charter metadata: the closed set of consumption authorities (PROTOCOL.md
+# § 3.1). `automatic` allows autonomous intake; `core-review` creates normal
+# Core work and NEVER applies a payload directly; `explicit` refuses every
+# autonomous sweep and requires an explicit named collect authorization.
+COLLECT_POLICIES = frozenset({"automatic", "core-review", "explicit"})
+
 
 def _charter_paths(root: Path, producer: str) -> list[Path]:
     candidates = (
@@ -479,6 +485,15 @@ def _charter_paths(root: Path, producer: str) -> list[Path]:
         root / "extensions" / "subs" / f"{producer}.md",
     )
     return [p for p in candidates if p.is_file()]
+
+
+def _charter_text(root: Path, producer: str) -> str | None:
+    for charter in _charter_paths(root, producer):
+        try:
+            return charter.read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+    return None
 
 
 def current_role_revision(root: Path, producer: str) -> str:
@@ -497,30 +512,57 @@ def current_role_revision(root: Path, producer: str) -> str:
     )
 
 
+def resolve_collect_policy(root: Path, sub_name: str) -> str | None:
+    """The producer's consumption authority from its CURRENT effective
+    charter metadata (PROTOCOL.md § 3.1). Never inferred from the sub name.
+    None = the charter is missing a collect_policy or is unreadable."""
+    text = _charter_text(root, sub_name)
+    if text is None:
+        return None
+    m = re.search(r"(?m)^\s*collect_policy:\s*([a-z-]+)\s*$", text)
+    if not m:
+        return None
+    policy = m.group(1).strip()
+    return policy if policy in COLLECT_POLICIES else None
+
+
 def check_package(
     root: Path,
     sub_name: str,
-    entry: OutboxEntry,
-) -> tuple[bool, str, str]:
-    """The full collect gate for one OUTBOX entry.
+    entry,
+) -> tuple[bool, str, str, dict]:
+    """The full collect gate for one OUTBOX entry (strict-parsed).
 
-    Returns ``(ok, message, kind)`` where kind is one of ``ready``,
+    Returns ``(ok, message, kind, proof)`` where kind is one of ``ready``,
     ``reviewed`` (idempotent no-op), ``not-ready`` (draft/blocked/stale),
-    ``incomplete``, ``stale``, ``malformed``. No main-project write may
-    happen unless ok is True.
+    ``incomplete``, ``stale``, ``malformed``. No main-project write may happen
+    unless ok is True.
+
+    On `ready`, `proof` is the immutable freshness proof the APPLY must
+    revalidate under the canonical writer lock immediately before commit:
+    source identity (head/tree/role) plus the exact OUTBOX and main-checkpoint
+    hashes the decision was made from.
     """
+    if getattr(entry, "errors", None):
+        return (
+            False,
+            "malformed OUTBOX: " + "; ".join(entry.errors[:3]),
+            "malformed",
+            {},
+        )
     status = (entry.status or "").strip()
     if status == "reviewed":
-        return True, "already reviewed; no-op", "reviewed"
+        return True, "already reviewed; no-op", "reviewed", {}
     if status == "":
-        return False, "entry has no usable status field", "malformed"
+        return False, "entry has no usable status field", "malformed", {}
     if status not in ("ready", "draft", "blocked", "stale"):
-        return False, f"status {status!r} is not a known OUTBOX status", "malformed"
+        return False, f"status {status!r} is not a known OUTBOX status", "malformed", {}
     if status != "ready":
         return (
             False,
             f"entry '{entry.entry_id}' is not ready (status: {status})",
             "not-ready",
+            {},
         )
 
     fields = entry.fields
@@ -533,6 +575,7 @@ def check_package(
             f"status: ready but missing {', '.join(sorted(missing))} "
             f"-- complete ready packages bind every handoff and freshness field",
             "incomplete",
+            {},
         )
     for extra in ("summary", "critical"):
         if not (fields.get(extra) or "").strip():
@@ -541,6 +584,7 @@ def check_package(
                 f"status: ready but missing **{extra}:** -- collect reads it "
                 f"to decide what to do with the entry",
                 "incomplete",
+                {},
             )
 
     producer = (fields.get("producer") or "").strip()
@@ -549,6 +593,7 @@ def check_package(
             False,
             f"entry producer {producer!r} != requested sub {sub_name!r}",
             "malformed",
+            {},
         )
 
     # Source identity FAILS CLOSED: a package cannot be judged fresh if the
@@ -556,7 +601,7 @@ def check_package(
     try:
         identity = compute_source_identity(root)
     except FreshnessError as exc:
-        return False, f"source freshness computation BLOCKED: {exc}", "stale"
+        return False, f"source freshness computation BLOCKED: {exc}", "stale", {}
 
     head = (fields.get("source_head") or "").strip()
     if head != identity.source_head:
@@ -565,6 +610,7 @@ def check_package(
             f"source_head {head!r} != current source_head "
             f"{identity.source_head!r} -- package is stale",
             "stale",
+            {},
         )
     fp = (fields.get("source_tree_fingerprint") or "").strip()
     if fp != identity.source_tree_fingerprint:
@@ -574,22 +620,54 @@ def check_package(
             f"{identity.source_tree_fingerprint!r} -- the tree changed since "
             f"the package was produced (same HEAD or not), so it is stale",
             "stale",
+            {},
         )
 
     rr = (fields.get("role_revision") or "").strip()
     try:
         current_rr = current_role_revision(root, sub_name)
     except FreshnessError as exc:
-        return False, f"cannot derive current role_revision: {exc}", "stale"
+        return False, f"cannot derive current role_revision: {exc}", "stale", {}
     if rr != current_rr:
         return (
             False,
             f"role_revision {rr!r} != current charter revision "
             f"{current_rr!r} -- produced under a superseded role",
             "stale",
+            {},
         )
-    return True, "package is complete, fresh and role-current", "ready"
+
+    proof = {
+        "source_head": head,
+        "source_tree_fingerprint": fp,
+        "role_revision": rr,
+        "sub_name": sub_name,
+        "entry_id": entry.entry_id,
+        "outbox_hash": _hash_of(
+            root
+            / ".saipen"
+            / "extensions"
+            / "subs"
+            / sub_name
+            / "kitchen"
+            / "OUTBOX.md"
+        ),
+        "state_hash": _hash_of(root / ".saipen" / "STATE.md"),
+        "board_hash": _hash_of(root / ".saipen" / "BOARD.md"),
+        "log_hash": _hash_of(root / ".saipen" / "LOG.md"),
+    }
+    return True, "package is complete, fresh and role-current", "ready", proof
 
 
-def critical_flag(entry: OutboxEntry) -> bool:
-    return (entry.fields.get("critical") or "").strip().lower() == "true"
+def _hash_of(path: Path) -> str:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def critical_flag(entry) -> bool:
+    """The TYPED critical value -- `true` | `false` exactly (the strict parser
+    already refused anything else)."""
+    return entry.critical is True

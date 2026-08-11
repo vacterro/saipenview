@@ -14,6 +14,79 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## [0.1.28] - 2026-08-11
+
+### Changed
+
+- **One canonical writer authority (repair mission P0).** The viewer no longer
+  runs its own "atomic multi-file" CAS transaction. Every `.saipen/` mutation
+  is committed through the canonical SAIPEN writer pipeline (`saipenview/
+  saio.py` loads `saipen_engine` from the project's `saipen_home`): OS writer
+  lock, recovery preflight, immutable PREPARED journal with staged bytes,
+  ordered targets, byte + semantic verification, COMMITTED. A crash after any
+  write leaves a recoverable journal -- never an accepted half-state, and
+  replay is idempotent. Decisions are bound to the exact snapshot whose
+  hashes become the plan's preconditions; a stale decision (external writer
+  between decide and commit) aborts STALE_STATE with zero writes.
+  `tools/validate.py --gate collect:<producer>`-style authority is delegated,
+  not re-implemented.
+
+- **Ticket lifecycle is the canonical SAIOPS lifecycle.** `start`/`block`/
+  `unblock`/`done` delegate to the canonical claim / ticket_move /
+  finish_ticket operations (journaled LOG+BOARD+STATE). The viewer cannot
+  manufacture `## DONE` any more: `done` is ONLY the canonical SHIP->DONE
+  closure and refuses ILLEGAL_PHASE outside it. `reopen` has no canonical
+  operation, so it is a journaled board-only move.
+
+- **Collect is authorized at commit time.** Before trusting an OUTBOX, collect
+  runs a strict single-valued parse (duplicate fields/entry-ids and any
+  non-`true|false` `critical` are MALFORMED, zero writes), the full package
+  gate (exact `ready`, every handoff field, producer identity, source_head +
+  source_tree_fingerprint + role_revision current) returning an immutable
+  freshness proof, a boundary check (backend-tracked unexplained external
+  changes + canonical recovery debt), and the producer charter's
+  `collect_policy` (`explicit` requires the named GUI authorization;
+  `core-review` creates a Core ticket and never applies a payload directly).
+  The freshness proof is REVALIDATED under the canonical writer lock
+  immediately before commit (STALE_FRESHNESS => zero writes if the source
+  tree, OUTBOX or any main checkpoint moved after the gate).
+
+- **External-change state lives backend-side.** The single-frontend-root
+  `unrecordedChangeRoot` is replaced by a backend registry keyed by (root,
+  relative path): a change to a hidden or background project is recorded
+  regardless of selection, survives project switches, coexists across roots
+  and files, and blocks collect until acknowledged or resolved by an exact
+  fingerprint match.
+
+### Fixed
+
+- **`record_manual_work` idempotency is now end-to-end by operation id.** The
+  API validates the id (type/length/charset) and the parser persists it as
+  `[op: <id>]`, so a retry with the same id resumes the original ticket while
+  the same description with a different id is a distinct record. The UI
+  mints the id per intent; that minting sits in `app.js`, which is entangled
+  with the pending service-mode frontend work and ships with it. The 0.1.27
+  changelog claimed the full chain while neither half was complete; the
+  backend half is complete now.
+
+- **Strict OUTBOX grammar everywhere.** `parse_outbox` is the single strict
+  parser: duplicates are structural errors, never last-write-wins, and the
+  status reviewed-flip uses one regex with exact-span replacement and a
+  re-parse postcondition.
+
+- **Content-based staleness + typed fingerprint.** SubSaipen staleness is
+  computed by content hash, not (mtime, size) -- same bytes copied later no
+  longer reads stale, and preserved-mtime different bytes no longer reads
+  fresh. File conflict identity is typed (`MISSING` vs `FILE\0<hash>`), so a
+  missing file never equals an empty one.
+
+- **One structured mutation-result contract.** Every mutation returns
+  `{ok, code, message, changed_files, retryable, recovery_required, op_id}`;
+  ownership/conflict/recovery refusals are reported as their canonical codes
+  (WRITER_BUSY / STALE_STATE / RECOVERY_REQUIRED / CONFLICT), never as a
+  generic failure. The state editor and file editor check the result instead
+  of treating any dict as success.
+
 ## [0.1.27] - 2026-08-11
 
 ### Fixed

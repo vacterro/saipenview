@@ -329,6 +329,76 @@ _STALENESS_FILES = [
 ]
 
 
+def canonical_home() -> Path | None:
+    """The canonical SAIPEN repo root the canonical writer bridge needs.
+
+    Resolution: SAIPEN_HOME env (CI clones it there), then the known local
+    checkout. None means the canonical engine is unreachable and the
+    canonical-writer tests must skip (the bridge fails closed in production,
+    so the tests skip only when the authority is genuinely absent)."""
+    import os
+
+    env = os.environ.get("SAIPEN_HOME")
+    if env and (Path(env) / "tools" / "saipen_engine").is_dir():
+        return Path(env)
+    known = Path(r"V:\___VAC\__K\__CODE\_AI_STUFF_AGENTIC\_SAIPEN")
+    if (known / "tools" / "saipen_engine").is_dir():
+        return known
+    return None
+
+
+def make_conformant_project(
+    tmp_path: Path,
+    phase: str = "DONE",
+    task: str = "none",
+    next_action: str = "saipen continue",
+    agent: str = "testseat",
+    board_text: str | None = None,
+    log_tail: int = 2,
+) -> Path:
+    """A canonical-clean project the canonical writer pipeline will mutate:
+    full STATE (required fields + saipen_home + last_event == LOG tail), four
+    BOARD headings, a conformant LOG. The canonical fast_check postcondition
+    requires all of these, so mutation fixtures MUST start here."""
+    home = canonical_home()
+    assert home is not None, "canonical SAIPEN home unreachable"
+    root = tmp_path / "proj"
+    saipen = root / ".saipen"
+    saipen.mkdir(parents=True)
+    (saipen / "STATE.md").write_text(
+        "---\nschema_version: 3\n"
+        f"phase: {phase}\ntransition_from: SHIP\ntask: {task}\n"
+        f'next_action: "{next_action}"\nblocker: none\n'
+        f"agent: {agent}\nsaipen_version: 7\n"
+        f"saipen_home: '{home}'\n"
+        "mode: full\nexecution_intent: normal\n"
+        "updated: 2026-08-11T00:00:00Z\n"
+        f"last_event: {log_tail}\n"
+        "style_contract: ded-4ae736e4\n---\n",
+        encoding="utf-8",
+    )
+    (saipen / "BOARD.md").write_text(
+        board_text or "# BOARD\n## DOING\n\n## TODO\n\n## DONE\n\n## BLOCKED\n",
+        encoding="utf-8",
+    )
+    (saipen / "LOG.md").write_text(
+        "- 11.08.26 00:00 [E-1] RUN: boot\n"
+        "- 11.08.26 00:01 [E-2] [parent: E-1] RUN: validate.py -> PASS\n"
+        + (
+            "".join(
+                f"- 11.08.26 00:{2 + i:02d} [E-{3 + i}] [parent: E-{2 + i}] "
+                f"RUN: extra\n"
+                for i in range(max(0, log_tail - 2))
+            )
+        )
+        if log_tail > 2
+        else "- 11.08.26 00:00 [E-1] RUN: boot\n"
+        "- 11.08.26 00:01 [E-2] [parent: E-1] RUN: validate.py -> PASS\n",
+        encoding="utf-8",
+    )
+    return root
+
+
 def make_ready_outbox(
     root: Path,
     sub: str,
@@ -337,13 +407,16 @@ def make_ready_outbox(
     critical: str = "true",
     summary: str = "fixture package",
     producer: str | None = None,
+    collect_policy: str = "automatic",
 ) -> Path:
     """Write a COMPLETE, current, role-current `status: ready` OUTBOX entry.
 
     Every handoff field is bound to the fixture root's CURRENT source identity
     and a project-local charter's CURRENT role revision, so the entry passes
-    the collect gate exactly as a real produced package would. Callers that
-    want a red mutation overwrite one field afterwards."""
+    the collect gate exactly as a real produced package would. The charter
+    carries `collect_policy` (default `automatic`; `explicit`/`core-review`
+    tests pass the value they need). Callers that want a red mutation
+    overwrite one field afterwards."""
     from saipenview.collect import compute_source_identity, current_role_revision
 
     subs_dir = root / ".saipen" / "extensions" / "subs"
@@ -351,7 +424,8 @@ def make_ready_outbox(
     charter = subs_dir / f"{sub}.md"
     if not charter.is_file():
         charter.write_text(
-            f"# {sub} charter\n```yaml\nrole_revision: fixture\n```\n"
+            f"# {sub} charter\n```yaml\nrole_revision: fixture\n"
+            f"collect_policy: {collect_policy}\n```\n"
             f"The {sub} role, as a fixture charter.\n",
             encoding="utf-8",
         )

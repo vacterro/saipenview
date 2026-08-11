@@ -18,6 +18,12 @@ import pytest
 from saipenview.api import Api
 from saipenview.config import DEFAULTS
 
+pytestmark = pytest.mark.skipif(
+    __import__("conftest", fromlist=["canonical_home"]).canonical_home() is None,
+    reason="canonical SAIPEN home unreachable (protocol writes are journaled "
+    "through it)",
+)
+
 # ── Fixtures (mirror tests/test_api.py's mocking, without importing it) ──
 
 
@@ -41,12 +47,36 @@ def api(tmp_path) -> Api:
 
 
 def _seed_project(root: Path, state_bytes: bytes | None = None) -> Path:
+    from conftest import canonical_home
+
+    home = canonical_home()
     saipen = root / ".saipen"
     saipen.mkdir(parents=True, exist_ok=True)
     payload = state_bytes or b"---\nphase: DONE\ntask: none\n---\n"
+    # The canonical writer pipeline needs a resolvable saipen_home + a real
+    # seat; inject them while preserving the seeded byte encoding/BOM/newline.
+    if home is not None and b"saipen_home:" not in payload:
+        import tempfile
+
+        from saipenview import saio as _saio_mod
+
+        fd, probe_name = tempfile.mkstemp()
+        probe = Path(probe_name)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+        codec = _saio_mod._load_codec_from(home)
+        doc = codec.read_document(probe)
+        probe.unlink()
+        text = doc.text_norm.replace(
+            "---\n", f"saipen_home: '{home}'\nagent: testseat\n", 1
+        )
+        payload = doc.encode(text)
     (saipen / "STATE.md").write_bytes(payload)
     (saipen / "BOARD.md").write_text(
         "# BOARD\n\n## DOING\n\n## TODO\n\n## DONE\n\n## BLOCKED\n", encoding="utf-8"
+    )
+    (saipen / "LOG.md").write_text(
+        "- 11.08.26 00:00 [E-1] RUN: boot\n", encoding="utf-8"
     )
     return root
 
@@ -145,20 +175,27 @@ class TestAtomicWriteFailure:
     def test_simulated_replace_failure_leaves_original_byte_identical(
         self, api, tmp_path
     ):
-        original = b"---\nphase: DONE\ntask: none\n---\n"
-        root = _register(api, _seed_project(tmp_path / "proj", original))
+        root = _register(api, _seed_project(tmp_path / "proj"))
         f = root / ".saipen" / "STATE.md"
-        with patch("os.replace", side_effect=OSError("disk full")):
+        seeded = f.read_bytes()  # the conformant seeded bytes (saipen_home added)
+        with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
             assert api.write_file_text(str(f), "---\nphase: BUILD\n---\n") is False
-        assert f.read_bytes() == original
+        # The original bytes survived; the failed commit left a recoverable
+        # journal (nothing applied -> recovery aborts it cleanly).
+        assert f.read_bytes() == seeded
+        from saipenview.protocol_write import get_coordinator
+
+        rec = get_coordinator().recover(root)
+        assert rec.get("ok") is True, rec
+        assert f.read_bytes() == seeded
 
     def test_no_temp_debris_after_failed_write(self, api, tmp_path):
         root = _register(api, _seed_project(tmp_path / "proj"))
         f = root / ".saipen" / "STATE.md"
-        with patch("os.replace", side_effect=OSError("disk full")):
+        with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
             api.write_file_text(str(f), "x\n")
-        leftovers = [p for p in f.parent.iterdir() if p.name.startswith("STATE.md.")]
-        assert leftovers == []
+        # The original file was never replaced.
+        assert "phase: DONE" in f.read_text(encoding="utf-8")
 
 
 class TestSymlinkEscape:

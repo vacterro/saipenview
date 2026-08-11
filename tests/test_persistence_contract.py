@@ -41,9 +41,21 @@ class TestPersistenceContract:
     def test_no_saipen_files_tracked(self):
         r = _git("ls-files")
         tracked = r.stdout.splitlines()
-        assert not [
-            p for p in tracked if "/.saipen/" in p or p.startswith(".saipen")
-        ], "canonical memory must not be tracked raw (machine paths)"
+        # The own-`.saipen` CI snapshot is the ONE deliberate tracked exception
+        # (repair mission P1): CI validates a sanitized, mechanically-generated
+        # fixture because the live memory is gitignored. Everything else under
+        # .saipen/ must stay untracked.
+        banned = [
+            p
+            for p in tracked
+            if ("/.saipen/" in p or p.startswith(".saipen"))
+            and not p.startswith("tests/fixtures/own_saipen_snapshot/")
+        ]
+        assert not banned, "canonical memory must not be tracked raw (machine paths)"
+        snapshot = [
+            p for p in tracked if p.startswith("tests/fixtures/own_saipen_snapshot/")
+        ]
+        assert snapshot, "the tracked own-.saipen CI snapshot is missing"
 
     def test_no_absolute_local_paths_in_tracked_content(self):
         # The ban is on MACHINE STATE, not prose: docstrings may say

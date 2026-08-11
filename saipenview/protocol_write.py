@@ -1,44 +1,49 @@
-"""Per-project write coordinator for `.saipen/` protocol files (T-183).
+"""Per-project write coordinator for `.saipen/` protocol files.
 
 Every mutation of a project's `.saipen/` STATE/BOARD/LOG/OUTBOX/docs goes
-through THIS coordinator and nothing else. It delivers three invariants the
-old code violated:
+through THIS coordinator, which commits through the CANONICAL SAIPEN writer
+pipeline (`saipenview/saio.py`): OS writer lock, recovery preflight, immutable
+PREPARED journal, ordered targets, byte + semantic verification, COMMITTED.
+The viewer is a CLIENT of the canonical authority -- it never builds a second
+transaction engine, and a mutation whose canonical commit fails is reported
+as that failure (WRITER_BUSY / STALE_STATE / RECOVERY_REQUIRED / CONFLICT),
+never as success.
 
-1. **Serialization per root.** All writers for one project hold the same
-   per-root lock, so two app threads can no longer interleave read-modify-
-   write cycles on the same file and both commit.
-2. **Optimistic CAS / fingerprint.** The file is fingerprinted before the
-   transform and re-checked immediately before commit. A write by an external
-   actor (a Core agent, a hand edit, another tool) between our read and our
-   write aborts as a `ConflictError` instead of being silently overwritten --
-   the lost-update the split-brain defects came from.
-3. **Centralized id allocation.** `next_event_id` / `next_ticket_id` live here,
-   run under the root lock, and are the only allocation a mutator may use.
-   Every line a writer appends was allocated by exactly one code path.
+Decisions are bound to the exact snapshot they were made from: the plan's
+preconditions are the raw hashes of the snapshot reads, revalidated by the
+canonical journal under the writer lock immediately before commit. A
+STALE_STATE result means the decision's world moved; the coordinator re-runs
+the decision ONCE against a fresh snapshot (a fresh decision, never a blind
+retry of stale bytes), then applies.
 
-`write_doc` (textio.py) already does the atomic temp+replace; this layer
-guarantees the read->modify->write cycle around it is safe.
+Two app-level guarantees still live here:
+
+1. **Serialization per root** (app threads): all writers for one project hold
+   the same per-root RLock, so two app threads cannot interleave
+   read-decide-apply cycles.
+2. **App-vs-agent ownership** (ownership.py): an app mutation refuses while a
+   Core agent the app launched owns the project. Cross-process writers are
+   excluded by the canonical OS lock, not by this process-local state.
 """
 
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import re
 import threading
 import time as _time
 from collections.abc import Callable
 from pathlib import Path
 
+from saipenview import saio
 from saipenview.ownership import AgentOwnershipError, RootOwnership
-from saipenview.textio import read_doc_meta, write_doc
 
 _EVENT_ID_RE = re.compile(r"\[E-(\d+)\]")
 _TICKET_ID_RE = re.compile(r"\bT-(\d+)\b")
 
 # One coordinator per process; its per-root ownership is process-local, which
-# is exactly what serializes two of the app's own threads. Out-of-process
-# writers are caught by the fingerprint, not by the lock.
+# is exactly what serializes two of the app's own threads. Cross-process
+# writers are excluded by the canonical OS lock (saipen_engine.lock).
 _coordinator: WriteCoordinator | None = None
 
 
@@ -50,11 +55,13 @@ def get_coordinator() -> WriteCoordinator:
 
 
 class ConflictError(Exception):
-    """A `.saipen/` file changed on disk between our read and our commit."""
+    """DEPRECATED legacy exception: the canonical path reports staleness as a
+    structured STALE_STATE result, not an exception. Kept only for callers
+    that predate the result contract."""
 
 
 class MutationRejected(Exception):
-    """The transform declined to apply (invalid op); no write happens."""
+    """DEPRECATED legacy exception: see ConflictError."""
 
 
 def next_event_id(text: str) -> int:
@@ -133,8 +140,35 @@ class SelfWriteRegistry:
             self._entries.pop(k, None)
 
 
+# The canonical checkpoint set: every protocol mutation's decision world. An
+# external change to any of them between decide and commit aborts (STALE_STATE).
+_CANONICAL_DOCS = (
+    ".saipen/STATE.md",
+    ".saipen/BOARD.md",
+    ".saipen/LOG.md",
+)
+
+
+def _role_for(rel: str) -> str:
+    name = Path(rel).name.lower()
+    if name.startswith("log"):
+        return "log"
+    if name.startswith("board"):
+        return "board"
+    if name.startswith("state"):
+        return "state"
+    return "generic"
+
+
+def _canonical_read_deps(root: Path, written: set[str]) -> dict[str, str]:
+    """STATE/BOARD/LOG hashes (current snapshot) as read-only dependencies,
+    minus any file this mutation writes (its write precondition covers it)."""
+    docs = saio.snapshot(root, list(_CANONICAL_DOCS))
+    return {rel: docs[rel].raw_hash for rel in _CANONICAL_DOCS if rel not in written}
+
+
 class WriteCoordinator:
-    """Per-root serialization + optimistic CAS for `.saipen/` documents."""
+    """Canonical commits + app-level serialization and ownership."""
 
     def __init__(self) -> None:
         self.ownership = RootOwnership()
@@ -163,27 +197,20 @@ class WriteCoordinator:
 
     @staticmethod
     def fingerprint(path: Path) -> str:
-        """SHA-1 of the file's raw bytes; of the empty string when missing.
-
-        A missing file hashes like an empty one so a caller's CAS baseline for
-        a to-be-created file (e.g. a first `_shared/inbox.md`) matches what
-        `mutate_doc` computes for the absent target.
-        """
-        try:
-            return hashlib.blake2b(Path(path).read_bytes()).hexdigest()
-        except OSError:
-            return hashlib.blake2b(b"").hexdigest()
+        """Typed file identity: `MISSING` for an absent file, `FILE\\0<hash>`
+        for an existing one. A missing file never equals an empty file."""
+        return saio.fingerprint_file(path)
 
     @contextlib.contextmanager
     def locked(self, root: Path):
-        """Hold the per-root lock across several coordinator mutations."""
+        """Hold the per-root app lock across several coordinator mutations."""
         with self._lock(root):
             yield
 
     def _begin_tx(self, root: Path) -> None:
         """Under the per-root lock: mark an app transaction, refusing while an
-        agent owns the root. This is the authoritative single-writer gate --
-        the Api's `_guard_protocol_write` is only the cheap pre-check."""
+        agent owns the root (the app-level policy; the OS writer lock is the
+        canonical cross-process exclusion)."""
         if not self.ownership.begin_app_tx(root):
             raise AgentOwnershipError(
                 f"Core agent is running for {root}; direct .saipen mutation refused"
@@ -192,60 +219,45 @@ class WriteCoordinator:
     def _end_tx(self, root: Path) -> None:
         self.ownership.end_app_tx(root)
 
-    def transaction(
-        self,
-        root: Path,
-        targets: dict[Path, Callable[[str], str | None]],
-        deps: list[Path] | None = None,
-    ) -> None:
-        """Atomic multi-file mutation with cross-document conflict detection.
+    def mutate(self, root: Path, op_fn: Callable[[Path, int], object]) -> dict:
+        """Commit one decision through the canonical pipeline.
 
-        ``targets`` maps each file to its transform. ``deps`` names every
-        canonical input whose truth the operation's DECISION depended on --
-        files read but not written. Both targets and deps are fingerprinted
-        from the read the caller reasoned over, and ALL fingerprints are
-        re-validated immediately before the first commit. An external change
-        to any of them (target OR dependency) aborts the whole transaction
-        with ``ConflictError`` -- never a silent composition of two realities.
+        `op_fn(root, attempt)` must build an immutable OperationPlan from a
+        fresh canonical snapshot (via saio.plan) -- or return a refusal dict
+        {ok: False, code, message}. It is called at most twice: once, and once
+        more with attempt=1 when the first apply returned STALE_STATE (the
+        decision's world moved; the SECOND call is a fresh decision on the new
+        snapshot, never a replay of stale bytes).
 
-        Guard + reservation + mutation are one atomic ownership decision: the
-        agent-ownership check and the app-transaction mark happen under the
-        same per-root lock the launch path reserves, so a launch cannot slip
-        between a passed guard and its write.
-
-        Raises ``ConflictError`` (external drift), ``AgentOwnershipError``
-        (agent owns the root) or ``MutationRejected`` (a transform declined).
+        Returns the normalized result contract. Self-writes are registered for
+        every changed file so the watcher attributes them to the app.
         """
         root = Path(root)
         with self._lock(root):
             self._begin_tx(root)
             try:
-                dep_paths = [Path(p) for p in (deps or [])]
-                baseline: dict[Path, str] = {p: self.fingerprint(p) for p in dep_paths}
-                prepared: list[tuple[Path, str, str, str]] = []
-                for path, transform in targets.items():
-                    path = Path(path)
-                    if path not in baseline:
-                        baseline[path] = self.fingerprint(path)
-                    text, enc, newline = read_doc_meta(path)
-                    new_text = transform(text)
-                    if new_text is None or new_text == text:
+                for attempt in range(2):
+                    planned = op_fn(root, attempt)
+                    if isinstance(planned, dict):
+                        return planned
+                    result = saio.apply(root, planned)
+                    if result["code"] == "STALE_STATE" and attempt == 0:
                         continue
-                    prepared.append((path, new_text, enc, newline))
-                if not prepared:
-                    return
-                # Revalidate EVERY canonical input (deps + targets) before the
-                # first commit. A non-target dependency that moved since our
-                # read aborts the operation, not just the file it touched.
-                for path, fp in baseline.items():
-                    if self.fingerprint(path) != fp:
-                        raise ConflictError(str(path))
-                for path, new_text, enc, newline in prepared:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    write_doc(path, new_text, enc, newline)
-                    self.self_writes.register(
-                        str(root), path.name, self.fingerprint(path)
-                    )
+                    for rel in result.get("changed_files", []):
+                        path = root / rel
+                        self.self_writes.register(
+                            str(root), path.name, saio.fingerprint_file(path)
+                        )
+                    return result
+                return {
+                    "ok": False,
+                    "code": "STALE_STATE",
+                    "message": "state moved repeatedly; re-read the project and retry",
+                    "changed_files": [],
+                    "retryable": True,
+                    "recovery_required": False,
+                    "op_id": None,
+                }
             finally:
                 self._end_tx(root)
 
@@ -255,49 +267,116 @@ class WriteCoordinator:
         transform: Callable[[str], str | None],
         *,
         expected_fingerprint: str | None = None,
-    ) -> str | None:
-        """Read->transform->CAS-check->write one `.saipen/` document.
+        verification_policy: str = "core_fast",
+    ) -> dict:
+        """Single-file canonical mutation (text transform -> exact bytes).
 
-        `transform(text) -> new_text` (or None to decline without writing).
-        Returns the new fingerprint, or None when the transform declined.
-        Raises `ConflictError` when the file changed on disk between our read
-        and our commit (external writer -- never overwritten),
-        `AgentOwnershipError` when an agent owns the project (single-writer
-        gate), and `OSError` when the file is unreadable/absent.
+        `transform(text_norm) -> new_text` (None declines without writing).
+        Returns the normalized result contract. `expected_fingerprint` is the
+        legacy CAS baseline: when it does not match the live bytes, the
+        mutation refuses STALE_STATE without writing.
+
+        `verification_policy`: core_fast (default) for structural ops;
+        `none` for a raw hand-edit (file editor), which byte-verifies only so
+        the user can repair a non-conformant project through the editor.
+
+        A `.saipen/` file must be a codec-preserving read; non-protocol files
+        are written directly (outside the canonical journal).
         """
         path = Path(path)
         root = self.root_for(path)
-        with self._lock(root):
-            self._begin_tx(root)
-            try:
-                try:
-                    raw = path.read_bytes()
-                except OSError:
-                    # Missing target: mutate from an empty base (the transform may
-                    # create the file, e.g. a first _shared/inbox.md). An existing
-                    # empty file and a missing file both fingerprint the same; the
-                    # transform decides which is meaningful.
-                    raw = b""
-                fp = hashlib.blake2b(raw).hexdigest()
-                if expected_fingerprint is not None and fp != expected_fingerprint:
-                    raise ConflictError(str(path))
-                text, enc, newline = read_doc_meta(path)
-                new_text = transform(text)
-                if new_text is None or new_text == text:
-                    return fp if new_text is not None else None
-                try:
-                    raw_now = path.read_bytes()
-                except OSError:
-                    raw_now = b""
-                if hashlib.blake2b(raw_now).hexdigest() != fp:
-                    raise ConflictError(str(path))
-                path.parent.mkdir(parents=True, exist_ok=True)
-                write_doc(path, new_text, enc, newline)
-                new_fp = self.fingerprint(path)
-                # T-190: register OUR successful write so the watcher can tell a
-                # self-change from an external one. Registered only now, after the
-                # write landed -- a failed write never marks anything.
-                self.self_writes.register(str(root), path.name, new_fp)
-                return new_fp
-            finally:
-                self._end_tx(root)
+        rel = str(path.relative_to(root)).replace("\\", "/")
+        role = _role_for(rel)
+
+        def op_fn(r: Path, attempt: int):
+            docs = saio.snapshot(r, [rel])
+            doc = docs[rel]
+            if (
+                expected_fingerprint is not None
+                and expected_fingerprint != "MISSING"
+                and doc.raw_hash != expected_fingerprint
+            ):
+                return {
+                    "ok": False,
+                    "code": "STALE_STATE",
+                    "message": f"{rel} changed since the read (CAS baseline)",
+                    "changed_files": [],
+                    "retryable": True,
+                    "recovery_required": False,
+                    "op_id": None,
+                }
+            if expected_fingerprint == "MISSING" and doc.raw_hash:
+                return {
+                    "ok": False,
+                    "code": "STALE_STATE",
+                    "message": f"{rel} was created since the read",
+                    "changed_files": [],
+                    "retryable": True,
+                    "recovery_required": False,
+                    "op_id": None,
+                }
+            new_text = transform(doc.text_norm)
+            if new_text is None or new_text == doc.text_norm:
+                return {
+                    "ok": True,
+                    "code": "NOOP",
+                    "message": "no change",
+                    "changed_files": [],
+                    "retryable": False,
+                    "recovery_required": False,
+                    "op_id": None,
+                }
+            written = {rel}
+            missing = [rel] if not (r / rel).exists() else None
+            operation_plan = saio.plan(
+                r,
+                f"viewer-{role}",
+                {"operation": f"viewer-{role}"},
+                [(rel, role, new_text, doc)],
+                {rel: doc.raw_hash},
+                read_deps=_canonical_read_deps(r, written),
+                missing_paths=missing,
+            )
+            return operation_plan, verification_policy
+
+        def runner(root: Path, attempt: int):
+            planned = op_fn(root, attempt)
+            if isinstance(planned, tuple):
+                operation_plan, policy = planned
+                return saio.apply_with_precheck(
+                    root, operation_plan, verification_policy=policy
+                )
+            return planned
+
+        return self.mutate(root, runner)
+
+    def recovery_status(self, root: Path) -> dict:
+        """Unresolved canonical operations / conflicts blocking new mutation."""
+        root = Path(root)
+        try:
+            return saio.recovery_status(root)
+        except saio.SaioUnavailable as exc:
+            return {
+                "ok": False,
+                "code": saio.SAIO_UNAVAILABLE,
+                "message": str(exc),
+                "conflicts": [],
+                "pending": [],
+                "blocked": False,
+            }
+
+    def recover(self, root: Path, op_id: str | None = None) -> dict:
+        """Roll-forward recovery of pending canonical operations."""
+        root = Path(root)
+        try:
+            with self._lock(root):
+                return saio.recover(root, op_id)
+        except saio.SaioUnavailable as exc:
+            return {
+                "ok": False,
+                "code": saio.SAIO_UNAVAILABLE,
+                "message": str(exc),
+                "changed_files": [],
+                "retryable": False,
+                "recovery_required": False,
+            }

@@ -201,6 +201,24 @@ def check_state(state: dict[str, str], root: Path, c: _Collector) -> None:
         )
         return
 
+    # Duplicated frontmatter keys: the closed single-valued grammar MUST NOT
+    # silently pick a winner (repair mission P1).
+    seen_keys: set[str] = set()
+    for line in read_doc(state_path).splitlines():
+        line = line.strip()
+        if line.startswith("---") or ":" not in line:
+            continue
+        key = line.partition(":")[0].strip()
+        if key in seen_keys:
+            c.fail(
+                "state.duplicate_field",
+                f"STATE.md defines {key!r} more than once -- single-valued "
+                f"grammar MUST NOT silently pick a winner",
+                "RFC § 1.2",
+                _STATE_FILE,
+            )
+        seen_keys.add(key)
+
     phase = state.get("phase")
     mode = state.get("mode")
     next_action = state.get("next_action", "")
@@ -511,6 +529,17 @@ def parse_board_strict(text: str) -> tuple[dict[str, BoardTicket], list[str], li
                     )
                 )
                 continue
+            if fm.group(1) in fields:
+                # Closed single-valued grammar: duplicated authority MUST NOT
+                # silently pick a winner (repair mission P1).
+                problems.append(
+                    (
+                        line_no,
+                        "duplicate_field",
+                        f"{tid}: field {fm.group(1)} appears more than once",
+                    )
+                )
+                continue
             fields[fm.group(1)] = fm.group(2)
             if fm.group(1) == "needs":
                 needs = re.findall(r"T-\d+", fm.group(2))
@@ -548,6 +577,15 @@ def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
                 "board.duplicate",
                 f"duplicate ticket ID {detail} -- a status change must MOVE "
                 f"the line, never copy it",
+                "RFC § 1.2",
+                _BOARD_FILE,
+                line_no,
+            )
+        elif kind == "duplicate_field":
+            c.fail(
+                "board.ticket.duplicate_field",
+                f"duplicate closed ticket field: {detail} -- single-valued "
+                f"grammar MUST NOT silently pick a winner",
                 "RFC § 1.2",
                 _BOARD_FILE,
                 line_no,

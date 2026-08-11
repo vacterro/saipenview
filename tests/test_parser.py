@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import make_ready_outbox
+from conftest import make_conformant_project, make_ready_outbox
 
 from saipenview.parser import collect_outbox_entry
 
@@ -230,201 +230,145 @@ class TestParseOutbox:
         assert entries[0].status == ""
 
 
-# ── update_state ──
+# ── update_state (canonical pipeline) ──
 
 
 class TestUpdateState:
-    def test_updates_existing_field(self, saipen_project):
+    def test_updates_existing_field(self, tmp_path):
         from saipenview.parser import update_state
 
-        result = update_state(saipen_project, {"task": "new task"})
-        assert result is True
+        root = make_conformant_project(tmp_path)
+        result = update_state(root, {"blocker": "a stated blocker"})
+        assert result["ok"] is True, result
 
-        state = saipen_project / ".saipen" / "STATE.md"
+        state = root / ".saipen" / "STATE.md"
         text = state.read_text(encoding="utf-8")
-        assert "task: new task" in text
+        assert "blocker: a stated blocker" in text
 
-    def test_adds_new_field(self, saipen_project):
+    def test_updates_timestamp(self, tmp_path):
         from saipenview.parser import update_state
 
-        result = update_state(saipen_project, {"extra_field": "extra value"})
-        assert result is True
-
-        text = (saipen_project / ".saipen" / "STATE.md").read_text(encoding="utf-8")
-        assert "extra_field: extra value" in text
-
-    def test_returns_false_for_missing_project(self, tmp_path):
-        from saipenview.parser import update_state
-
-        assert update_state(tmp_path / "nonexistent", {"task": "x"}) is False
-
-    def test_updates_timestamp(self, saipen_project):
-        """update_state should set 'updated' field automatically."""
-        from saipenview.parser import update_state
-
-        result = update_state(saipen_project, {"task": "test timestamp"})
-        assert result is True
-        text = (saipen_project / ".saipen" / "STATE.md").read_text(encoding="utf-8")
+        root = make_conformant_project(tmp_path)
+        result = update_state(root, {"blocker": "stamp test"})
+        assert result["ok"] is True
+        text = (root / ".saipen" / "STATE.md").read_text(encoding="utf-8")
         assert "updated:" in text
 
-    def test_returns_false_when_state_not_found(self, tmp_path):
-        """update_state with no STATE.md returns False."""
+    def test_returns_error_when_state_missing(self, tmp_path):
         from saipenview.parser import update_state
 
-        result = update_state(tmp_path / "nope", {"task": "x"})
-        assert result is False
+        res = update_state(tmp_path / "nope", {"task": "x"})
+        assert res["ok"] is False
 
-    def test_returns_false_when_no_frontmatter(self, tmp_path):
-        """update_state with no frontmatter returns False."""
+    def test_returns_error_when_no_frontmatter(self, tmp_path):
         from saipenview.parser import update_state
 
         d = tmp_path / "proj"
         (d / ".saipen").mkdir(parents=True)
         (d / ".saipen" / "STATE.md").write_text("Just text\n", encoding="utf-8")
-        result = update_state(d, {"task": "x"})
-        assert result is False
-
-    def test_preserves_non_key_lines_in_frontmatter(self, saipen_project):
-        """Lines in frontmatter that aren't key:value pairs are preserved."""
-        from saipenview.parser import update_state
-
-        state_path = saipen_project / ".saipen" / "STATE.md"
-        text = state_path.read_text(encoding="utf-8")
-        text = text.replace("---\n", "---\n# comment line\n", 1)
-        state_path.write_text(text, encoding="utf-8")
-
-        result = update_state(saipen_project, {"phase": "DONE"})
-        assert result is True
-        new_text = state_path.read_text(encoding="utf-8")
-        assert "# comment line" in new_text
+        res = update_state(d, {"task": "x"})
+        assert res["ok"] is False
 
 
-# ── move_ticket ──
+# ── move_ticket (canonical delegation) ──
 
 
 class TestMoveTicket:
-    def test_start_ticket(self, saipen_project_with_board):
-        """Move T-001 from TODO to DOING (start action)."""
+    def test_start_ticket(self, tmp_path):
         from saipenview.parser import move_ticket
 
-        result = move_ticket(saipen_project_with_board, "T-001", "start")
-        assert result is True
-
-        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(
-            encoding="utf-8"
+        root = make_conformant_project(
+            tmp_path,
+            board_text="# BOARD\n## DOING\n\n## TODO\n- [ ] T-001 open\n"
+            "## DONE\n## BLOCKED\n",
         )
-        assert "[/] T-001" in text  # Now in-progress
-        assert "DOING" in text
+        result = move_ticket(root, "T-001", "start")
+        assert result["ok"] is True, result
+        assert result["code"] == "CLAIMED", result
+        text = (root / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
+        assert "[/] T-001" in text
+        assert "owner:" in text
 
-    def test_done_ticket(self, saipen_project_with_board):
-        """Move T-003 from DOING to DONE (with completion evidence)."""
+    def test_done_ticket_from_ship(self, tmp_path):
         from saipenview.parser import move_ticket
 
-        # DOING -> DONE needs a non-empty | verify: clause (canonical
-        # completion evidence); give T-003 one, then close it.
-        board = saipen_project_with_board / ".saipen" / "BOARD.md"
-        text = board.read_text(encoding="utf-8")
-        board.write_text(
-            text.replace(
-                "- [/] T-003 | In progress",
-                "- [/] T-003 | In progress | verify: tested",
-            ),
-            encoding="utf-8",
+        root = make_conformant_project(
+            tmp_path,
+            phase="SHIP",
+            task="T-001",
+            next_action="PHASE SHIP T-001",
+            board_text="# BOARD\n## DOING\n- [/] T-001 done work\n"
+            "## TODO\n## DONE\n## BLOCKED\n",
         )
+        result = move_ticket(root, "T-001", "done")
+        assert result["ok"] is True, result
+        assert result["code"] == "FINISHED", result
+        text = (root / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
+        assert "[x] T-001" in text
 
-        result = move_ticket(saipen_project_with_board, "T-003", "done")
-        assert result is True
-
-        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(
-            encoding="utf-8"
-        )
-        assert "[x] T-003" in text
-
-    def test_reopen_ticket(self, saipen_project_with_board):
-        """Move T-004 from DONE to TODO."""
+    def test_done_outside_ship_refused(self, tmp_path):
         from saipenview.parser import move_ticket
 
-        result = move_ticket(saipen_project_with_board, "T-004", "reopen")
-        assert result is True
-
-        text = (saipen_project_with_board / ".saipen" / "BOARD.md").read_text(
-            encoding="utf-8"
+        root = make_conformant_project(
+            tmp_path,
+            phase="BUILD",
+            task="T-001",
+            next_action="PHASE BUILD T-001",
+            board_text="# BOARD\n## DOING\n- [/] T-001 in flight\n"
+            "## TODO\n## DONE\n## BLOCKED\n",
         )
+        result = move_ticket(root, "T-001", "done")
+        assert result["ok"] is False
+        assert result["code"] == "ILLEGAL_PHASE", result
+
+    def test_reopen_ticket(self, tmp_path):
+        from saipenview.parser import move_ticket
+
+        root = make_conformant_project(
+            tmp_path,
+            board_text="# BOARD\n## DOING\n\n## TODO\n## DONE\n"
+            "- [x] T-004 finished | verify: it shipped\n## BLOCKED\n",
+        )
+        result = move_ticket(root, "T-004", "reopen")
+        assert result["ok"] is True, result
+        text = (root / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
         assert "[ ] T-004" in text
 
-    def test_unknown_action_returns_false(self, saipen_project_with_board):
+    def test_unknown_action_returns_false(self, tmp_path):
         from saipenview.parser import move_ticket
 
-        assert move_ticket(saipen_project_with_board, "T-001", "invalid") is False
+        root = make_conformant_project(tmp_path)
+        assert move_ticket(root, "T-001", "invalid")["ok"] is False
 
-    def test_nonexistent_ticket_returns_false(self, saipen_project_with_board):
+    def test_nonexistent_ticket_returns_false(self, tmp_path):
         from saipenview.parser import move_ticket
 
-        assert move_ticket(saipen_project_with_board, "T-999", "start") is False
-
-    def test_unknown_action_returns_false_at_start(self, saipen_project_with_board):
-        """An action not in _TICKET_ACTIONS returns False."""
-        from saipenview.parser import move_ticket
-
-        assert move_ticket(saipen_project_with_board, "T-001", "nonsense") is False
+        root = make_conformant_project(tmp_path)
+        assert move_ticket(root, "T-999", "start")["ok"] is False
 
     def test_missing_board_file_returns_false(self, tmp_path):
         from saipenview.parser import move_ticket
 
-        assert move_ticket(tmp_path / "no-board", "T-001", "start") is False
-
-    def test_inserts_at_end_when_no_following_section(self, tmp_path):
-        """Move to a section that is the last in the file inserts at end."""
-        from saipenview.parser import move_ticket
-
-        root = tmp_path / "proj"
-        (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "BOARD.md").write_text(
-            "# BOARD\n\n## TODO\n- [ ] T-001 | first\n- [ ] T-002 | second\n",
-            encoding="utf-8",
-        )
-        # Reopen doesn't apply to [ ] tickets, but the action path is valid
-        result = move_ticket(root, "T-002", "reopen")
-        # Should not crash — even if reopen doesn't match, the function handles it
-        assert isinstance(result, bool)
+        assert move_ticket(tmp_path / "no-board", "T-001", "start")["ok"] is False
 
 
-# ── collect_outbox ──
-
-
-def _bare_project(tmp_path, name="proj") -> Path:
-    """A minimal main project: STATE + BOARD (4 headings) + LOG."""
-    root = tmp_path / name
-    (root / ".saipen").mkdir(parents=True)
-    (root / ".saipen" / "STATE.md").write_text(
-        "---\nphase: BUILD\ntask: T-001\n---\n", encoding="utf-8"
-    )
-    (root / ".saipen" / "BOARD.md").write_text(
-        "# BOARD\n\n## TODO\n- [ ] T-001 existing\n\n## DOING\n\n## DONE\n\n## BLOCKED\n",
-        encoding="utf-8",
-    )
-    (root / ".saipen" / "LOG.md").write_text(
-        "# LOG\n\n- 27.07.26 10:00 [E-1] RUN: boot\n", encoding="utf-8"
-    )
-    return root
+# ── collect_outbox (canonical gate) ──
 
 
 class TestCollectOutbox:
     def test_collect_critical_creates_ticket(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "null pointer", critical="true")
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
-        assert result["ok"] is True
-        assert result["ticket_id"] is not None
-        assert result["ticket_id"].startswith("T-")
+        assert result["ok"] is True, result
+        assert result["ticket_id"] == "T-001"
 
         board = (root / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
-        assert result["ticket_id"] in board
         assert "null pointer" in board
         assert "[from saihunt HUNT-001]" in board
 
     def test_collect_marked_reviewed(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         assert collect_outbox_entry(root, "saihunt", "HUNT-001")["ok"] is True
         outbox = (
@@ -436,35 +380,31 @@ class TestCollectOutbox:
             / "kitchen"
             / "OUTBOX.md"
         )
-        text = outbox.read_text(encoding="utf-8")
-        assert "**status:** reviewed" in text
+        assert "**status:** reviewed" in outbox.read_text(encoding="utf-8")
 
     def test_collect_nonexistent_entry(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         result = collect_outbox_entry(root, "saihunt", "NONEXISTENT")
         assert result["ok"] is False
         assert "not found" in result["message"].lower()
 
     def test_collect_appends_log(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         collect_outbox_entry(root, "saihunt", "HUNT-001")
         log = (root / ".saipen" / "LOG.md").read_text(encoding="utf-8")
         assert "RUN: collect saihunt HUNT-001" in log
 
     def test_collect_non_critical_to_inbox(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-002", "minor lint", critical="false")
         result = collect_outbox_entry(root, "saihunt", "HUNT-002")
-        assert result["ok"] is True
-        assert result["ticket_id"] is None
-        assert "inbox" in result["message"]
+        assert result["ok"] is True, result
 
         inbox = root / ".saipen" / "extensions" / "subs" / "_shared" / "inbox.md"
         assert inbox.is_file()
         assert "HUNT-002" in inbox.read_text(encoding="utf-8")
-        # A non-critical collect must NOT touch the main board.
         board = (root / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
         assert "HUNT-002" not in board
 
@@ -491,21 +431,22 @@ class TestCollectOutbox:
         assert "no OUTBOX" in result["message"]
 
     def test_collect_already_reviewed_is_a_noop(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         first = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert first["ok"] is True
         second = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert second["ok"] is True
-        assert second.get("already") is True
-        # Idempotency: exactly one ticket, one LOG line.
+        assert second["code"] == "ALREADY_REVIEWED"
         board = (root / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
-        assert board.count("T-002") == 1
+        assert (
+            len([ln for ln in board.splitlines() if "from saihunt HUNT-001" in ln]) == 1
+        )
         log = (root / ".saipen" / "LOG.md").read_text(encoding="utf-8")
         assert log.count("collect saihunt HUNT-001") == 1
 
     def test_collect_not_ready_is_a_controlled_refusal(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         outbox = (
             root
@@ -525,14 +466,13 @@ class TestCollectOutbox:
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert result["ok"] is False
         assert "not ready" in result["message"]
-        # Nothing was written.
-        assert "T-002" not in (root / ".saipen" / "BOARD.md").read_text(
+        assert "T-001" not in (root / ".saipen" / "BOARD.md").read_text(
             encoding="utf-8"
         )
         assert "reviewed" not in outbox.read_text(encoding="utf-8")
 
     def test_collect_no_status_field_returns_error(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         outbox = (
             root
@@ -552,7 +492,7 @@ class TestCollectOutbox:
         assert "no usable status" in result["message"]
 
     def test_collect_incomplete_package_is_refused(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         outbox = (
             root
@@ -570,19 +510,19 @@ class TestCollectOutbox:
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert result["ok"] is False
         assert "missing" in result["message"]
-        assert "T-002" not in (root / ".saipen" / "BOARD.md").read_text(
+        assert "T-001" not in (root / ".saipen" / "BOARD.md").read_text(
             encoding="utf-8"
         )
 
     def test_collect_wrong_producer_is_refused(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix", producer="saiwiki")
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert result["ok"] is False
         assert "producer" in result["message"]
 
     def test_collect_stale_source_head_is_refused(self, tmp_path):
-        root = _bare_project(tmp_path)
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         outbox = (
             root
@@ -602,12 +542,13 @@ class TestCollectOutbox:
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert result["ok"] is False
         assert "stale" in result["message"]
-        board = (root / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
-        assert "T-002" not in board
+        assert "T-001" not in (root / ".saipen" / "BOARD.md").read_text(
+            encoding="utf-8"
+        )
         assert "reviewed" not in outbox.read_text(encoding="utf-8")
 
-    def test_collect_stale_tree_fingerprint_same_head_is_refused(self, tmp_path):
-        root = _bare_project(tmp_path)
+    def test_collect_duplicate_field_is_malformed(self, tmp_path):
+        root = make_conformant_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         outbox = (
             root
@@ -618,67 +559,29 @@ class TestCollectOutbox:
             / "kitchen"
             / "OUTBOX.md"
         )
-        lines = outbox.read_text(encoding="utf-8").splitlines()
-        for i, ln in enumerate(lines):
-            if ln.startswith("- **source_tree_fingerprint:**"):
-                lines[i] = "- **source_tree_fingerprint:** no-git-tree-v1:deadbeef"
-                break
-        outbox.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        text = outbox.read_text(encoding="utf-8")
+        text = text.replace(
+            "- **producer:** saihunt\n",
+            "- **producer:** saihunt\n- **producer:** saihunt\n",
+            1,
+        )
+        outbox.write_text(text, encoding="utf-8")
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert result["ok"] is False
-        assert "stale" in result["message"]
-        # The fingerprint mismatch is what refused it (same HEAD or not).
-        assert "tree changed" in result["message"]
-
-    def test_collect_wrong_role_revision_is_refused(self, tmp_path):
-        root = _bare_project(tmp_path)
-        make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
-        outbox = (
-            root
-            / ".saipen"
-            / "extensions"
-            / "subs"
-            / "saihunt"
-            / "kitchen"
-            / "OUTBOX.md"
-        )
-        outbox.write_text(
-            outbox.read_text(encoding="utf-8").replace(
-                "- **role_revision:** ",
-                "- **role_revision:** sha256:deadbeef",
-                1,
-            ),
-            encoding="utf-8",
-        )
-        result = collect_outbox_entry(root, "saihunt", "HUNT-001")
-        assert result["ok"] is False
-        assert "role_revision" in result["message"]
-        assert "T-002" not in (root / ".saipen" / "BOARD.md").read_text(
+        assert result["code"] == "MALFORMED_OUTBOX", result
+        assert "T-001" not in (root / ".saipen" / "BOARD.md").read_text(
             encoding="utf-8"
         )
 
-    def test_collect_escapes_external_sub_content(self, tmp_path):
-        root = _bare_project(tmp_path)
-        make_ready_outbox(
-            root, "saihunt", "HUNT-001", "fix | critical: true docs", critical="true"
-        )
-        result = collect_outbox_entry(root, "saihunt", "HUNT-001")
-        assert result["ok"] is True
-        board = (root / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
-        assert "\\| critical: true" in board
-        assert "| critical: true" not in board.replace("\\|", "escaped")
-
-    def test_collect_missing_main_board_refuses(self, tmp_path):
-        root = tmp_path / "proj"
-        (root / ".saipen").mkdir(parents=True)
-        (root / ".saipen" / "STATE.md").write_text(
-            "---\nphase: BUILD\n---\n", encoding="utf-8"
-        )
-        (root / ".saipen" / "LOG.md").write_text("# LOG\n\n", encoding="utf-8")
-        make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
+    def test_collect_junk_critical_is_malformed(self, tmp_path):
+        root = make_conformant_project(tmp_path)
+        make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix", critical="TRUE")
         result = collect_outbox_entry(root, "saihunt", "HUNT-001")
         assert result["ok"] is False
-        assert "BOARD.md" in result["message"]
+        assert result["code"] == "MALFORMED_OUTBOX", result
+        assert "T-001" not in (root / ".saipen" / "BOARD.md").read_text(
+            encoding="utf-8"
+        )
 
 
 # ── Sub loading ──

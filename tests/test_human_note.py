@@ -46,12 +46,35 @@ def _register(api: Api, tmp_path):
 
 
 def _project(tmp_path, tail="---\n"):
+    """A canonical-conformant project AT tmp_path (the api root)."""
+    from conftest import canonical_home
+
     saipen = tmp_path / ".saipen"
-    saipen.mkdir()
+    saipen.mkdir(parents=True, exist_ok=True)
+    home = canonical_home()
     (saipen / "STATE.md").write_text(
-        "---\nphase: DONE\ntask: none\nupdated: 2026-08-01T00:00:00Z\n" + tail,
+        "---\nschema_version: 3\nphase: DONE\ntransition_from: SHIP\n"
+        'task: none\nnext_action: "saipen continue"\nblocker: none\n'
+        "agent: testseat\nsaipen_version: 7\n"
+        f"saipen_home: '{home}'\n"
+        "mode: full\nexecution_intent: normal\n"
+        "updated: 2026-08-01T00:00:00Z\nlast_event: 2\n"
+        "style_contract: ded-4ae736e4\n---\n",
         encoding="utf-8",
     )
+    (saipen / "BOARD.md").write_text(
+        "# BOARD\n## DOING\n\n## TODO\n\n## DONE\n\n## BLOCKED\n", encoding="utf-8"
+    )
+    (saipen / "LOG.md").write_text(
+        "- 11.08.26 00:00 [E-1] RUN: boot\n"
+        "- 11.08.26 00:01 [E-2] [parent: E-1] RUN: validate.py -> PASS\n",
+        encoding="utf-8",
+    )
+    if tail != "---\n":
+        path = saipen / "STATE.md"
+        text = path.read_text(encoding="utf-8")
+        text = text[: text.rindex("---\n")] + tail
+        path.write_text(text, encoding="utf-8")
     return saipen / "STATE.md"
 
 

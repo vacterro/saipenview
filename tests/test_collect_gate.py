@@ -158,27 +158,25 @@ class TestGateAgreementWithCanonicalValidator:
             pytest.skip("canonical SAIPEN repo not reachable")
         return h
 
+    def _entry(self, root, sub, entry_id):
+        from saipenview.outbox import parse_outbox_strict
+
+        outbox = (
+            root / ".saipen" / "extensions" / "subs" / sub / "kitchen" / "OUTBOX.md"
+        )
+        entries, errors = parse_outbox_strict(outbox.read_text(encoding="utf-8"))
+        assert not errors, errors
+        return next(e for e in entries if e.entry_id == entry_id)
+
     def test_ready_package_passes_both(self, tmp_path, home):
         root = _minimal_project(tmp_path)
         make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix", critical="true")
 
-        outbox = (
-            root
-            / ".saipen"
-            / "extensions"
-            / "subs"
-            / "saihunt"
-            / "kitchen"
-            / "OUTBOX.md"
-        )
-        entry = next(
-            e
-            for e in parse_outbox(outbox.read_text(encoding="utf-8"))
-            if e.entry_id == "HUNT-001"
-        )
-        ok, _msg, kind = collect.check_package(root, "saihunt", entry)
+        entry = self._entry(root, "saihunt", "HUNT-001")
+        ok, _msg, kind, proof = collect.check_package(root, "saihunt", entry)
         assert ok is True, _msg
         assert kind == "ready"
+        assert proof["source_head"] and proof["source_tree_fingerprint"]
 
         out = _run_canonical_validate(root, home, ["--gate", "collect:saihunt"])
         assert "Validation FAILED" not in out, out
@@ -198,7 +196,8 @@ class TestGateAgreementWithCanonicalValidator:
             for e in parse_outbox(outbox.read_text(encoding="utf-8"))
             if e.entry_id == "HUNT-001"
         )
-        ok, msg, kind = collect.check_package(root, "saihunt", entry)
+        entry = self._entry(root, "saihunt", "HUNT-001")
+        ok, msg, kind, _proof = collect.check_package(root, "saihunt", entry)
         assert ok is False and kind == "stale"
 
         out = _run_canonical_validate(root, home, ["--gate", "collect:saihunt"])
@@ -213,12 +212,8 @@ class TestGateAgreementWithCanonicalValidator:
             ),
             encoding="utf-8",
         )
-        entry = next(
-            e
-            for e in parse_outbox(outbox.read_text(encoding="utf-8"))
-            if e.entry_id == "HUNT-001"
-        )
-        ok, _msg, kind = collect.check_package(root, "saihunt", entry)
+        entry = self._entry(root, "saihunt", "HUNT-001")
+        ok, _msg, kind, _proof = collect.check_package(root, "saihunt", entry)
         assert ok is False and kind == "not-ready"
 
         out = _run_canonical_validate(root, home, ["--gate", "collect:saihunt"])
@@ -233,12 +228,8 @@ class TestGateAgreementWithCanonicalValidator:
             ),
             encoding="utf-8",
         )
-        entry = next(
-            e
-            for e in parse_outbox(outbox.read_text(encoding="utf-8"))
-            if e.entry_id == "HUNT-001"
-        )
-        ok, _msg, kind = collect.check_package(root, "saihunt", entry)
+        entry = self._entry(root, "saihunt", "HUNT-001")
+        ok, _msg, kind, _proof = collect.check_package(root, "saihunt", entry)
         assert ok is False and kind == "incomplete"
 
         out = _run_canonical_validate(root, home, ["--gate", "collect:saihunt"])

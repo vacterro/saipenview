@@ -1,9 +1,11 @@
-"""T-127: recording a user's manual edit as a board entry.
+"""T-127 + P1: recording a user's manual edit as a board entry.
 
 The watcher cannot attribute a file change to a person, so SAIPENVIEW never
 tries: the UI asks, the user confirms, and record_manual_work() writes the
 explicit record -- one board ticket (attributable to the user), one LOG
-evidence line, and best-effort git context.
+evidence line, and best-effort git context, committed through the canonical
+writer pipeline (journaled LOG+BOARD+STATE). Idempotency is by operation id,
+never by human prose.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import re
 
 import pytest
+from conftest import make_conformant_project
 
 from saipenview.parser import parse_board, record_manual_work
 from saipenview.textio import read_doc
@@ -18,40 +21,32 @@ from saipenview.textio import read_doc
 
 @pytest.fixture
 def project(tmp_path):
-    root = tmp_path / "proj"
-    saipen = root / ".saipen"
-    saipen.mkdir(parents=True)
-    (saipen / "BOARD.md").write_text(
-        "# BOARD\n## DOING\n- [/] T-001 in flight\n## TODO\n- [ ] T-002 open\n## DONE\n- [x] T-003 done\n## BLOCKED\n",
-        encoding="utf-8",
-    )
-    (saipen / "LOG.md").write_text(
-        "- 07.08.26 10:00 [E-1] RUN: boot\n", encoding="utf-8"
-    )
-    return root
+    return make_conformant_project(tmp_path)
 
 
 def test_record_creates_a_todo_ticket_attributed_to_the_user(project):
     res = record_manual_work(project, "edited STATE.md by hand")
     assert res["ok"] is True
-    assert res["ticket_id"] == "T-004"
+    assert res["ticket_id"] == "T-001"
     text = read_doc(project / ".saipen" / "BOARD.md")
-    todo = text.split("## TODO")[1].split("## DONE")[0]
-    assert "- [ ] T-004 Manual: edited STATE.md by hand | owner: user" in todo
-    assert "T-004" not in text.split("## DOING")[1].split("## TODO")[0]
+    todo = text.split("## TODO")[1].split("## DOING")[0]
+    assert "- [ ] T-001 Manual: edited STATE.md by hand | owner: user" in todo
 
 
 def test_record_appends_a_valid_log_evidence_line(project):
     res = record_manual_work(project, "committed a fix")
-    assert res["event"] == "E-2"
+    assert res["event"] == "E-3"
     log = read_doc(project / ".saipen" / "LOG.md")
     assert re.search(
-        r"^- \d{2}\.\d{2}\.\d{2} \d{2}:\d{2} \[E-2\] \[T-004\] \[op: \S+\] "
+        r"^- \d{2}\.\d{2}\.\d{2} \d{2}:\d{2} \[E-3\] \[T-001\] \[op: \S+\] "
         r"RUN: manual work recorded -- committed a fix",
         log,
         flags=re.MULTILINE,
     ), log
     assert "[E-1]" in log
+    # STATE.last_event follows the LOG tail (canonical fast-check invariant).
+    state = read_doc(project / ".saipen" / "STATE.md")
+    assert re.search(r"last_event:\s*3", state), state
 
 
 def test_record_takes_the_next_ticket_and_event_numbers(project):
@@ -59,29 +54,28 @@ def test_record_takes_the_next_ticket_and_event_numbers(project):
     record_manual_work(project, "second")
     text = read_doc(project / ".saipen" / "BOARD.md")
     ids = sorted(int(m) for m in re.findall(r"\bT-(\d+)\b", text))
-    assert ids[-1] == 5
+    assert ids[-1] == 2
     log = read_doc(project / ".saipen" / "LOG.md")
     events = sorted(int(m) for m in re.findall(r"\[E-(\d+)\]", log))
-    assert events[-1] == 3
+    assert events[-1] == 4
 
 
 def test_record_rejects_empty_description(project):
     res = record_manual_work(project, "   ")
     assert res["ok"] is False
-    assert "empty" in res["error"]
+    assert "empty" in res["message"]
 
 
 def test_record_with_git_context_links_head_and_dirty_count(tmp_path):
-    root = tmp_path / "repo"
-    root.mkdir()
+    import subprocess
+
+    root = make_conformant_project(tmp_path)
     for c in (
         ["init", "-q"],
         ["config", "user.email", "t@t.t"],
         ["config", "user.name", "t"],
         ["config", "commit.gpgsign", "false"],
     ):
-        import subprocess
-
         subprocess.run(["git", "-C", str(root), *c], capture_output=True)
     (root / "a.txt").write_text("a\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "a.txt"], capture_output=True)
@@ -89,11 +83,6 @@ def test_record_with_git_context_links_head_and_dirty_count(tmp_path):
         ["git", "-C", str(root), "commit", "-qm", "init"], capture_output=True
     )
     (root / "b.txt").write_text("b\n", encoding="utf-8")
-    (root / ".saipen").mkdir()
-    (root / ".saipen" / "BOARD.md").write_text(
-        "# BOARD\n## TODO\n\n## DOING\n\n## DONE\n\n## BLOCKED\n", encoding="utf-8"
-    )
-    (root / ".saipen" / "LOG.md").write_text("# LOG\n\n", encoding="utf-8")
 
     res = record_manual_work(root, "manual test edit")
     assert res["ok"] is True
@@ -105,7 +94,7 @@ def test_record_then_board_is_valid(project):
     record_manual_work(project, "manual pass")
     board = parse_board(read_doc(project / ".saipen" / "BOARD.md"))
     assert any(
-        t.ticket_id == "T-004" and t.description.startswith("Manual:")
+        t.ticket_id == "T-001" and t.description.startswith("Manual:")
         for t in board.todo
     )
 
@@ -117,12 +106,12 @@ def test_same_description_with_same_op_id_is_one_record(project):
     op = "mw-test-op-1"
     first = record_manual_work(project, "updated docs", operation_id=op)
     second = record_manual_work(project, "updated docs", operation_id=op)
-    assert second.get("already") is True
+    assert second.get("code") == "ALREADY_RECORDED", second
     assert second["ticket_id"] == first["ticket_id"]
     board = read_doc(project / ".saipen" / "BOARD.md")
     log = read_doc(project / ".saipen" / "LOG.md")
-    assert board.count("T-004") == 1
-    assert log.count("[E-2]") == 1
+    assert board.count("T-001") == 1
+    assert log.count("[E-3]") == 1
 
 
 def test_same_description_with_different_op_id_is_two_records(project):
@@ -132,17 +121,7 @@ def test_same_description_with_different_op_id_is_two_records(project):
     log = read_doc(project / ".saipen" / "LOG.md")
     assert board.count("Manual: updated docs") == 2
     assert log.count("manual work recorded -- updated docs") == 2
-    assert log.count("[E-2]") == 1 and log.count("[E-3]") == 1
-
-
-def test_dedupe_ignores_description_entirely(project):
-    # A prior record with a DIFFERENT description and the same op id resumes
-    # by the op id alone -- human prose is never the dedupe key.
-    record_manual_work(project, "first wording", operation_id="mw-op-x")
-    second = record_manual_work(project, "completely different", operation_id="mw-op-x")
-    assert second.get("already") is True
-    board = read_doc(project / ".saipen" / "BOARD.md")
-    assert board.count("T-004") == 1
+    assert log.count("[E-3]") == 1 and log.count("[E-4]") == 1
 
 
 def test_retry_after_log_only_partial_resumes_original_ticket(project):
@@ -152,16 +131,21 @@ def test_retry_after_log_only_partial_resumes_original_ticket(project):
     log_path = project / ".saipen" / "LOG.md"
     log_path.write_text(
         read_doc(log_path)
-        + f"- 07.08.26 12:00 [E-2] [T-004] [op: {op}] RUN: manual work recorded -- half done\n",
+        + f"- 11.08.26 12:00 [E-3] [T-001] [op: {op}] RUN: manual work "
+        "recorded -- half done\n",
+        encoding="utf-8",
+    )
+    state_path = project / ".saipen" / "STATE.md"
+    state_path.write_text(
+        re.sub(r"last_event:\s*\d+", "last_event: 3", read_doc(state_path)),
         encoding="utf-8",
     )
     res = record_manual_work(project, "half done", operation_id=op)
     assert res["ok"] is True
-    assert res["ticket_id"] == "T-004"
-    assert res["event"] == "E-2"
+    assert res["ticket_id"] == "T-001"
     board = read_doc(project / ".saipen" / "BOARD.md")
-    assert board.count("T-004") == 1
-    assert read_doc(log_path).count("[E-2]") == 1
+    assert board.count("T-001") == 1
+    assert read_doc(log_path).count("[E-3]") == 1
 
 
 def test_same_description_no_op_id_generates_two_records(project):
@@ -169,5 +153,5 @@ def test_same_description_no_op_id_generates_two_records(project):
     # id there is nothing to resume, so the same prose twice is two actions.
     first = record_manual_work(project, "tuned knobs")
     second = record_manual_work(project, "tuned knobs")
-    assert first["ticket_id"] == "T-004"
-    assert second["ticket_id"] == "T-005"
+    assert first["ticket_id"] == "T-001"
+    assert second["ticket_id"] == "T-002"

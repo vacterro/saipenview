@@ -303,8 +303,11 @@ class Api:
                 )
 
         self._linked_worktrees: list[dict] = []
+        from saipenview.protocol_write import get_coordinator
+
         self._process_manager = ProcessManager(
-            buffer_size=self._config.get("agent_output_buffer_size", 5000)
+            buffer_size=self._config.get("agent_output_buffer_size", 5000),
+            ownership=get_coordinator().ownership,
         )
         self.background_scanner = BackgroundScanner(
             on_result=self._set_cache,
@@ -334,14 +337,26 @@ class Api:
         # fingerprints; a matching current fingerprint is a self-write, a
         # mismatch or an unregistered change is external. The frontend raises
         # the "unrecorded external change" prompt only for origin=external.
+        from saipenview.external_changes import get_registry
         from saipenview.protocol_write import get_coordinator
 
         coord = get_coordinator()
         changed_path = Path(root) / ".saipen" / file
-        origin = (
-            "self"
-            if coord.self_writes.consume(root, file, coord.fingerprint(changed_path))
-            else "external"
+        fp = coord.fingerprint(changed_path)
+        origin = "self" if coord.self_writes.consume(root, file, fp) else "external"
+        if origin == "external":
+            # Backend-persistent external-change tracking (repair mission P0):
+            # recorded regardless of which project is on screen, keyed by
+            # (root, relative path). A collect boundary check refuses while
+            # any unresolved entry exists; only an explicit record/acknowledge
+            # or a self-write consuming the EXACT fingerprint clears it.
+            get_registry().record(root, file, fp)
+        # Structured push for non-window consumers (headless service mode): the
+        # same origin decision reaches SSE subscribers without depending on the
+        # evaluate_js bridge. The window push below remains the pywebview path.
+        event_bus.publish(
+            "saipen.file_changed",
+            {"root": root, "file": file, "origin": origin},
         )
         if self._window:
             try:
@@ -908,7 +923,8 @@ class Api:
         # A write to a `.saipen/` protocol file is a protocol mutation: it
         # goes through the write coordinator and refuses while a Core agent
         # owns the project (T-183).
-        from saipenview.protocol_write import ConflictError, get_coordinator
+        from saipenview.ownership import AgentOwnershipError
+        from saipenview.protocol_write import get_coordinator
 
         if get_coordinator().is_protocol_file(path):
             root = get_coordinator().root_for(path)
@@ -918,9 +934,15 @@ class Api:
                 return False
             try:
                 content = content.replace("\r\n", "\n").replace("\r", "\n")
-                get_coordinator().mutate_doc(path, lambda _t, c=content: c)
-                return True
-            except (OSError, ConflictError) as e:
+                # A raw hand-edit is journaled (lock + recovery) but
+                # byte-verifies only -- the user may be repairing a
+                # non-conformant project, and core_fast would block exactly
+                # the repair.
+                result = get_coordinator().mutate_doc(
+                    path, lambda _t, c=content: c, verification_policy="none"
+                )
+                return bool(result.get("ok"))
+            except (OSError, AgentOwnershipError) as e:
                 print(
                     f"SAIPENVIEW: write_file_text({file_path}) failed: {e}",
                     file=sys.stderr,
@@ -1011,6 +1033,17 @@ class Api:
         d = _project_to_dict(proj, pinned_set)
         d["custom_commands"] = list(self._config.get("custom_commands") or [])
         d["log_tail"] = load_log_tail(p)
+        # Pending backend-tracked external changes for THIS project (repair
+        # mission P0): survives project switches, multiple roots/files, and
+        # blocks collect until acknowledged or resolved.
+        from saipenview.external_changes import get_registry
+
+        d["pending_external_changes"] = [
+            c.to_dict() for c in get_registry().pending(root)
+        ]
+        from saipenview.protocol_write import get_coordinator
+
+        d["recovery"] = get_coordinator().recovery_status(root)
         d["todo_tickets"] = [
             {"id": t.ticket_id, "desc": t.description} for t in proj.board.todo
         ]
@@ -1033,11 +1066,16 @@ class Api:
         if guard:
             return {"ok": False, "error": guard}
         p = Path(root)
-        if update_state(p, updates):
+        result = update_state(p, updates)
+        if result.get("ok"):
             # force cache update
             self.rescan()
             return self.get_project_detail(root)
-        return None
+        return {
+            "ok": False,
+            "code": result.get("code", "VALIDATION_FAILED"),
+            "message": result.get("message", "state update refused"),
+        }
 
     def set_hotkey_callback(self, callback) -> None:
         self._on_hotkeys_changed = callback
@@ -1309,12 +1347,29 @@ class Api:
         if guard:
             return {"ok": False, "error": guard}
         p = Path(root)
-        result = collect_outbox_entry(p, sub_name, entry_id)
+        # The GUI one-click collect on an exact entry IS the explicit named
+        # collect authorization for `explicit`-policy producers.
+        result = collect_outbox_entry(p, sub_name, entry_id, explicit=True)
         if result.get("ok"):
             # Refresh cache so the UI shows updated state
             self.rescan()
             result["updated_detail"] = self.get_project_detail(root)
         return result
+
+    def get_external_changes(self) -> list[dict]:
+        """Every unacknowledged external change across all projects, backend-
+        persisted (repair mission P0) -- a change to a hidden or background
+        project never disappears from this list."""
+        from saipenview.external_changes import get_registry
+
+        return [c.to_dict() for c in get_registry().pending()]
+
+    def acknowledge_external_change(self, root_str: str, path: str) -> dict:
+        """Explicit user acknowledge: clear one pending external change."""
+        from saipenview.external_changes import get_registry
+
+        cleared = get_registry().acknowledge(root_str, path)
+        return {"ok": cleared}
 
     def run_command(self, root_str: str, command: str) -> bool:
         """Open a new cmd.exe window in the project root and run a command.
@@ -1463,14 +1518,27 @@ class Api:
         if guard:
             return {"ok": False, "error": guard}
         p = Path(root)
-        if reorder_ticket(p, ticket_id, section, before_ticket_id):
+        result = reorder_ticket(p, ticket_id, section, before_ticket_id)
+        if result.get("ok"):
             # No full rescan: the watcher (T-124) picks up the BOARD.md change
             # and targeted-refreshes the cache row; the detail is fresh here.
             return self.get_project_detail(root)
-        return None
+        return {
+            "ok": False,
+            "code": result.get("code", "VALIDATION_FAILED"),
+            "message": result.get("message", "reorder refused"),
+        }
 
-    def record_manual_work(self, root_str: str, description: str) -> dict:
-        """Record a user's manual edit as a board entry (T-127)."""
+    def record_manual_work(
+        self, root_str: str, description: str, operation_id: str | None = None
+    ) -> dict:
+        """Record a user's manual edit as a board entry (T-127).
+
+        ``operation_id`` is generated at UI invocation and carried through
+        retry/resume: idempotency is by operation id, never by human prose.
+        Validated here (type/length/charset) so a malformed id cannot be
+        persisted as evidence.
+        """
         from saipenview.parser import record_manual_work
 
         root = self._resolve_root(root_str)
@@ -1479,7 +1547,20 @@ class Api:
         guard = self._guard_protocol_write(root)
         if guard:
             return {"ok": False, "error": guard}
-        result = record_manual_work(Path(root), description)
+        if operation_id is not None:
+            import re as _re
+
+            if (
+                not isinstance(operation_id, str)
+                or not (1 <= len(operation_id) <= 64)
+                or not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", operation_id)
+            ):
+                return {
+                    "ok": False,
+                    "code": "INVALID_ID",
+                    "message": "operation_id must be 1-64 chars of [A-Za-z0-9._-]",
+                }
+        result = record_manual_work(Path(root), description, operation_id)
         if result.get("ok"):
             # The watcher (T-124) picks up the BOARD/LOG change and
             # targeted-refreshes the cache row.
@@ -1506,10 +1587,15 @@ class Api:
         if guard:
             return {"ok": False, "error": guard}
         p = Path(root)
-        if move_ticket(p, ticket_id, action, blocker_reason=blocker_reason):
+        result = move_ticket(p, ticket_id, action, blocker_reason=blocker_reason)
+        if result.get("ok"):
             self.rescan()
             return self.get_project_detail(root)
-        return None
+        return {
+            "ok": False,
+            "code": result.get("code", "VALIDATION_FAILED"),
+            "message": result.get("message", "ticket move refused"),
+        }
 
     def minimize_window(self) -> None:
         """Minimize the main window."""
@@ -1611,8 +1697,15 @@ class Api:
         if not flat:
             return {"ok": False, "error": "note is empty"}
         try:
-            if not update_state(Path(root), {"human_note": flat}):
-                return {"ok": False, "error": "STATE.md has no frontmatter block"}
+            result = update_state(Path(root), {"human_note": flat})
+            if not result.get("ok"):
+                return {
+                    "ok": False,
+                    "code": result.get("code", "VALIDATION_FAILED"),
+                    "message": result.get(
+                        "message", "STATE.md has no frontmatter block"
+                    ),
+                }
             return {"ok": True}
         except OSError as e:
             return {"ok": False, "error": str(e)}
