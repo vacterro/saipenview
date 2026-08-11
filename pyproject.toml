@@ -44,7 +44,7 @@ dependencies = [
 # Build/dev dependencies live in an extra, not in the runtime `dependencies`
 # floor (T-189). requirements.txt mirrors the runtime floor for the run.bat
 # install path and adds nuitka for tools/build.py.
-dev = ["nuitka>=2.0.0"]
+dev = ["nuitka>=2.0.0", "tomli>=2.0.1; python_version < '3.11'"]
 
 [tool.setuptools.dynamic]
 version = {attr = "saipenview.__version__"}

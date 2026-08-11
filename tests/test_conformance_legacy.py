@@ -135,11 +135,28 @@ def test_legacy_policy_doc_exists_and_names_a_cutoff():
     reason="own .saipen memory is local-only by contract (T-172); absent in CI checkouts",
 )
 def test_grandfathered_marker_is_uniform():
-    board = (ROOT / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
+    """The grandfathered-marker format is owned by the policy doc, not by
+    whatever markers happen to be alive on the board.
+
+    CLEAN (E-435) pruned the 111 legacy `## DONE` tickets that carried the
+    live markers, so the board no longer guarantees a specimen to assert
+    against -- the marker count on it is now legitimately zero. The format's
+    source of truth is the single canonical example in
+    `docs/conformance-legacy.md` (Treatment 3): assert that example is
+    uniform, and that any marker that DOES appear on the board matches it
+    exactly instead of drifting."""
     import re
 
-    markers = re.findall(r"\| verify: grandfathered [^\n]+", board)
-    assert markers, "no grandfathered markers found"
-    distinct = set(markers)
-    assert len(distinct) == 1, f"markers drifted: {distinct}"
-    assert "docs/conformance-legacy.md" in markers[0]
+    doc = (ROOT / "docs" / "conformance-legacy.md").read_text(encoding="utf-8")
+    examples = re.findall(r"`\| verify: grandfathered [^`]+`", doc)
+    assert examples, "policy doc must define the grandfathered-marker format"
+    assert len(set(examples)) == 1, f"policy markers drifted: {set(examples)}"
+    canonical = examples[0].strip("`")
+    assert "docs/conformance-legacy.md" in canonical
+
+    board = (ROOT / ".saipen" / "BOARD.md").read_text(encoding="utf-8")
+    live = re.findall(r"\| verify: grandfathered [^\n]+", board)
+    for m in live:
+        assert m == canonical, (
+            f"live marker drifted from policy: {m!r} vs {canonical!r}"
+        )

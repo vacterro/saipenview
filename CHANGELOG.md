@@ -14,6 +14,24 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## [0.1.26] - 2026-08-11
+
+### Fixed
+
+- **CI green on Python 3.10 (T-193).** The test surface now supports the
+  declared `requires-python >=3.10` floor: `test_dependency_parity` falls
+  back to `tomli` where `tomllib` does not exist (< 3.11), the `dev` extra
+  carries that backport behind a `python_version` marker, and CI installs
+  `-e ".[dev]"` so the 3.10 job can collect. Previously the 3.10 CI job died
+  at collection with `ModuleNotFoundError: tomllib`.
+
+- **Grandfathered-marker test no longer depends on live board (T-199).**
+  CLEAN (E-435) pruned the 111 legacy `## DONE` tickets that carried the
+  `| verify: grandfathered` markers, so the marker count on the board is
+  legitimately zero. `test_grandfathered_marker_is_uniform` now asserts the
+  single canonical format from `docs/conformance-legacy.md` and checks any
+  live marker against it, instead of failing on an empty board.
+
 ## [0.1.25] - 2026-08-11
 
 ### Fixed

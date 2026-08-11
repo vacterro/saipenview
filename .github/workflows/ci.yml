@@ -30,7 +30,7 @@ jobs:
       - name: Install package + test deps
         run: |
           pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[dev]"
           pip install pytest ruff==0.16.0
 
       # T-193: own-`.saipen` conformance must gate CI, not skip on a runner.
