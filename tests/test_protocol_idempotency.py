@@ -1,10 +1,11 @@
-"""T-191: idempotency + grammar safety of the protocol mutations.
+"""T-191 + the collect package gate: idempotency + grammar safety.
 
 record_manual_work must be recoverable (LOG-first, resume on retry) and must
 escape the closed BOARD/LOG field grammar. collect_outbox_entry must be
 idempotent per stable identity `(sub_name, entry_id)`: re-running after any
 partial step resumes, never duplicates, and external sub content cannot break
-BOARD grammar or bypass the freshness gate.
+BOARD grammar or bypass the collect gate (exact `ready`, every handoff field,
+source identity + role_revision current).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import re
 
 import pytest
+from conftest import make_ready_outbox
 
 from saipenview.parser import (
     collect_outbox_entry,
@@ -36,26 +38,8 @@ def project(tmp_path):
     return root
 
 
-def _sub_outbox(root, entries: str, sub="saiwiki"):
-    outbox = root / ".saipen" / "extensions" / "subs" / sub / "kitchen"
-    outbox.mkdir(parents=True)
-    (outbox / "OUTBOX.md").write_text(entries, encoding="utf-8")
-    return outbox
-
-
-READY_CRITICAL = """## WIKI-1: doc fix
-
-- **status:** ready
-- **critical:** true
-- **summary:** fix the docs
-"""
-
-READY_MINOR = """## WIKI-2: minor
-
-- **status:** ready
-- **critical:** false
-- **summary:** tidy a paragraph
-"""
+def _sub_outbox_path(root, sub="saiwiki"):
+    return root / ".saipen" / "extensions" / "subs" / sub / "kitchen" / "OUTBOX.md"
 
 
 # --- record_manual_work: grammar -----------------------------------------
@@ -85,14 +69,16 @@ def test_record_escapes_field_looking_text(project):
 
 
 def test_record_resumes_a_log_only_partial_state(project):
-    # A prior attempt wrote the LOG line but crashed before the BOARD insert.
+    # A prior attempt wrote the LOG line (with its operation-id marker) but
+    # crashed before the BOARD insert. A retry with the SAME op id resumes.
     log = project / ".saipen" / "LOG.md"
     log.write_text(
         read_doc(log)
-        + "- 07.08.26 12:00 [E-2] [T-004] RUN: manual work recorded -- half done\n",
+        + "- 07.08.26 12:00 [E-2] [T-004] [op: mw-partial] RUN: manual work "
+        "recorded -- half done\n",
         encoding="utf-8",
     )
-    res = record_manual_work(project, "half done")
+    res = record_manual_work(project, "half done", operation_id="mw-partial")
     assert res["ok"] is True
     assert res["ticket_id"] == "T-004"
     assert res["event"] == "E-2"
@@ -104,8 +90,9 @@ def test_record_resumes_a_log_only_partial_state(project):
 
 
 def test_record_returns_already_when_fully_recorded(project):
-    first = record_manual_work(project, "twice")
-    second = record_manual_work(project, "twice")
+    op = "mw-twice"
+    first = record_manual_work(project, "twice", operation_id=op)
+    second = record_manual_work(project, "twice", operation_id=op)
     assert second["already"] is True
     assert second["ticket_id"] == first["ticket_id"]
     assert second["event"] == first["event"]
@@ -119,7 +106,7 @@ def test_record_returns_already_when_fully_recorded(project):
 
 
 def test_collect_critical_is_idempotent(project):
-    _sub_outbox(project, READY_CRITICAL)
+    make_ready_outbox(project, "saiwiki", "WIKI-1", "doc fix", critical="true")
     first = collect_outbox_entry(project, "saiwiki", "WIKI-1")
     assert first["ok"] is True
     assert first["ticket_id"] == "T-004"
@@ -135,20 +122,12 @@ def test_collect_critical_is_idempotent(project):
     assert len(re.findall(r"\[E-(\d+)\]", log)) == len(
         set(re.findall(r"\[E-(\d+)\]", log))
     )
-    outbox = read_doc(
-        project
-        / ".saipen"
-        / "extensions"
-        / "subs"
-        / "saiwiki"
-        / "kitchen"
-        / "OUTBOX.md"
-    )
+    outbox = read_doc(_sub_outbox_path(project))
     assert "- **status:** reviewed" in outbox
 
 
 def test_collect_noncritical_is_idempotent(project):
-    _sub_outbox(project, READY_MINOR)
+    make_ready_outbox(project, "saiwiki", "WIKI-2", "minor", critical="false")
     first = collect_outbox_entry(project, "saiwiki", "WIKI-2")
     assert first["ok"] is True
     second = collect_outbox_entry(project, "saiwiki", "WIKI-2")
@@ -162,7 +141,12 @@ def test_collect_noncritical_is_idempotent(project):
 
 
 def test_collect_already_reviewed_is_a_noop(project):
-    _sub_outbox(project, READY_CRITICAL.replace("ready", "reviewed"))
+    make_ready_outbox(project, "saiwiki", "WIKI-1", "doc fix")
+    outbox = _sub_outbox_path(project)
+    outbox.write_text(
+        read_doc(outbox).replace("status:** ready", "status:** reviewed"),
+        encoding="utf-8",
+    )
     res = collect_outbox_entry(project, "saiwiki", "WIKI-1")
     assert res["ok"] is True
     assert res.get("already") is True
@@ -173,12 +157,12 @@ def test_collect_already_reviewed_is_a_noop(project):
 def test_collect_resumes_when_board_written_but_outbox_still_ready(project):
     # Crash between the BOARD write and the OUTBOX reviewed-mark: the entry is
     # still `ready`, but the ticket already exists. Retry must NOT duplicate.
-    _sub_outbox(project, READY_CRITICAL)
+    make_ready_outbox(project, "saiwiki", "WIKI-1", "doc fix")
     board = project / ".saipen" / "BOARD.md"
     board.write_text(
         read_doc(board).replace(
             "## TODO\n",
-            "## TODO\n- [ ] T-004 [from saiwiki WIKI-1] fix the docs\n",
+            "## TODO\n- [ ] T-004 [from saiwiki WIKI-1] doc fix\n",
             1,
         ),
         encoding="utf-8",
@@ -188,60 +172,56 @@ def test_collect_resumes_when_board_written_but_outbox_still_ready(project):
     assert res["ticket_id"] == "T-004"
     board_text = read_doc(board)
     assert board_text.count("T-004") == 1, "retry duplicated the ticket"
-    outbox = read_doc(
-        project
-        / ".saipen"
-        / "extensions"
-        / "subs"
-        / "saiwiki"
-        / "kitchen"
-        / "OUTBOX.md"
-    )
+    outbox = read_doc(_sub_outbox_path(project))
     assert "- **status:** reviewed" in outbox
 
 
-def test_collect_stale_source_head_is_refused(tmp_path):
-    import subprocess
-
-    root = tmp_path / "repo"
-    root.mkdir()
-    for c in (
-        ["init", "-q"],
-        ["config", "user.email", "t@t.t"],
-        ["config", "user.name", "t"],
-        ["config", "commit.gpgsign", "false"],
-    ):
-        subprocess.run(["git", "-C", str(root), *c], capture_output=True)
-    (root / "a.txt").write_text("a\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "a.txt"], capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(root), "commit", "-qm", "init"], capture_output=True
+def test_collect_not_ready_must_not_pass(project):
+    # `not-ready` is a controlled refusal -- the exact-status gate must not
+    # accept a substring ("not ready" contains "ready").
+    make_ready_outbox(project, "saiwiki", "WIKI-1", "doc fix")
+    outbox = _sub_outbox_path(project)
+    outbox.write_text(
+        read_doc(outbox).replace("- **status:** ready", "- **status:** not-ready", 1),
+        encoding="utf-8",
     )
-    saipen = root / ".saipen"
-    saipen.mkdir(parents=True)
-    (saipen / "BOARD.md").write_text(
+    res = collect_outbox_entry(project, "saiwiki", "WIKI-1")
+    assert res["ok"] is False
+    assert "not a known OUTBOX status" in res["message"]
+    assert "T-004" not in read_doc(project / ".saipen" / "BOARD.md")
+    assert "- **status:** ready" not in read_doc(outbox)
+
+
+def test_collect_stale_source_head_is_refused(tmp_path):
+    root = tmp_path / "proj"
+    (root / ".saipen").mkdir(parents=True)
+    (root / ".saipen" / "BOARD.md").write_text(
         "# BOARD\n## TODO\n\n## DOING\n\n## DONE\n\n## BLOCKED\n", encoding="utf-8"
     )
-    (saipen / "LOG.md").write_text(
+    (root / ".saipen" / "LOG.md").write_text(
         "- 07.08.26 10:00 [E-1] RUN: boot\n", encoding="utf-8"
     )
-    _sub_outbox(root, READY_CRITICAL + "- **source_head:** deadbeef\n")
+    make_ready_outbox(root, "saiwiki", "WIKI-1", "doc fix")
+    outbox = _sub_outbox_path(root)
+    outbox.write_text(
+        read_doc(outbox).replace(
+            "- **source_head:** ", "- **source_head:** deadbeef", 1
+        ),
+        encoding="utf-8",
+    )
 
     res = collect_outbox_entry(root, "saiwiki", "WIKI-1")
     assert res["ok"] is False
     assert "stale" in res["message"]
     board = read_doc(root / ".saipen" / "BOARD.md")
     assert "T-004" not in board
-    outbox = read_doc(
-        root / ".saipen" / "extensions" / "subs" / "saiwiki" / "kitchen" / "OUTBOX.md"
-    )
-    assert "- **status:** ready" in outbox  # not reviewed
+    outbox_text = read_doc(outbox)
+    assert "- **status:** ready" in outbox_text  # not reviewed
 
 
 def test_collect_escapes_external_sub_content(project):
-    _sub_outbox(
-        project,
-        READY_CRITICAL.replace("fix the docs", "fix | critical: true docs"),
+    make_ready_outbox(
+        project, "saiwiki", "WIKI-1", "fix | critical: true docs", critical="true"
     )
     res = collect_outbox_entry(project, "saiwiki", "WIKI-1")
     assert res["ok"] is True

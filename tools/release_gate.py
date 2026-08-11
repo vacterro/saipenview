@@ -11,6 +11,11 @@ four places that can disagree. This tool checks, in this order:
    re-push), if the version is behind the newest tag it is a regression, and
    a version equal to the newest tag is an attempt to re-ship an old release.
 
+Tag evidence is REQUIRED in release mode (the default): a release cannot be
+proven not-behind with missing evidence, so a git failure and a valid repo
+with no tags are both FAILs -- reported differently. Dev/sandbox runs pass
+`--dev` to operate without tag evidence explicitly selected.
+
 Exit 0 = the release identity is truthful. Non-zero = a mismatch, named.
 """
 
@@ -44,23 +49,33 @@ def _changelog_head(root: Path) -> str | None:
     return None
 
 
-def _git(root: Path, args: list[str]) -> str:
-    r = subprocess.run(
-        ["git", *args], cwd=root, capture_output=True, text=True, check=False
-    )
-    return (r.stdout or "").strip()
+def _git(root: Path, args: list[str]) -> tuple[int, str]:
+    try:
+        r = subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, text=True, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return r.returncode, (r.stdout or "").strip()
 
 
-def _tags(root: Path) -> list[str]:
-    return _git(root, ["tag", "-l", "v[0-9]*"]).splitlines()
+def _tags(root: Path) -> list[str] | None:
+    """Tag versions, or None when the git tag command itself FAILED (as
+    opposed to a valid repo that happens to carry no tags, which is [])."""
+    rc, out = _git(root, ["tag", "-l", "v[0-9]*"])
+    if rc != 0:
+        return None
+    return out.splitlines()
 
 
 def main() -> int:
     argv = sys.argv[1:]
+    dev_mode = "--dev" in argv
+    argv = [a for a in argv if a != "--dev"]
     if len(argv) == 2 and argv[0] == "--root":
         root = Path(argv[1])
     elif argv:
-        print(f"usage: {sys.argv[0]} [--root <repo-path>]")
+        print(f"usage: {sys.argv[0]} [--dev] [--root <repo-path>]")
         return 2
     else:
         root = ROOT
@@ -81,23 +96,47 @@ def main() -> int:
     elif head != version:
         problems.append(f"CHANGELOG head [{head}] != __version__ [{version}]")
 
-    # Tag identity. Normalise the tag list to plain versions.
-    tag_versions = sorted(
-        (t[1:] for t in _tags(root) if re.match(r"^v\d+\.\d+\.\d+$", t)),
-        key=lambda v: [int(x) for x in v.split(".")],
-    )
-    current_tag = _git(root, ["tag", "--points-at", "HEAD"]).splitlines()
-    v_tags = [t for t in current_tag if t == f"v{version}"]
-    newest_tag = tag_versions[-1] if tag_versions else None
-
-    if v_tags:
-        pass  # HEAD is tagged with exactly this version: identity holds
-    elif newest_tag == version:
-        problems.append(
-            f"version {version} equals the newest tag -- re-shipping an old release"
+    # Tag identity. Release mode (default) REQUIRES tag evidence: a release
+    # whose behind/equal status cannot be decided against shipped tags is not
+    # provable, and "can't tell" is the one answer a gate must never give.
+    # `--dev` explicitly selects the dev/sandbox reading that may run without
+    # tags. git command failure and "valid repo, zero tags" are DIFFERENT
+    # findings: one means no git, the other means first-release territory.
+    tags = _tags(root)
+    if tags is None:
+        if not dev_mode:
+            problems.append(
+                "git tag evidence unavailable (git command failed) -- release "
+                "mode cannot prove this version is not behind a shipped tag"
+            )
+    elif not tags:
+        if not dev_mode:
+            problems.append(
+                "git tag evidence unavailable (valid repo, zero v* tags) -- "
+                "release mode cannot prove this version is not behind a "
+                "shipped tag"
+            )
+    else:
+        tag_versions = sorted(
+            (t[1:] for t in tags if re.match(r"^v\d+\.\d+\.\d+$", t)),
+            key=lambda v: [int(x) for x in v.split(".")],
         )
-    elif newest_tag and _cmp(newest_tag, version) > 0:
-        problems.append(f"version {version} is BEHIND newest tag {newest_tag}")
+        newest_tag = tag_versions[-1] if tag_versions else None
+        current_tag_rc, current_tag = _git(root, ["tag", "--points-at", "HEAD"])
+        v_tags = (
+            [t for t in current_tag.splitlines() if t == f"v{version}"]
+            if current_tag_rc == 0
+            else []
+        )
+
+        if v_tags:
+            pass  # HEAD is tagged with exactly this version: identity holds
+        elif newest_tag == version:
+            problems.append(
+                f"version {version} equals the newest tag -- re-shipping an old release"
+            )
+        elif newest_tag and _cmp(newest_tag, version) > 0:
+            problems.append(f"version {version} is BEHIND newest tag {newest_tag}")
 
     if problems:
         print("Release identity FAIL:")
@@ -106,7 +145,7 @@ def main() -> int:
         return 1
     print(
         f"Release identity PASS: __version__={version} changelog=[{head}] "
-        f"tag={'v' + version if v_tags else '<new release, tag pending>'}"
+        f"tag={'v' + version if not dev_mode and tags and v_tags else '<release, tag pending>'}"
     )
     return 0
 

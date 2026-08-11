@@ -10,9 +10,12 @@ from __future__ import annotations
 import datetime as _dt
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from saipenview import protocol
+from saipenview.ownership import AgentOwnershipError
 from saipenview.protocol_write import (
     ConflictError,
     MutationRejected,
@@ -139,6 +142,8 @@ def update_state(root: Path, updates: dict[str, str]) -> bool:
         return get_coordinator().mutate_doc(state_path, transform) is not None
     except (ConflictError, MutationRejected, OSError):
         return False
+    except AgentOwnershipError:
+        return False
 
 
 @dataclass
@@ -172,103 +177,280 @@ _SECTION_LISTS = {
     "BLOCKED": "blocked",
 }
 
-_TICKET_ACTIONS = {
-    "start": (" ", "/", "DOING"),
-    "done": ("/", "x", "DONE"),
-    "reopen": ("x", " ", "TODO"),
-    # T-174: BLOCKED tickets carry `[ ]` like TODO ones, so the target section
-    # cannot be derived from the checkbox alone -- it is explicit per action.
-    "block": (None, " ", "BLOCKED"),
-    "unblock": (" ", " ", "TODO"),
+# CORE § 1.2's strict ticket state machine. The SECTION is the status -- never
+# the checkbox -- and each action names the source sections it accepts and the
+# (section, checkbox) it produces. Everything else is an illegal transition
+# that must be rejected with zero writes.
+_ACTION_TRANSITIONS: dict[str, dict[str, tuple[str, str]]] = {
+    "start": {"TODO": ("DOING", "/")},
+    "done": {"DOING": ("DONE", "x")},
+    "reopen": {"DONE": ("TODO", " ")},
+    "block": {"TODO": ("BLOCKED", " "), "DOING": ("BLOCKED", " ")},
+    "unblock": {"BLOCKED": ("TODO", " ")},
 }
 
-_TICKET_SECTION_FOR_STATUS = {
-    " ": "TODO",
-    "/": "DOING",
-    "x": "DONE",
-}
+# The closed ticket-field vocabulary is owned by protocol.py (synced from
+# tools/saipen_engine/board.py); the blocker/verify reads here just use it.
+_TICKET_FIELD_RE = re.compile(r"^([a-z_]+):\s*(.*)$")
+_PIPE_SENTINEL = "\x00"
+
+
+def _ticket_parts(rest: str) -> tuple[str, dict[str, str]]:
+    """Split a ticket line's pipe-delimited tail into (description, fields).
+    An escaped pipe is hidden before splitting so it never invents a field."""
+    masked = rest.replace("\\|", _PIPE_SENTINEL)
+    parts = [p.strip() for p in masked.split(" | ")]
+    fields: dict[str, str] = {}
+    for part in parts[1:]:
+        m = _TICKET_FIELD_RE.match(part)
+        if m:
+            fields[m.group(1)] = m.group(2).replace(_PIPE_SENTINEL, "|")
+    return parts[0].replace(_PIPE_SENTINEL, "|"), fields
+
+
+def _set_field(line: str, field: str, value: str) -> str:
+    """Replace `| field: ...` on a ticket line or append it; exactly one copy."""
+    parts = line.rstrip("\n").replace("\\|", _PIPE_SENTINEL).split(" | ")
+    pattern = re.compile(rf"^{re.escape(field)}:\s*")
+    out = []
+    replaced = False
+    for part in parts:
+        if pattern.match(part):
+            if not replaced:
+                out.append(f"{field}: {value}")
+                replaced = True
+            continue
+        out.append(part)
+    if not replaced:
+        out.append(f"{field}: {value}")
+    return " | ".join(out).replace(_PIPE_SENTINEL, "\\|")
+
+
+def _remove_field(line: str, field: str) -> str:
+    parts = line.rstrip("\n").replace("\\|", _PIPE_SENTINEL).split(" | ")
+    pattern = re.compile(rf"^{re.escape(field)}:\s*")
+    return " | ".join(p for p in parts if not pattern.match(p)).replace(
+        _PIPE_SENTINEL, "\\|"
+    )
+
+
+def _rewrite_checkbox(line: str, new_ch: str) -> str:
+    m = TICKET_RE.match(line.strip())
+    if m:
+        old = m.group(1)
+        return line.replace(f"[{old}]", f"[{new_ch}]", 1)
+    return line
+
+
+def _transition_error_text(
+    board_text: str,
+    state: dict[str, str],
+    ticket_id: str,
+    action: str,
+    reason: str | None,
+) -> str | None:
+    """The legality of one ticket move, decided from the board text (section
+    IS status) plus STATE for the active-task cases. None == legal."""
+    if action not in _ACTION_TRANSITIONS:
+        return f"unknown ticket action {action!r}"
+    allowed = _ACTION_TRANSITIONS[action]
+    section: str | None = None
+    fields: dict[str, str] = {}
+    current: str | None = None
+    for line in board_text.splitlines():
+        heading = SECTION_HEADING_RE.match(line.strip())
+        if heading:
+            current = heading.group(1)
+            continue
+        t = TICKET_RE.match(line.strip())
+        if t and t.group(2) == ticket_id:
+            section = current
+            _, fields = _ticket_parts(t.group(3))
+            break
+    if section is None:
+        return f"{ticket_id} not on the board"
+    if section not in allowed:
+        sources = (
+            "TODO/DOING" if set(allowed) == {"TODO", "DOING"} else "/".join(allowed)
+        )
+        return f"{action} accepts {sources}; {ticket_id} is under ## {section}"
+    if action in ("block", "unblock"):
+        need = (
+            "the facts/dead ends that justify the block"
+            if action == "block"
+            else "the decision/evidence that lifts the block"
+        )
+        if not (reason or "").strip():
+            return f"{action} requires a non-empty reason: {need}"
+    if action == "block" and section == "DOING":
+        return (
+            f"blocking a DOING ticket must park the execution state under "
+            f"SAIOPS park semantics (STATE -> DONE/task none); mutating BOARD "
+            f"alone would leave a state the validator rejects -- use "
+            f"`saipen ticket block {ticket_id} <reason>`"
+        )
+    if action == "start" and "blocker" in fields:
+        return (
+            f"{ticket_id} carries | blocker: outside ## BLOCKED -- malformed "
+            f"status cannot become workable; remove the blocker field first"
+        )
+    if action == "done":
+        if not fields.get("verify", "").strip():
+            return (
+                f"DOING -> DONE requires canonical completion evidence: the "
+                f"ticket must carry a non-empty | verify: clause. Closing "
+                f"without it fabricates a completion; use `saipen ticket done "
+                f"{ticket_id}` to close it atomically"
+            )
+        active_task = (
+            state.get("task") == ticket_id
+            and state.get("phase") in protocol.TICKET_PHASES
+        )
+        if active_task:
+            return (
+                f"{ticket_id} is the active STATE task in a ticket-bearing "
+                f"phase -- closing it board-only would split STATE/BOARD; "
+                f"use `saipen ticket done {ticket_id}`"
+            )
+    return None
+
+
+def ticket_transition_error(
+    root: Path, ticket_id: str, action: str, reason: str | None = None
+) -> str | None:
+    """None when the move is legal under CORE § 1.2's strict state machine,
+    else the refusal reason. The UI derives disable/reason text from this SAME
+    function the backend enforces."""
+    board_path = root / ".saipen" / "BOARD.md"
+    if not board_path.is_file():
+        return "BOARD.md not found"
+    state_path = root / ".saipen" / "STATE.md"
+    state = parse_frontmatter(read_doc(state_path)) if state_path.is_file() else {}
+    return _transition_error_text(
+        read_doc(board_path), state, ticket_id, action, reason
+    )
 
 
 def move_ticket(
     root: Path, ticket_id: str, action: str, blocker_reason: str | None = None
 ) -> bool:
-    """Changes a ticket's status on BOARD.md and moves it to the correct section.
-    Action is one of: start (TODO->DOING), done (DOING->DONE), reopen (DONE->TODO),
-    block (TODO/DOING->BLOCKED, appends `| blocker:`), unblock (BLOCKED->TODO).
-    Returns True on success."""
-    if action not in _TICKET_ACTIONS:
-        return False
-    old_ch, new_ch, target_section = _TICKET_ACTIONS[action]
-    if not target_section:
-        return False
+    """Move a ticket between BOARD sections under the strict state machine.
 
+    Legal source -> action -> target (CORE § 1.2; section IS status):
+
+      TODO  -> start  -> DOING
+      DOING -> done   -> DONE  (only with a non-empty | verify: clause and
+                                only when the ticket is not the active STATE
+                                task -- both are canonical completion gates)
+      DONE  -> reopen -> TODO
+      TODO  -> block  -> BLOCKED   (reason REQUIRED, escaped)
+      BLOCKED -> unblock -> TODO   (lifting decision REQUIRED, blocker field
+                                    removed atomically)
+
+    Everything else is rejected with zero writes. `done`/`block` on the active
+    ticket is refused in favour of the canonical SAIOPS operations, which can
+    close BOARD+LOG+STATE atomically where this board-only mover cannot.
+    """
+    if action not in _ACTION_TRANSITIONS:
+        return False
     board_path = root / ".saipen" / "BOARD.md"
+    state_path = root / ".saipen" / "STATE.md"
     if not board_path.is_file():
         return False
 
-    def transform(text: str) -> str | None:
-        lines = text.splitlines(True)  # keep line endings
-        section_starts: dict[str, int] = {}
-        ticket_line_idx = -1
-        actual_status = old_ch
-        current_heading: str | None = None
-
-        for i, line in enumerate(lines):
-            heading = SECTION_HEADING_RE.match(line.strip())
-            if heading:
-                current_heading = heading.group(1)
-                if current_heading not in section_starts:
-                    section_starts[current_heading] = i
-                continue
-            if ticket_line_idx < 0:
-                ticket = TICKET_RE.match(line.strip())
-                if ticket and ticket.group(2) == ticket_id:
-                    # The ticket's REAL checkbox, which need not be the one the
-                    # action expects -- "start" on an already-`[x]` ticket is
-                    # allowed, it just moves where the new status dictates. The
-                    # replacement below has to target what is actually there:
-                    # rewriting `[ ]` on a line that reads `[x]` matched nothing,
-                    # so the line moved to ## DOING still carrying `[x]` and the
-                    # board came out in exactly the checkbox-vs-section state
-                    # RFC 1.2 forbids.
-                    actual_status = ticket.group(1)
-                    ticket_line_idx = i
-
-        if ticket_line_idx < 0:
-            return None
-
-        # Remove the ticket line from its current position
-        ticket_line = lines.pop(ticket_line_idx)
-
-        # Update the status marker
-        ticket_line = ticket_line.replace(f"[{actual_status}]", f"[{new_ch}]", 1)
-
-        # T-174: blocking appends the reason as a `| blocker:` ticket field. The
-        # field list is closed, so a literal pipe in the reason is escaped as \|.
-        if action == "block" and blocker_reason and blocker_reason.strip():
-            reason = escape_pipe(blocker_reason.strip())
-            newline = "\n" if ticket_line.endswith("\n") else ""
-            ticket_line = ticket_line.rstrip("\n") + f" | blocker: {reason}" + newline
-
-        # Insert into the target section (after its heading, before next heading or end)
-        insert_pos = len(lines)  # default: end of file
-        if target_section in section_starts:
-            target_idx = section_starts[target_section]
-            # Find the next heading after target section, or end of file
-            for j in range(target_idx + 1, len(lines)):
-                if SECTION_HEADING_RE.match(lines[j].strip()):
-                    insert_pos = j
-                    break
-            else:
-                insert_pos = len(lines)
-
-        lines.insert(insert_pos, ticket_line)
-        return "".join(lines)
-
+    coord = get_coordinator()
+    deps = [state_path] if state_path.is_file() else None
     try:
-        return get_coordinator().mutate_doc(board_path, transform) is not None
+        with coord.locked(root):
+            state = (
+                parse_frontmatter(read_doc(state_path)) if state_path.is_file() else {}
+            )
+            err = _transition_error_text(
+                read_doc(board_path), state, ticket_id, action, blocker_reason
+            )
+            if err is not None:
+                return False
+            coord.transaction(
+                root,
+                {
+                    board_path: lambda text, a=action, r=blocker_reason, s=state: (
+                        _apply_move(text, ticket_id, a, r, s)
+                    )
+                },
+                deps=deps,
+            )
+        return True
     except (ConflictError, MutationRejected, OSError):
         return False
+    except AgentOwnershipError:
+        return False
+
+
+def _apply_move(
+    text: str,
+    ticket_id: str,
+    action: str,
+    reason: str | None,
+    state: dict[str, str],
+) -> str | None:
+    """Apply one legal move to the BOARD text. Returns None (decline, no
+    write) on anything the strict machine forbids -- re-checked here, on the
+    exact text being committed, so a stale legality decision can never commit."""
+    err = _transition_error_text(text, state, ticket_id, action, reason)
+    if err is not None:
+        return None
+    allowed = _ACTION_TRANSITIONS[action]
+    lines = text.splitlines(True)
+    ticket_idx = -1
+    current: str | None = None
+    for i, line in enumerate(lines):
+        heading = SECTION_HEADING_RE.match(line.strip())
+        if heading:
+            current = heading.group(1)
+            continue
+        t = TICKET_RE.match(line.strip())
+        if t and t.group(2) == ticket_id:
+            ticket_idx = i
+            break
+    if ticket_idx < 0:
+        return None
+    section = current or ""
+    target_section, new_ch = allowed[section]
+
+    ticket_line = lines.pop(ticket_idx)
+    had_newline = ticket_line.endswith("\n")
+    ticket_line = ticket_line.rstrip("\n")
+    if action == "block":
+        reason_flat = " ".join((reason or "").split())
+        ticket_line = _set_field(ticket_line, "blocker", escape_pipe(reason_flat))
+        ticket_line = _rewrite_checkbox(ticket_line, new_ch)
+    elif action == "unblock":
+        ticket_line = _remove_field(ticket_line, "blocker")
+        ticket_line = _remove_field(ticket_line, "verify_attempts")
+        ticket_line = _rewrite_checkbox(ticket_line, new_ch)
+    else:
+        ticket_line = _rewrite_checkbox(ticket_line, new_ch)
+    if had_newline:
+        ticket_line += "\n"
+
+    # Insert into the target section: after its heading, before the next
+    # heading (or end of file). All four headings are required on a valid
+    # board; a missing one degrades to appending at the end.
+    target_idx = -1
+    insert_pos = len(lines)
+    for i, line in enumerate(lines):
+        heading = SECTION_HEADING_RE.match(line.strip())
+        if heading:
+            if heading.group(1) == target_section:
+                target_idx = i
+            elif target_idx >= 0:
+                insert_pos = i
+                break
+    if target_idx >= 0:
+        lines.insert(insert_pos, ticket_line)
+    else:
+        lines.append(ticket_line)
+    return "".join(lines)
 
 
 def reorder_ticket(
@@ -358,11 +540,31 @@ def _insert_into_todo(board_text: str, ticket_line: str) -> str:
 
 
 _MANUAL_WORK_RE = re.compile(
-    r"\[E-(\d+)\] \[(T-\d+)\] RUN: manual work recorded -- (.*)$"
+    r"\[E-(\d+)\] \[(T-\d+)\](?: \[op: ([^\]]+)\])? RUN: manual work recorded -- (.*)$"
 )
 
 
-def record_manual_work(root: Path, description: str) -> dict:
+def _new_operation_id() -> str:
+    import uuid
+
+    return "mw-" + uuid.uuid4().hex[:12]
+
+
+def _transaction_deps(root: Path) -> list[Path]:
+    """The canonical checkpoint set an operation's truth depends on: STATE,
+    LOG (and BOARD is added by callers that touch it). An external edit to
+    STATE while a BOARD+LOG transaction is in flight must abort, never
+    silently compose two realities."""
+    deps = [root / ".saipen" / "LOG.md"]
+    state_path = root / ".saipen" / "STATE.md"
+    if state_path.is_file():
+        deps.append(state_path)
+    return deps
+
+
+def record_manual_work(
+    root: Path, description: str, operation_id: str | None = None
+) -> dict:
     """Record a user's manual edit as a board entry (T-127).
 
     The user did something by hand -- edited a project's STATE/BOARD/LOG in an
@@ -373,16 +575,23 @@ def record_manual_work(root: Path, description: str) -> dict:
     the per-project write coordinator (T-183). Returns ``{"ok": True}`` or an
     error dict.
 
-    Crash safety / idempotency (T-191): the LOG evidence line is written
-    FIRST, then the BOARD ticket. A failure between the two leaves the LOG
-    record behind -- never an unlogged orphan ticket -- and a retry detects
-    the prior LOG line and resumes (same ticket id, or a no-op if the ticket
-    is already on the board).
+    Idempotency is by OPERATION ID, never by human prose (repair mission P1):
+    two legitimate separate actions named "updated docs" must remain two
+    records. ``operation_id`` is generated at UI invocation and carried
+    through retry/resume; a retry with the same id resumes the original
+    ticket, while the same description with a different id is a fresh record.
+    The id is persisted in the LOG line as ``[op: <id>]``.
+
+    Crash safety (T-191): the LOG evidence line is written FIRST, then the
+    BOARD ticket. A failure between the two leaves the LOG record behind --
+    never an unlogged orphan ticket -- and a retry detects the prior LOG line
+    by its ``[op: ...]`` marker and resumes.
     """
     description = " ".join(str(description or "").split())
     if not description:
         return {"ok": False, "error": "description is empty"}
     escaped = escape_pipe(description)
+    op_id = operation_id or _new_operation_id()
 
     board_path = root / ".saipen" / "BOARD.md"
     log_path = root / ".saipen" / "LOG.md"
@@ -392,76 +601,76 @@ def record_manual_work(root: Path, description: str) -> dict:
         return {"ok": False, "error": "LOG.md not found"}
 
     coord = get_coordinator()
-    with coord.locked(root):
-        # Both files are read once, under the root lock, and the fingerprints
-        # of THAT read become the CAS baseline for both writes. An external
-        # writer between read and commit raises ConflictError; nothing is
-        # written, ids are never burned on a stale read.
-        log_fp = coord.fingerprint(log_path)
-        log_text = read_doc(log_path)
-        board_fp = coord.fingerprint(board_path)
-        board_text = read_doc(board_path)
+    try:
+        with coord.locked(root):
+            # Both files are read once, under the root lock, and the fingerprints
+            # of THAT read become the CAS baseline for both writes. An external
+            # writer between read and commit raises ConflictError; nothing is
+            # written, ids are never burned on a stale read.
+            log_text = read_doc(log_path)
+            board_text = read_doc(board_path)
 
-        # Idempotent resume: did a prior attempt already write the LOG line?
-        for m in re.finditer(_MANUAL_WORK_RE, log_text):
-            if m.group(3).strip() == escaped:
-                event_id = f"E-{m.group(1)}"
-                ticket_id = m.group(2)
-                if re.search(rf"\b{re.escape(ticket_id)}\b", board_text):
+            # Idempotent resume: did a prior attempt with THIS operation_id
+            # already write the LOG line?
+            for m in re.finditer(_MANUAL_WORK_RE, log_text):
+                if m.group(3) == op_id:
+                    event_id = f"E-{m.group(1)}"
+                    ticket_id = m.group(2)
+                    if re.search(rf"\b{re.escape(ticket_id)}\b", board_text):
+                        return {
+                            "ok": True,
+                            "already": True,
+                            "ticket_id": ticket_id,
+                            "event": event_id,
+                        }
+                    ticket_line = f"- [ ] {ticket_id} Manual: {escaped} | owner: user"
+                    coord.transaction(
+                        root,
+                        {
+                            board_path: lambda t, tl=ticket_line: _insert_into_todo(
+                                t, tl
+                            )
+                        },
+                        deps=_transaction_deps(root),
+                    )
                     return {
                         "ok": True,
-                        "already": True,
+                        "resumed": True,
                         "ticket_id": ticket_id,
                         "event": event_id,
                     }
-                ticket_line = f"- [ ] {ticket_id} Manual: {escaped} | owner: user"
-                try:
-                    coord.mutate_doc(
-                        board_path,
-                        lambda t, tl=ticket_line: _insert_into_todo(t, tl),
-                        expected_fingerprint=board_fp,
-                    )
-                except ConflictError:
-                    return {
-                        "ok": False,
-                        "error": "project changed concurrently; retry",
-                    }
-                return {
-                    "ok": True,
-                    "resumed": True,
-                    "ticket_id": ticket_id,
-                    "event": event_id,
-                }
 
-        # Fresh allocation -- one place, under the root lock (T-183).
-        next_event = next_event_id(log_text)
-        next_ticket = next_ticket_id(board_text)
-        ticket_id = f"T-{next_ticket:03d}"
-        stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%d.%m.%y %H:%M")
-        git_note = _manual_work_git_note(root)
-        log_line = (
-            f"- {stamp} [E-{next_event}] [{ticket_id}] RUN: manual work recorded "
-            f"-- {escaped}{git_note}"
-        )
-        ticket_line = f"- [ ] {ticket_id} Manual: {escaped} | owner: user"
-
-        try:
-            coord.mutate_doc(
-                log_path,
-                lambda t, ll=log_line: (
-                    (t.rstrip("\n") + "\n" if t.strip() else "") + ll + "\n"
-                ),
-                expected_fingerprint=log_fp,
+            # Fresh allocation -- one place, under the root lock (T-183).
+            next_event = next_event_id(log_text)
+            next_ticket = next_ticket_id(board_text)
+            ticket_id = f"T-{next_ticket:03d}"
+            stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%d.%m.%y %H:%M")
+            git_note = _manual_work_git_note(root)
+            log_line = (
+                f"- {stamp} [E-{next_event}] [{ticket_id}] [op: {op_id}] RUN: "
+                f"manual work recorded -- {escaped}{git_note}"
             )
-            coord.mutate_doc(
-                board_path,
-                lambda t, tl=ticket_line: _insert_into_todo(t, tl),
-                expected_fingerprint=board_fp,
-            )
-        except ConflictError:
-            return {"ok": False, "error": "project changed concurrently; retry"}
+            ticket_line = f"- [ ] {ticket_id} Manual: {escaped} | owner: user"
 
-    return {"ok": True, "ticket_id": ticket_id, "event": f"E-{next_event}"}
+            coord.transaction(
+                root,
+                {
+                    log_path: lambda t, ll=log_line: (
+                        (t.rstrip("\n") + "\n" if t.strip() else "") + ll + "\n"
+                    ),
+                    board_path: lambda t, tl=ticket_line: _insert_into_todo(t, tl),
+                },
+                deps=_transaction_deps(root),
+            )
+
+        return {"ok": True, "ticket_id": ticket_id, "event": f"E-{next_event}"}
+    except ConflictError:
+        return {"ok": False, "error": "project changed concurrently; retry"}
+    except (AgentOwnershipError, MutationRejected, OSError):
+        return {
+            "ok": False,
+            "error": "record refused (project changed or agent owns it); retry",
+        }
 
 
 def _manual_work_git_note(root: Path) -> str:
@@ -881,61 +1090,66 @@ def check_subs_staleness(root: Path, state: dict) -> tuple[bool, str]:
 
 
 # --- OUTBOX collect ---
-_COLLECT_SUB_FM_RE = re.compile(r"^##\s+(\S+):\s*(.*)$", re.MULTILINE)
-_COLLECT_STATUS_RE = re.compile(r"^- \*\*status:\*\*\s*ready", re.MULTILINE)
 _COLLECT_LOG_RE = re.compile(r"RUN: collect \S+ (\S+)(?:\s|$)")
 _COLLECT_INBOX_RE = re.compile(r"\| source: \S+ (\S+) \|")
+_COLLECT_TICKET_RE = re.compile(r"\[from \S+ (\S+)\]")
 
 
-def _current_head(root: Path) -> str:
-    """Short git HEAD of *root*; '' when not a git repo or git unavailable."""
-    import subprocess as _sp
-
-    if not (root / ".git").exists():
-        return ""
-    try:
-        r = _sp.run(
-            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            creationflags=0x08000000,
-        )
-        return (r.stdout or "").strip()
-    except (OSError, _sp.SubprocessError):
-        return ""
+def _outbox_status_transform(outbox_text: str, entry_id: str) -> str | None:
+    """Flip `- **status:** ready` to `reviewed` inside the ONE named entry's
+    block. Returns None when the entry block has no ready status line."""
+    lines = outbox_text.splitlines(True)
+    in_block = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        heading = OUTBOX_HEADING_RE.match(stripped)
+        if heading:
+            in_block = heading.group(1) == entry_id
+            continue
+        if in_block and stripped.startswith("- **status:"):
+            if re.search(r"^- \*\*status:\*\*\s*ready\s*$", stripped, re.MULTILINE):
+                lines[i] = line.replace(
+                    "- **status:** ready", "- **status:** reviewed", 1
+                )
+                return "".join(lines)
+            return None
+    return None
 
 
 def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
-    """Collect one ready OUTBOX entry from a subSaipen into the main project.
+    """Collect one OUTBOX entry from a subSaipen into the main project.
 
-    Per PROTOCOL.md §4:
-    - critical: true -> create a new T-### TODO ticket on main BOARD.md
-    - critical: false -> append to _shared/inbox.md
-    - Mark the entry reviewed in the sub's OUTBOX.md
-    - Append a LOG RUN line to the main LOG.md
+    The CURRENT package contract gates every write (tools/validate.py's
+    `--gate collect:<producer>` shape, see saipenview/collect.py):
 
-    Write order (crash safety): main files first, OUTBOX.md last. Every step
-    is guarded by a stable-identity check `(sub_name, entry_id)` (T-191), so a
-    retry after a crash between steps resumes instead of duplicating: an
-    already-reviewed OUTBOX entry is a no-op, an existing `[from sub id]`
-    ticket skips the BOARD write, an existing `collect sub id` LOG line skips
-    the LOG write, an existing `source: sub id` inbox line skips the inbox
-    write. External sub content is pipe-escaped for the closed BOARD grammar.
+    - ``status`` must equal EXACTLY ``ready``; ``reviewed`` is an idempotent
+      no-op, draft/blocked/stale is a controlled refusal, malformed/unknown is
+      a refusal.
+    - every handoff field (source_head, source_tree_fingerprint, role_revision,
+      producer, coverage, payload, verified, instructions) plus summary and
+      critical must be present; producer must name this sub.
+    - source_head and source_tree_fingerprint must match the CURRENT source
+      identity; role_revision must match the current project-local charter.
+    - freshness computation FAILS CLOSED: if the current identity cannot be
+      computed, nothing is collected.
 
-    Returns a dict with:
-      ok: bool
-      message: str (human-readable summary)
-      ticket_id: str | None (if a ticket was created)
+    Only after the gate PASSES does the write go ahead: route (critical ->
+    new T-### TODO ticket; non-critical -> _shared/inbox.md), then LOG, then
+    OUTBOX `reviewed` LAST. Every step is idempotent per stable identity
+    ``(sub_name, entry_id)`` -- an already-reviewed entry is a no-op, an
+    existing marker skips that step, and a crash after any step resumes
+    without duplication. All writes are one coordinator transaction, so an
+    external change to any input aborts the whole collect.
+
+    Returns a dict with ok / message / ticket_id.
     """
     import datetime
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    # RFC § 1.2 LOG stamp: DD.MM.YY HH:MM, UTC.
     date_str = now.strftime("%d.%m.%y %H:%M")
 
-    # --- Locate the sub's OUTBOX.md ---
+    from saipenview import collect as collect_gate
+
     subs_dir = _find_subs_dir(root)
     if subs_dir is None:
         return {"ok": False, "message": "no subs/ directory found", "ticket_id": None}
@@ -948,242 +1162,160 @@ def collect_outbox_entry(root: Path, sub_name: str, entry_id: str) -> dict:
         }
 
     coord = get_coordinator()
-    with coord.locked(root):
-        # --- Read the OUTBOX entry once, under the root lock ---
-        outbox_fp = coord.fingerprint(outbox_path)
-        outbox_text = read_doc(outbox_path)
-        lines = outbox_text.splitlines(True)
+    try:
+        with coord.locked(root):
+            outbox_text = read_doc(outbox_path)
+            entries = parse_outbox(outbox_text)
+            entry = next((e for e in entries if e.entry_id == entry_id), None)
+            if entry is None:
+                return {
+                    "ok": False,
+                    "message": f"entry '{entry_id}' not found in {sub_name}'s OUTBOX",
+                    "ticket_id": None,
+                }
 
-        entry_heading_idx = -1
-        status_line_idx = -1
-        entry_critical = False
-        entry_summary = ""
-        entry_refs = ""
-        entry_title = ""
-        entry_source_head = ""
+            ok, message, kind = collect_gate.check_package(root, sub_name, entry)
+            if kind == "reviewed":
+                return {
+                    "ok": True,
+                    "already": True,
+                    "message": message,
+                    "ticket_id": None,
+                }
+            if not ok:
+                return {
+                    "ok": False,
+                    "message": message,
+                    "ticket_id": None,
+                    "kind": kind,
+                }
 
-        i = 0
-        while i < len(lines):
-            m = _COLLECT_SUB_FM_RE.match(lines[i].strip())
-            if m and m.group(1) == entry_id:
-                entry_heading_idx = i
-                entry_title = m.group(2).strip()
-                j = i + 1
-                while j < len(lines):
-                    next_heading = _COLLECT_SUB_FM_RE.match(lines[j].strip())
-                    if next_heading:
-                        break
-                    line_stripped = lines[j].strip()
-                    if line_stripped.startswith("- **status:"):
-                        if status_line_idx < 0:
-                            status_line_idx = j
-                        if "ready" not in line_stripped:
-                            return {
-                                "ok": True,
-                                "already": True,
-                                "message": (
-                                    f"entry '{entry_id}' is not ready "
-                                    f"(already reviewed or blocked)"
-                                ),
-                                "ticket_id": None,
-                            }
-                    elif line_stripped.startswith("- **critical:"):
-                        val = (
-                            line_stripped.split("**critical:**", 1)[-1].strip().lower()
+            # --- Gate passed. Build the writes. ---
+            targets: dict[Path, Callable[[str], str | None]] = {}
+            created_ticket_id = None
+
+            if collect_gate.critical_flag(entry):
+                board_path = root / ".saipen" / "BOARD.md"
+                if not board_path.is_file():
+                    return {
+                        "ok": False,
+                        "message": "main BOARD.md not found",
+                        "ticket_id": None,
+                        "kind": "incomplete",
+                    }
+                board_text = read_doc(board_path)
+                already_ticket = re.search(
+                    rf"\[from {re.escape(sub_name)} {re.escape(entry_id)}\]",
+                    board_text,
+                )
+                if not already_ticket:
+                    next_num = next_ticket_id(board_text)
+                    created_ticket_id = f"T-{next_num:03d}"
+                    desc = escape_pipe(
+                        " ".join(
+                            (
+                                entry.title
+                                + (f" -- {entry.summary}" if entry.summary else "")
+                            ).split()
                         )
-                        entry_critical = val == "true"
-                    elif line_stripped.startswith("- **summary:"):
-                        entry_summary = line_stripped.split("**summary:**", 1)[
-                            -1
-                        ].strip()
-                    elif line_stripped.startswith("- **main_project_refs:"):
-                        entry_refs = line_stripped.split("**main_project_refs:**", 1)[
-                            -1
-                        ].strip()
-                    elif line_stripped.startswith("- **source_head:"):
-                        entry_source_head = line_stripped.split("**source_head:**", 1)[
-                            -1
-                        ].strip()
-                    j += 1
-                break
-            i += 1
-
-        if entry_heading_idx < 0:
-            return {
-                "ok": False,
-                "message": f"entry '{entry_id}' not found in {sub_name}'s OUTBOX",
-                "ticket_id": None,
-            }
-
-        if status_line_idx < 0:
-            return {
-                "ok": False,
-                "message": f"entry '{entry_id}' has no status field",
-                "ticket_id": None,
-            }
-
-        # --- Freshness (T-191): a payload built against a different HEAD is
-        # stale and must not be applied blindly. ---
-        if entry_source_head:
-            head = _current_head(root)
-            if head and entry_source_head != head:
-                return {
-                    "ok": False,
-                    "message": (
-                        f"entry '{entry_id}' is stale: source_head "
-                        f"{entry_source_head} != current HEAD {head}"
-                    ),
-                    "ticket_id": None,
-                }
-
-        # --- Route the entry ---
-        created_ticket_id = None
-
-        if entry_critical:
-            board_path = root / ".saipen" / "BOARD.md"
-            if not board_path.is_file():
-                return {
-                    "ok": False,
-                    "message": "main BOARD.md not found",
-                    "ticket_id": None,
-                }
-            board_fp = coord.fingerprint(board_path)
-            board_text = read_doc(board_path)
-
-            # Idempotency: this entry already has a ticket on the board?
-            already_ticket = re.search(
-                rf"\[from {re.escape(sub_name)} {re.escape(entry_id)}\]", board_text
-            )
-            if already_ticket:
-                # Pull the T-id from the whole line the marker sits on, not the
-                # marker text itself (which carries no id).
-                line = board_text[
-                    board_text.rfind("\n", 0, already_ticket.start()) + 1 :
-                ]
-                line = line.split("\n", 1)[0]
-                tid_match = re.search(r"\b(T-\d+)\b", line)
-                created_ticket_id = tid_match.group(1) if tid_match else None
-                message = (
-                    f"entry '{entry_id}' from {sub_name} already collected "
-                    f"({created_ticket_id})"
-                )
+                    )
+                    ticket_line = (
+                        f"- [ ] {created_ticket_id} [from {sub_name} {entry_id}] {desc}"
+                    )
+                    targets[board_path] = lambda t, tl=ticket_line: _insert_into_todo(
+                        t, tl
+                    )
+                    message = (
+                        f"created {created_ticket_id} for critical entry "
+                        f"'{entry_id}' from {sub_name}"
+                    )
+                else:
+                    line = board_text[
+                        board_text.rfind("\n", 0, already_ticket.start()) + 1 :
+                    ]
+                    line = line.split("\n", 1)[0]
+                    tid_match = re.search(r"\b(T-\d+)\b", line)
+                    created_ticket_id = tid_match.group(1) if tid_match else None
+                    message = (
+                        f"entry '{entry_id}' from {sub_name} already collected "
+                        f"({created_ticket_id})"
+                    )
             else:
-                next_num = next_ticket_id(board_text)
-                created_ticket_id = f"T-{next_num:03d}"
-                # External sub content must not break the closed BOARD grammar:
-                # pipes are escaped, the description stays on one line.
-                desc = escape_pipe(
-                    " ".join(
-                        (
-                            entry_title
-                            + (f" -- {entry_summary}" if entry_summary else "")
-                        ).split()
+                inbox_path = subs_dir / "_shared" / "inbox.md"
+                inbox_text = read_doc(inbox_path)
+                if not re.search(
+                    rf"\| source: {re.escape(sub_name)} {re.escape(entry_id)} \|",
+                    inbox_text,
+                ):
+                    summary = escape_pipe(entry.summary or entry.title)
+                    refs = (entry.fields.get("main_project_refs") or "").strip()
+                    refs_text = f" | ref: {escape_pipe(refs)}" if refs else ""
+                    inbox_line = (
+                        f"- {date_str} | source: {sub_name} {entry_id} | "
+                        f"{summary}{refs_text}"
                     )
-                )
-                ticket_line = (
-                    f"- [ ] {created_ticket_id} [from {sub_name} {entry_id}] {desc}"
-                )
-                try:
-                    coord.mutate_doc(
-                        board_path,
-                        lambda t, tl=ticket_line: _insert_into_todo(t, tl),
-                        expected_fingerprint=board_fp,
+                    targets[inbox_path] = lambda t, il=inbox_line: (
+                        (t.rstrip("\n") + "\n" if t.strip() else "") + il + "\n"
                     )
-                except ConflictError:
-                    return {
-                        "ok": False,
-                        "message": "project changed concurrently; retry",
-                        "ticket_id": None,
-                    }
-                message = (
-                    f"created {created_ticket_id} for critical entry '{entry_id}' "
-                    f"from {sub_name}"
-                )
-        else:
-            inbox_path = subs_dir / "_shared" / "inbox.md"
-            inbox_fp = coord.fingerprint(inbox_path)
-            inbox_text = read_doc(inbox_path)
-            already_inbox = re.search(
-                rf"\| source: {re.escape(sub_name)} {re.escape(entry_id)} \|",
-                inbox_text,
-            )
-            if already_inbox:
-                message = f"entry '{entry_id}' from {sub_name} already in inbox"
-            else:
-                refs_text = f" | ref: {escape_pipe(entry_refs)}" if entry_refs else ""
-                summary = escape_pipe(entry_summary or entry_title)
-                inbox_line = (
-                    f"- {date_str} | source: {sub_name} {entry_id} | "
-                    f"{summary}{refs_text}"
-                )
-                try:
-                    coord.mutate_doc(
-                        inbox_path,
-                        lambda t, il=inbox_line: (
-                            (t.rstrip("\n") + "\n" if t.strip() else "") + il + "\n"
-                        ),
-                        expected_fingerprint=inbox_fp,
+                    message = (
+                        f"appended '{entry_id}' from {sub_name} to inbox (non-critical)"
                     )
-                except ConflictError:
-                    return {
-                        "ok": False,
-                        "message": "project changed concurrently; retry",
-                        "ticket_id": None,
-                    }
-                message = (
-                    f"appended '{entry_id}' from {sub_name} to inbox (non-critical)"
-                )
 
-        # --- Append LOG RUN line to main LOG.md (idempotent) ---
-        log_path = root / ".saipen" / "LOG.md"
-        log_fp = coord.fingerprint(log_path)
-        log_text = read_doc(log_path)
-        already_log = re.search(
-            rf"RUN: collect {re.escape(sub_name)} {re.escape(entry_id)}(?:\s|$)",
-            log_text,
-        )
-        if not already_log:
-            next_event = next_event_id(log_text)
-            parent = f" [parent: E-{next_event - 1}]" if next_event > 1 else ""
-            target = f" -> {created_ticket_id}" if created_ticket_id else ""
-            log_line = (
-                f"- {date_str} [E-{next_event}]{parent} [T-none] RUN: collect "
-                f"{sub_name} {entry_id}{target}"
-            )
-            try:
-                coord.mutate_doc(
-                    log_path,
-                    lambda t, ll=log_line: (
-                        (t.rstrip("\n") + "\n" if t.strip() else "") + ll + "\n"
-                    ),
-                    expected_fingerprint=log_fp,
-                )
-            except ConflictError:
+            log_path = root / ".saipen" / "LOG.md"
+            if not log_path.is_file():
                 return {
                     "ok": False,
-                    "message": "project changed concurrently; retry",
+                    "message": "main LOG.md not found",
                     "ticket_id": None,
+                    "kind": "incomplete",
                 }
+            log_text = read_doc(log_path)
+            if not re.search(
+                rf"RUN: collect {re.escape(sub_name)} {re.escape(entry_id)}(?:\s|$)",
+                log_text,
+            ):
+                next_event = next_event_id(log_text)
+                parent = f" [parent: E-{next_event - 1}]" if next_event > 1 else ""
+                target = f" -> {created_ticket_id}" if created_ticket_id else ""
+                log_line = (
+                    f"- {date_str} [E-{next_event}]{parent} [T-none] RUN: collect "
+                    f"{sub_name} {entry_id}{target}"
+                )
+                targets[log_path] = lambda t, ll=log_line: (
+                    (t.rstrip("\n") + "\n" if t.strip() else "") + ll + "\n"
+                )
 
-        # --- Mark the OUTBOX entry reviewed LAST (crash safety) ---
-        lines[status_line_idx] = lines[status_line_idx].replace(
-            "- **status:** ready", "- **status:** reviewed", 1
-        )
-        new_outbox = "".join(lines)
-        try:
-            coord.mutate_doc(
-                outbox_path,
-                lambda t, no=new_outbox: no,
-                expected_fingerprint=outbox_fp,
+            new_outbox = _outbox_status_transform(outbox_text, entry_id)
+            if new_outbox is not None:
+                targets[outbox_path] = lambda t, no=new_outbox: no
+
+            deps = [outbox_path, log_path]
+            state_path = root / ".saipen" / "STATE.md"
+            if state_path.is_file():
+                deps.append(state_path)
+            board_path_dep = root / ".saipen" / "BOARD.md"
+            if board_path_dep.is_file() and board_path_dep not in targets:
+                deps.append(board_path_dep)
+
+            coord.transaction(
+                root,
+                targets,
+                deps=deps,
             )
-        except ConflictError:
-            return {
-                "ok": False,
-                "message": "project changed concurrently; retry",
-                "ticket_id": created_ticket_id,
-            }
 
-    return {"ok": True, "message": message, "ticket_id": created_ticket_id}
+        return {"ok": True, "message": message, "ticket_id": created_ticket_id}
+    except ConflictError:
+        return {
+            "ok": False,
+            "message": "project changed concurrently; retry",
+            "ticket_id": None,
+        }
+    except (AgentOwnershipError, MutationRejected, OSError):
+        return {
+            "ok": False,
+            "message": "collect refused (project changed or agent owns it); retry",
+            "ticket_id": None,
+        }
 
 
 def load_log_tail(root: Path, max_lines: int = 5) -> list[str]:

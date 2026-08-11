@@ -1,9 +1,18 @@
-"""T-174: real-time ticket checkboxes -- the backend half.
+"""T-174 + the strict state machine: real-time ticket checkboxes -- backend.
 
-move_ticket() gains `block` (TODO/DOING -> BLOCKED, appending `| blocker:`)
-and `unblock` (BLOCKED -> TODO); parse_board() surfaces the blocker reason so
-a BLOCKED row can say WHY it is blocked. Every move keeps the
-checkbox-vs-section agreement (RFC 1.2): BLOCKED stays `[ ]`.
+move_ticket() is CORE § 1.2's strict state machine. The SECTION is the status,
+never the checkbox, and each action accepts exactly its source sections:
+
+  TODO -> start -> DOING
+  DOING -> done -> DONE     (only with a non-empty | verify: clause, and only
+                             when the ticket is not the active STATE task)
+  DONE -> reopen -> TODO
+  TODO/DOING -> block -> BLOCKED   (reason REQUIRED; DOING block is refused
+                                    board-only -- it needs SAIOPS park semantics)
+  BLOCKED -> unblock -> TODO       (lifting decision REQUIRED, blocker removed)
+
+Everything else is rejected with zero writes. parse_board() surfaces the
+blocker reason so a BLOCKED row can say WHY it is blocked.
 """
 
 from __future__ import annotations
@@ -13,7 +22,12 @@ from pathlib import Path
 
 import pytest
 
-from saipenview.parser import move_ticket, parse_board, reorder_ticket
+from saipenview.parser import (
+    move_ticket,
+    parse_board,
+    reorder_ticket,
+    ticket_transition_error,
+)
 from saipenview.textio import read_doc
 
 
@@ -29,12 +43,12 @@ def project(tmp_path):
     (saipen / "BOARD.md").write_text(
         "# BOARD\n"
         "## DOING\n"
-        "- [/] T-002 doing ticket\n"
+        "- [/] T-002 doing ticket | verify: it runs\n"
         "## TODO\n"
         "- [ ] T-001 open ticket\n"
         "- [ ] T-003 another\n"
         "## DONE\n"
-        "- [x] T-004 finished\n"
+        "- [x] T-004 finished | verify: it shipped\n"
         "## BLOCKED\n"
         "- [ ] T-005 stuck | blocker: external dep\n",
         encoding="utf-8",
@@ -55,14 +69,82 @@ class TestCycle:
     def test_done_moves_doing_to_done(self, project):
         assert move_ticket(project, "T-002", "done")
         text = _board(project)
-        assert "- [x] T-002 doing ticket" in text
+        assert "- [x] T-002 doing ticket | verify: it runs" in text
         assert "T-002" in text.split("## DONE")[1]
 
     def test_reopen_moves_done_to_todo(self, project):
         assert move_ticket(project, "T-004", "reopen")
         text = _board(project)
-        assert "- [ ] T-004 finished" in text
+        assert "- [ ] T-004 finished | verify: it shipped" in text
         assert "T-004" in text.split("## TODO")[1]
+
+
+class TestIllegalTransitions:
+    """Every wrong-origin action is rejected with zero writes (the strict
+    machine the old code deliberately skipped)."""
+
+    def test_start_on_doing(self, project):
+        assert move_ticket(project, "T-002", "start") is False
+        assert "- [/] T-002" in _board(project)
+
+    def test_start_on_done(self, project):
+        assert move_ticket(project, "T-004", "start") is False
+        assert "T-004" in _board(project).split("## DONE")[1]
+
+    def test_start_on_blocked(self, project):
+        assert move_ticket(project, "T-005", "start") is False
+
+    def test_done_on_todo(self, project):
+        assert move_ticket(project, "T-001", "done") is False
+        assert "T-001" in _board(project).split("## TODO")[1]
+
+    def test_done_on_done(self, project):
+        assert move_ticket(project, "T-004", "done") is False
+
+    def test_done_on_blocked(self, project):
+        assert move_ticket(project, "T-005", "done") is False
+
+    def test_reopen_on_todo(self, project):
+        assert move_ticket(project, "T-001", "reopen") is False
+
+    def test_reopen_on_doing(self, project):
+        assert move_ticket(project, "T-002", "reopen") is False
+
+    def test_reopen_on_blocked(self, project):
+        assert move_ticket(project, "T-005", "reopen") is False
+
+    def test_block_on_done(self, project):
+        assert move_ticket(project, "T-004", "block", "why") is False
+        assert "T-004" in _board(project).split("## DONE")[1]
+
+    def test_block_on_blocked(self, project):
+        assert move_ticket(project, "T-005", "block", "again") is False
+        assert _board(project).count("T-005") == 1
+
+    def test_unblock_on_todo(self, project):
+        assert move_ticket(project, "T-001", "unblock", "decision") is False
+
+    def test_unblock_on_doing(self, project):
+        assert move_ticket(project, "T-002", "unblock", "decision") is False
+
+    def test_unblock_on_done(self, project):
+        assert move_ticket(project, "T-004", "unblock", "decision") is False
+
+    def test_illegal_transition_writes_nothing(self, project):
+        before = _board(project)
+        # Only wrong-origin actions: T-004 (DONE) has no done/start/block/
+        # unblock; T-005 (BLOCKED) has no done/start/reopen/block and unblock
+        # without a decision is refused too. Zero writes on every attempt.
+        for action in ("done", "start", "block"):
+            move_ticket(project, "T-004", action, "reason")
+        move_ticket(project, "T-004", "unblock", "reason")
+        for action in ("done", "start", "reopen", "block"):
+            move_ticket(project, "T-005", action, "reason")
+        move_ticket(project, "T-005", "unblock", None)
+        assert _board(project) == before
+
+    def test_unknown_action_rejected(self, project):
+        assert move_ticket(project, "T-001", "explode") is False
 
 
 class TestBlockUnblock:
@@ -74,23 +156,11 @@ class TestBlockUnblock:
         assert "blocker: waiting on upstream" in blocked_section
         assert "- [ ] T-001 open ticket | blocker: waiting on upstream" in text
 
-    def test_block_moves_doing_to_blocked_keeping_open_checkbox(self, project):
-        assert move_ticket(project, "T-002", "block", "stuck on T-003")
-        text = _board(project)
-        assert "- [ ] T-002 doing ticket | blocker: stuck on T-003" in text
-        # checkbox stays [ ] under BLOCKED -- RFC 1.2 checkbox/section agreement
-        assert "[/] T-002" not in text
-
-    def test_block_without_reason_still_moves(self, project):
-        assert move_ticket(project, "T-001", "block", None)
-        assert "T-001" in _board(project).split("## BLOCKED")[1].split("## ")[0]
-
-    def test_unblock_moves_blocked_to_todo(self, project):
-        assert move_ticket(project, "T-005", "unblock")
-        text = _board(project)
-        todo_section = text.split("## TODO")[1]
-        assert "T-005" in todo_section
-        assert "T-005" not in text.split("## BLOCKED")[1].split("## ")[0]
+    def test_block_without_reason_is_rejected(self, project):
+        # CORE § 1.2: a block with no stated facts/dead-ends is not a block.
+        assert move_ticket(project, "T-001", "block", None) is False
+        assert "T-001" in _board(project).split("## TODO")[1]
+        assert move_ticket(project, "T-001", "block", "  ") is False
 
     def test_block_escapes_literal_pipe_in_reason(self, project):
         assert move_ticket(project, "T-001", "block", "needs | review")
@@ -98,8 +168,115 @@ class TestBlockUnblock:
         assert "needs \\| review" in text
         assert "T-001" in text.split("## BLOCKED")[1].split("## ")[0]
 
-    def test_unknown_action_rejected(self, project):
-        assert move_ticket(project, "T-001", "explode") is False
+    def test_block_collapses_newlines_in_reason(self, project):
+        # A reason is ONE ticket field on ONE line; embedded newlines would
+        # split the line and forge a bogus second line.
+        assert move_ticket(project, "T-001", "block", "line one\nline two")
+        text = _board(project)
+        blocked_section = text.split("## BLOCKED")[1].split("## ")[0]
+        assert "line one line two" in blocked_section
+        assert "\n" not in blocked_section.strip().splitlines()[-1]
+
+    def test_block_replaces_an_existing_blocker_field(self, project):
+        # "Create exactly one blocker field": a stale blocker on the line is
+        # replaced, never doubled.
+        saipen = project / ".saipen"
+        (saipen / "BOARD.md").write_text(
+            "# BOARD\n## TODO\n- [ ] T-001 open | blocker: stale\n"
+            "## DOING\n\n## DONE\n\n## BLOCKED\n",
+            encoding="utf-8",
+        )
+        assert move_ticket(project, "T-001", "block", "fresh reason")
+        blocked = _board(project).split("## BLOCKED")[1].split("## ")[0]
+        assert blocked.count("blocker:") == 1
+        assert "blocker: fresh reason" in blocked
+
+    def test_unblock_moves_blocked_to_todo(self, project):
+        assert move_ticket(project, "T-005", "unblock", "dep released")
+        text = _board(project)
+        todo_section = text.split("## TODO")[1]
+        assert "T-005" in todo_section
+        assert "T-005" not in text.split("## BLOCKED")[1].split("## ")[0]
+
+    def test_unblock_requires_a_lifting_decision(self, project):
+        # CORE § 1.2: an unblock without the decision that lifts the block is
+        # the same shape as a block without a reason -- no transition.
+        assert move_ticket(project, "T-005", "unblock", None) is False
+        assert "T-005" in _board(project).split("## BLOCKED")[1].split("## ")[0]
+
+    def test_unblock_removes_the_blocker_field(self, project):
+        assert move_ticket(project, "T-005", "unblock", "dep released")
+        todo = _board(project).split("## TODO")[1]
+        assert "blocker:" not in todo
+        # Blocking again must create exactly one fresh blocker field, not two.
+        assert move_ticket(project, "T-005", "block", "re-stuck")
+        blocked = _board(project).split("## BLOCKED")[1].split("## ")[0]
+        assert blocked.count("blocker:") == 1
+        assert "blocker: re-stuck" in blocked
+
+    def test_done_without_verify_is_refused(self, project):
+        # DOING -> DONE cannot fabricate a completion: no | verify: clause on
+        # the ticket means no completion evidence.
+        saipen = project / ".saipen"
+        (saipen / "BOARD.md").write_text(
+            "# BOARD\n## DOING\n- [/] T-002 no proof yet\n"
+            "## TODO\n\n## DONE\n\n## BLOCKED\n",
+            encoding="utf-8",
+        )
+        assert move_ticket(project, "T-002", "done") is False
+        assert "T-002" in _board(project).split("## DOING")[1]
+        assert ticket_transition_error(project, "T-002", "done")
+        assert "verify" in ticket_transition_error(project, "T-002", "done")
+
+
+class TestActiveTaskGates:
+    def _active_project(self, tmp_path, phase="BUILD", task="T-002"):
+        root = tmp_path / "proj"
+        saipen = root / ".saipen"
+        saipen.mkdir(parents=True)
+        (saipen / "STATE.md").write_text(
+            f"---\nphase: {phase}\ntask: {task}\n---\n", encoding="utf-8"
+        )
+        (saipen / "BOARD.md").write_text(
+            "# BOARD\n## DOING\n- [/] T-002 active | verify: runs\n"
+            "## TODO\n- [ ] T-001 open\n## DONE\n\n## BLOCKED\n",
+            encoding="utf-8",
+        )
+        return root
+
+    def test_done_on_active_task_is_refused(self, tmp_path):
+        # Board-only done would split STATE (still naming T-002 in BUILD) from
+        # BOARD (T-002 DONE) -- the exact T-573 corruption the validator now
+        # rejects. Refuse and point at the atomic operation.
+        root = self._active_project(tmp_path)
+        assert move_ticket(root, "T-002", "done") is False
+        err = ticket_transition_error(root, "T-002", "done")
+        assert err and "saipen ticket done" in err
+        assert "T-002" in _board(root).split("## DOING")[1]
+
+    def test_done_on_inactive_doing_is_allowed(self, tmp_path):
+        # STATE names a different task, so the ticket is a plain DOING claim
+        # with verify evidence -- board-only done stays legal.
+        root = self._active_project(tmp_path, phase="BUILD", task="T-001")
+        assert move_ticket(root, "T-002", "done") is True
+        assert "T-002" in _board(root).split("## DONE")[1]
+
+    def test_block_on_active_doing_is_refused(self, tmp_path):
+        # Blocking the active DOING ticket must park STATE (DONE/task none,
+        # transition_from) -- SAIOPS park semantics a BOARD-only mover cannot
+        # reproduce. Refuse board-only, point at the canonical operation.
+        root = self._active_project(tmp_path)
+        assert move_ticket(root, "T-002", "block", "parked") is False
+        err = ticket_transition_error(root, "T-002", "block", "parked")
+        assert err and "ticket block" in err
+        assert "T-002" in _board(root).split("## DOING")[1]
+
+    def test_block_on_inactive_doing_is_refused(self, tmp_path):
+        # Canonical SAIOPS refuses block of a DOING ticket that is not the
+        # active task; the viewer mirrors that instead of inventing a weaker
+        # transition.
+        root = self._active_project(tmp_path, phase="BUILD", task="T-001")
+        assert move_ticket(root, "T-002", "block", "parked") is False
 
 
 class TestBlockerParsing:
@@ -145,16 +322,10 @@ class TestReorder:
         assert self._todo_ids(project) == ["T-003", "T-001"]
 
     def test_move_down(self, project):
-        # T-001 before T-003? already the order; move T-001 after T-003 by
-        # targeting nothing (end) -- T-003 is the last TODO, so appending
-        # T-001 to the end puts it after T-003.
         assert reorder_ticket(project, "T-001", "TODO", before_ticket_id=None)
         assert self._todo_ids(project) == ["T-003", "T-001"]
 
     def test_cross_section_target_stays_in_own_section(self, project):
-        # A target in another section (T-004 under DONE) must never drag the
-        # ticket there -- reorder only ever touches its own section. The
-        # frontend guards same-section drops, so this is defensive.
         reorder_ticket(project, "T-001", "TODO", before_ticket_id="T-004")
         assert "T-001" in _board(project).split("## TODO")[1].split("## DOING")[0]
         assert "T-001" not in _board(project).split("## DONE")[1].split("## BLOCKED")[0]
@@ -166,6 +337,6 @@ class TestReorder:
     def test_other_sections_untouched(self, project):
         reorder_ticket(project, "T-001", "TODO", before_ticket_id=None)
         text = _board(project)
-        assert "- [/] T-002 doing ticket" in text
-        assert "- [x] T-004 finished" in text
+        assert "- [/] T-002 doing ticket | verify: it runs" in text
+        assert "- [x] T-004 finished | verify: it shipped" in text
         assert "- [ ] T-005 stuck | blocker: external dep" in text

@@ -14,6 +14,74 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## [0.1.27] - 2026-08-11
+
+### Fixed
+
+- **Protocol re-alignment to canonical SAIPEN 7.223.0.** `BASELINE_VERSION`
+  now names the audited canonical release, and the closed-vocabulary copies
+  in `saipenview/protocol.py` are expanded and mechanically synced:
+  `SAIPEN_COMMANDS` (+`userperson`, `improve`), the ticket-field vocabulary
+  (`needs/owner/claim_time/blocker/verify/review_passes/verify_attempts/
+  source_reports/recurrence/weak_model`), package-handoff fields,
+  execution intents, LOG taxonomies and the 5-minute LOG clock slack.
+  `tests/test_protocol_sync.py` now reads the canonical vocabularies from
+  their engine homes (`tools/saipen_engine/`) — the old sync broke with a
+  TypeError the moment the canonical repo moved them.
+
+- **Conformance grader catches the current canonical invariants.**
+  `conformance.py` no longer carries its own stale ticket-field copy; it
+  enforces the blocker invariant (BLOCKED requires a non-empty `| blocker:`,
+  a blocker field anywhere else fails), DONE requires `| verify:` evidence,
+  `STATE.last_event` must equal the active LOG tail exactly (across sealed
+  segments), `style_contract` is required at schema v3, LOG future stamps
+  beyond 5 minutes fail, WAIT bodies are one sentence, and the Pick Rule is
+  enforced (session-level BLOCKED with workable TODOs, stale picks, malformed
+  blockers). DONE+WAIT uses the canonical fixed wordings.
+
+- **`move_ticket()` is now the strict state machine.** Section IS status:
+  TODO→start→DOING, DOING→done→DONE only with completion evidence,
+  DONE→reopen→TODO, TODO/DOING→block→BLOCKED (reason required),
+  BLOCKED→unblock→TODO (decision required, blocker removed). Every
+  wrong-origin action is rejected with zero writes. Board-only `done`/`block`
+  on the active STATE task is refused in favour of the canonical
+  `saipen ticket` operations, which close BOARD+LOG+STATE atomically.
+
+- **Collect runs the current package gate.** `saipenview/collect.py` is one
+  adapter around the canonical package-validity contract (ported from
+  `tools/freshness.py` and drift-checked against it): `status` must equal
+  exactly `ready`, every handoff field must be present, `source_head` +
+  `source_tree_fingerprint` + `role_revision` must match the current source
+  identity and charter, and freshness computation fails closed. Incomplete,
+  stale, wrong-role or not-ready packages are refused before any
+  main-project write; reviewed is an idempotent no-op.
+
+- **Single-writer ownership is atomic and cross-document.** The launch
+  reservation and the app-mutation marker share one per-root lock
+  (`ownership.py`), so guard + reservation + mutation is one decision with no
+  TOCTOU. Multi-file transactions re-validate every canonical input (STATE/
+  BOARD/LOG/OUTBOX) before commit, so an external edit to a non-target
+  dependency aborts the whole write.
+
+- **Manual-work records are idempotent by operation id, never by prose.**
+  `record_manual_work` persists an `[op: <id>]` marker and resumes only on a
+  matching id; two separate actions with the same description stay two
+  records. The operation id is minted at UI invocation.
+
+- **Release/CI evidence is no longer skipped into green.** `release_gate.py`
+  distinguishes git failure from a valid repo with no tags and REQUIRES tag
+  evidence in release mode (`--dev` opts out explicitly); CI checks out with
+  full tag history, calls the tools instead of re-implementing the version
+  check inline, and `verify_wheel.py <wheel>` verifies an existing wheel.
+  Own-`.saipen` conformance now runs CI against a tracked, sanitized,
+  mechanically-generated snapshot (`tools/snapshot_saipen.py`) instead of
+  pretending CI sees the gitignored live memory.
+
+- **Test fixtures start from proven-green baselines.** The conformance-legacy
+  minimal project now passes the canonical validator (its `next_action`
+  violated the PHASE grammar) and asserts that baseline PASS before every red
+  mutation.
+
 ## [0.1.26] - 2026-08-11
 
 ### Fixed

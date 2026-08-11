@@ -42,9 +42,10 @@ _HEADING_RE = re.compile(r"^##\s+(\S.*?)\s*$")
 _TICKET_RE = re.compile(r"^- \[([ x/])\] (T-\d+)\s*(.*)$")
 _LOOSE_TICKET_RE = re.compile(r"^- \[([ x/])\] (\S+)\s*(.*)$")
 _FIELD_RE = re.compile(r"^([a-z_]+):\s*(.*)$")
-_KNOWN_TICKET_FIELDS = frozenset(
-    {"needs", "owner", "claim_time", "blocker", "verify", "review_passes"}
-)
+# The closed ticket-field set is OWNED by protocol.py, synced mechanically from
+# tools/saipen_engine/board.py by tests/test_protocol_sync.py. A copy here
+# would be the second stale copy this file shipped before the mission.
+_KNOWN_TICKET_FIELDS = protocol.TICKET_FIELDS
 # A literal pipe inside a description is escaped `\|`; hide it before splitting
 # so an escaped pipe never invents a field.
 _PIPE_SENTINEL = "\x00"
@@ -63,19 +64,23 @@ _LOG_SKELETON_RE = re.compile(
     r"(?: \[parent: E-(\d+)\])?"
     r"(?: \[(T-[^\]]*)\])?"
     r"(?: \[agent: [^\]]+\])?"
+    r"(?: \[op: [^\]]+\])?"
     r" ([A-Z]+): (.*)$"
 )
 # The taxonomy is closed for new entries; older logs carry other verbs, so
 # this is a warning rather than a failure, the same split the validator makes.
-_LOG_TAXONOMY = ("RUN", "DEC", "H")
+# Owned by protocol.py (synced from tools/validate.py's read allowance).
+_LOG_TAXONOMY = protocol.LOG_READ_TAXONOMIES
 _TICKET_REF_RE = re.compile(r"^T-(?:\d+|none)$")
 _ISO_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})Z$")
 
 # Beyond this the `updated` stamp stops describing a live project. Not a
 # protocol rule -- purely the viewer telling a human "nobody has touched this".
 _STALE_DAYS = 30
-# RFC § 1.2's own tolerance for a clock ahead of UTC.
-_FUTURE_HOURS = 3
+# A STATE `updated` stamp ahead of UTC. Canonical validate.py does NOT bound
+# `updated` against the clock (it checks only the UTC form); this is the
+# viewer's own honesty heuristic and is cited as such, never as a protocol rule.
+_FUTURE_UPDATED_WARN_HOURS = 3
 
 
 @dataclass
@@ -274,6 +279,27 @@ def check_state(state: dict[str, str], root: Path, c: _Collector) -> None:
     _check_goal_mode(state, c)
     _check_updated(state.get("updated", ""), c)
 
+    # CORE § 1.2's voice marker: at the current schema revision the marker is
+    # REQUIRED, not "validate it when present". Its VALUE is decided by
+    # STYLE.md (outside this project's own files, so the second opinion can
+    # only check presence); the canonical validator checks the value.
+    try:
+        sv_int = int(state.get("schema_version", ""))
+    except (TypeError, ValueError):
+        sv_int = None
+    if (
+        sv_int == protocol.STATE_SCHEMA_VERSION
+        and not str(state.get("style_contract", "")).strip()
+    ):
+        c.fail(
+            "state.style_contract.missing",
+            f"STATE.md schema_version {protocol.STATE_SCHEMA_VERSION} requires "
+            f"a style_contract marker -- a checkpoint that never opened "
+            f"STYLE.md cannot write it, and absence is that failure",
+            "RFC § 1.2",
+            _STATE_FILE,
+        )
+
     if (
         phase in protocol.TICKET_PHASES
         and state.get("task", "none") in ("none", "", None)
@@ -312,6 +338,22 @@ def _check_next_action(next_action: str, c: _Collector) -> None:
                 "RFC § 1.2",
                 _STATE_FILE,
             )
+        # CORE § 1.2 bounds a WAIT to ONE sentence: a stop instruction
+        # carrying session status or queued work is read by the next agent as
+        # a work queue. Same shape as the canonical second-sentence check --
+        # a period followed by whitespace + a capital or backtick.
+        wait_body = re.sub(
+            r"\s*\[[^\]]*\]\s*$", "", next_action[len("WAIT:") :].strip()
+        )
+        if re.search(r"\.\s+(?=[A-Z`])", wait_body):
+            c.fail(
+                "next_action.wait.one_sentence",
+                "WAIT body starts a second sentence -- a stop instruction "
+                "carrying session status or queued work is one the next agent "
+                "executes as a work queue; keep it to one sentence",
+                "RFC § 1.2",
+                _STATE_FILE,
+            )
     elif "?" in next_action:
         c.fail(
             "next_action.question",
@@ -336,14 +378,27 @@ def _check_next_action(next_action: str, c: _Collector) -> None:
 
 
 def _check_goal_mode(state: dict[str, str], c: _Collector) -> None:
-    if str(state.get("goal_mode", "")).strip().lower() != "true":
+    # CORE § 2.4's canonical intent enum. The legacy `goal_mode` boolean stays
+    # readable during migration; the counters rule is the same for both.
+    intent = str(state.get("execution_intent", "")).strip().lower()
+    legacy_goal = str(state.get("goal_mode", "")).strip().lower() == "true"
+    if intent and intent not in protocol.EXECUTION_INTENTS:
+        c.fail(
+            "state.execution_intent.enum",
+            f"execution_intent {state['execution_intent']!r} is not one of "
+            f"{'/'.join(protocol.EXECUTION_INTENTS)}",
+            "RFC § 2.4",
+            _STATE_FILE,
+        )
+        return
+    if intent != "goal" and not legacy_goal:
         return
     for counter in ("goal_waves", "goal_tickets"):
         if not _is_int(state.get(counter)):
             c.fail(
                 f"goal.{counter}",
-                f"goal_mode: true but {counter} is missing or not an integer "
-                f"-- the safety valve cannot survive a restart without it",
+                f"goal intent is running but {counter} is missing or not an "
+                f"integer -- the safety valve cannot survive a restart without it",
                 "RFC § 2.4",
                 _STATE_FILE,
             )
@@ -380,12 +435,13 @@ def _check_updated(updated: str, c: _Collector) -> None:
         return
     now = datetime.datetime.now(datetime.timezone.utc)
     ahead = (stamp - now).total_seconds() / 3600
-    if ahead > _FUTURE_HOURS:
-        c.fail(
+    if ahead > _FUTURE_UPDATED_WARN_HOURS:
+        c.warn(
             "state.updated.future",
             f"updated is {ahead:.1f}h in the future -- a local clock was "
-            f"written where UTC was required",
-            "RFC § 1.2",
+            f"written where UTC was required (viewer heuristic; canonical "
+            f"validate.py bounds only the UTC form, not the clock)",
+            "viewer heuristic",
             _STATE_FILE,
         )
     elif (now - stamp).days > _STALE_DAYS:
@@ -516,7 +572,8 @@ def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
             c.fail(
                 "board.ticket.field",
                 f"unrecognised ticket field {detail} -- the field list is "
-                f"closed (needs/owner/claim_time/blocker/verify/review_passes); "
+                f"closed (needs/owner/claim_time/blocker/verify/review_passes/"
+                f"verify_attempts/source_reports/recurrence/weak_model); "
                 f"a literal | in a description must be escaped as \\|",
                 "RFC § 1.2",
                 _BOARD_FILE,
@@ -558,6 +615,44 @@ def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
                 "board.checkbox.section",
                 f"{tid} is `[{t.checkbox}]` under ## {t.section} -- that "
                 f"checkbox belongs under {' or '.join(expected)}",
+                "RFC § 1.2",
+                _BOARD_FILE,
+                t.line_no,
+            )
+
+        # CORE § 1.2 blocker invariant: `## BLOCKED` requires a non-empty
+        # `| blocker:` field, and a blocker field ANYWHERE ELSE is active
+        # blocked-state data riding on an open ticket -- a malformed status
+        # that must fail, never influence routing.
+        if t.section == "BLOCKED" and not str(t.fields.get("blocker", "")).strip():
+            c.fail(
+                "board.blocked.requires_blocker",
+                f"{tid} sits under ## BLOCKED without a non-empty "
+                f"| blocker: field -- the section claims blocked, the line "
+                f"names no reason",
+                "RFC § 1.2",
+                _BOARD_FILE,
+                t.line_no,
+            )
+        if t.section != "BLOCKED" and "blocker" in t.fields:
+            c.fail(
+                "board.blocker.outside_blocked",
+                f"{tid} carries | blocker: outside ## BLOCKED -- blocker is "
+                f"active blocked-state data, not advisory history",
+                "RFC § 1.2",
+                _BOARD_FILE,
+                t.line_no,
+            )
+
+        # A ticket in ## DONE is a completion claim, and the protocol requires
+        # the evidence that says what met it: `| verify:` names it. Absence is
+        # indistinguishable from never tested.
+        if t.section == "DONE" and not t.fields.get("verify", "").strip():
+            c.fail(
+                "board.done.requires_verify",
+                f"{tid} sits under ## DONE with no | verify: evidence -- a "
+                f"completion claim with no evidence attached is "
+                f"indistinguishable from one that was never tested",
                 "RFC § 1.2",
                 _BOARD_FILE,
                 t.line_no,
@@ -683,33 +778,127 @@ def check_cross(
                 _STATE_FILE,
             )
 
-    # RFC § 2.1 zero-prompt auto-transition. At DONE with nothing open, the
-    # agent MUST go on to HUNT/ADD. Exactly two WAITs are legal there, both in
-    # fixed wording so they stay machine-separable from a vague stop.
-    if (
-        phase == "DONE"
-        and str(state.get("goal_mode", "")).strip().lower() != "true"
-        and next_action.startswith("WAIT:")
-    ):
-        open_todo = [
-            t for t in tickets.values() if t.section == "TODO" and t.checkbox == " "
-        ]
-        board_text = read_doc(root / ".saipen" / "BOARD.md")
-        markhunt_blocked = bool(
-            re.search(r"##\s+BLOCKED.*?\[MARKHUNT\]", board_text, re.DOTALL)
+    # RFC § 2.1 zero-prompt auto-transition + § 1.2's fixed WAIT wordings.
+    # At DONE with nothing open the agent MUST go on to HUNT/ADD. A WAIT that
+    # is not one of the three machine-separable wordings deadlocks the board.
+    def _done_wait_whitelisted(value: str) -> bool:
+        low = value.lower()
+        return (
+            "safety valve" in low
+            or low.startswith("wait: user brake")
+            or "untriaged markhunt findings" in low
         )
-        body = next_action[len("WAIT:") :].strip().lower()
-        if (
-            not open_todo
-            and not markhunt_blocked
-            and not body.startswith(("user brake", "safety valve"))
-        ):
-            c.fail(
+
+    if phase == "DONE" and next_action.startswith("WAIT:"):
+        if not _done_wait_whitelisted(next_action):
+            # DONE with a concrete WAIT that is not a valve/brake. The empty
+            # board makes it a FAIL (auto-transition is mandatory there); a
+            # board that still has work WARNs -- the agent should be working
+            # the pick, not idling behind an invented wait.
+            open_todo = [
+                t for t in tickets.values() if t.section == "TODO" and t.checkbox == " "
+            ]
+            c.warn(
                 "cross.done.wait",
-                "DONE with an empty ## TODO must auto-transition to HUNT, not "
-                "WAIT -- the only two WAITs legal here are `user brake` and "
-                "`safety valve`",
-                "RFC § 2.1",
+                f"DONE with next_action {next_action!r} -- DONE + WAIT is "
+                f"legal only for the § 2.4 safety valve, "
+                f"'WAIT: user brake -- <reason>', or the untriaged-MARKHUNT "
+                f"brake; otherwise DONE should transition to SCOUT/PLAN/HUNT "
+                f"(RFC § 1.6/§ 2.1)",
+                "RFC § 1.2",
+                _STATE_FILE,
+            )
+            if not open_todo:
+                c.fail(
+                    "cross.done.wait.empty_board",
+                    f"phase: DONE, empty ## TODO, but next_action={next_action!r} "
+                    f"-- a bare command + empty board MUST auto-transition "
+                    f"HUNT->ADD, never WAIT at DONE",
+                    "RFC § 2.1",
+                    _STATE_FILE,
+                )
+
+    # CORE § 1.11's Pick Rule, the "what would a cold agent actually do" half.
+    # `next_action` is the pre-computed pick, so it must name the ticket the
+    # rule would choose. And session-level BLOCKED is reserved for when no
+    # ticket anywhere is workable.
+    def _ticket_is_workable(t: BoardTicket) -> bool:
+        return (
+            t.section == "TODO"
+            and t.checkbox in (" ", "")
+            and "blocker" not in t.fields
+            and all(
+                need in tickets and tickets[need].section == "DONE" for need in t.needs
+            )
+        )
+
+    na_pick = re.match(r"PHASE\s+\w+\s+(T-\d+)", next_action)
+    if na_pick:
+        named = na_pick.group(1)
+        t = tickets.get(named)
+        if t is None:
+            c.fail(
+                "cross.pick.unknown",
+                f"next_action names {named}, which is on no board section -- "
+                f"the pre-computed pick points at nothing",
+                "RFC § 1.11",
+                _STATE_FILE,
+            )
+        elif t.section in ("DONE", "BLOCKED"):
+            c.fail(
+                "cross.pick.closed",
+                f"next_action names {named}, which sits under ## {t.section} "
+                f"-- finished and blocked tickets are not executable; the "
+                f"Pick Rule selects from ## TODO",
+                "RFC § 1.11",
+                _STATE_FILE,
+            )
+        elif "blocker" in t.fields:
+            c.fail(
+                "cross.pick.malformed_blocker",
+                f"next_action names {named}, which carries | blocker: outside "
+                f"## BLOCKED -- malformed status cannot become executable, "
+                f"even before the board-status failure is repaired",
+                "RFC § 1.11",
+                _STATE_FILE,
+            )
+        else:
+            unmet = [
+                need for need in t.needs if tickets.get(need, {}).section != "DONE"
+            ]
+            if unmet:
+                c.fail(
+                    "cross.pick.unmet",
+                    f"next_action names {named}, whose needs: "
+                    + ", ".join(unmet)
+                    + " are not DONE -- a ticket is workable only when every "
+                    "dependency is finished",
+                    "RFC § 1.11",
+                    _STATE_FILE,
+                )
+            owner = t.fields.get("owner")
+            if owner and state.get("agent") and owner != state.get("agent"):
+                c.fail(
+                    "cross.pick.other_claim",
+                    f"next_action names {named}, claimed by {owner!r} while "
+                    f"this state's agent is {state.get('agent')!r} -- "
+                    f"executing another agent's claim is the concurrency "
+                    f"collision § 1.4 exists to prevent",
+                    "RFC § 1.4",
+                    _STATE_FILE,
+                )
+
+    if phase == "BLOCKED":
+        workable = [t.ticket_id for t in tickets.values() if _ticket_is_workable(t)]
+        if workable:
+            c.fail(
+                "cross.blocked.workable",
+                f"phase: BLOCKED while {len(workable)} workable ## TODO "
+                f"ticket(s) exist (topmost {min(workable)}) -- session-level "
+                f"BLOCKED is reserved for when no ticket anywhere is "
+                f"workable; a block that belongs to one ticket goes on THAT "
+                f"ticket's line under ## BLOCKED",
+                "RFC § 1.11",
                 _STATE_FILE,
             )
 
@@ -717,7 +906,28 @@ def check_cross(
 # --- LOG.md ---------------------------------------------------------------
 
 
-def check_log(root: Path, c: _Collector) -> None:
+def _log_sequence(root: Path) -> tuple[list[Path], Path | None]:
+    """(segments in NNN order, active tail). Sealed segments live in
+    .saipen/logs/LOG-NNN.md; the active tail is .saipen/LOG.md. The canonical
+    validator walks segments first, active last, so E-### stays globally
+    monotonic across segment boundaries -- STATE.last_event is judged against
+    the whole sequence, not just the active file."""
+    seg_dir = root / ".saipen" / "logs"
+    segments = []
+    if seg_dir.is_dir():
+        segments = sorted(
+            (
+                p
+                for p in seg_dir.glob("LOG-*.md")
+                if re.fullmatch(r"LOG-\d+\.md", p.name)
+            ),
+            key=lambda p: int(p.stem[len("LOG-") :]),
+        )
+    active = root / ".saipen" / "LOG.md"
+    return segments, active if active.is_file() else None
+
+
+def check_log(root: Path, c: _Collector, state: dict[str, str] | None = None) -> None:
     log_path = root / ".saipen" / "LOG.md"
     if not log_path.is_file():
         c.warn(
@@ -737,125 +947,201 @@ def check_log(root: Path, c: _Collector) -> None:
             _LOG_FILE,
         )
 
+    segments, active = _log_sequence(root)
+    log_files = segments + ([active] if active is not None else [])
+
     now = datetime.datetime.now(datetime.timezone.utc)
     prev_event = None
     seen: dict[int, int] = {}
     undated = 0
     in_comment = False
-    for line_no, raw in enumerate(read_doc(log_path).splitlines(), 1):
-        line = raw.rstrip()
-        if not line.strip() or line.startswith("#"):
-            continue
+    for path in log_files:
+        is_active = path == active
+        for line_no, raw in enumerate(read_doc(path).splitlines(), 1):
+            line = raw.rstrip()
+            if not line.strip() or line.startswith("#"):
+                continue
 
-        # HTML comments are annotations ABOUT the log, not entries in it, and
-        # demanding the Event Graph skeleton from one is a grader bug, not a
-        # finding. Real case: FastPrompter's LOG carries a 16-line
-        # `<!-- RECOVERY SPLICE ... -->` block explaining that a saitranslate
-        # INIT bootstrap had overwritten BOARD/LOG/STATE -- exactly the kind of
-        # note a human needs, reported as 16 failures for having the wrong
-        # shape. Skipped whole: a `<!--` opener suppresses until its `-->`,
-        # since the body lines carry no marker of their own.
-        if in_comment:
-            if "-->" in line:
-                in_comment = False
-            continue
-        if line.lstrip().startswith("<!--"):
-            if "-->" not in line:
-                in_comment = True
-            continue
+            # HTML comments are annotations ABOUT the log, not entries in it, and
+            # demanding the Event Graph skeleton from one is a grader bug, not a
+            # finding. Real case: FastPrompter's LOG carries a 16-line
+            # `<!-- RECOVERY SPLICE ... -->` block explaining that a saitranslate
+            # INIT bootstrap had overwritten BOARD/LOG/STATE -- exactly the kind of
+            # note a human needs, reported as 16 failures for having the wrong
+            # shape. Skipped whole: a `<!--` opener suppresses until its `-->`,
+            # since the body lines carry no marker of their own.
+            if in_comment:
+                if "-->" in line:
+                    in_comment = False
+                continue
+            if line.lstrip().startswith("<!--"):
+                if "-->" not in line:
+                    in_comment = True
+                continue
 
-        if "�" in line:
-            c.fail(
-                "log.replacement_char",
-                "line carries a U+FFFD replacement character -- text was "
-                "corrupted somewhere upstream and the repair must be explicit",
-                "RFC § 1.2",
-                _LOG_FILE,
-                line_no,
-            )
-
-        skeleton = _LOG_SKELETON_RE.match(line)
-        if not skeleton:
-            c.fail(
-                "log.skeleton",
-                f"line does not match the Event Graph skeleton "
-                f"`- DD.MM.YY HH:MM [E-###] [parent: E-###] [T-###] VERB: "
-                f"text`: {line[:80]!r}",
-                "RFC § 1.2",
-                _LOG_FILE,
-                line_no,
-            )
-            continue
-
-        _, _, ticket_ref, taxonomy, _ = skeleton.groups()
-        if taxonomy not in _LOG_TAXONOMY:
-            c.warn(
-                "log.taxonomy",
-                f"verb {taxonomy!r} is not one of "
-                f"{'/'.join(_LOG_TAXONOMY)} -- non-conformant for new entries",
-                "RFC § 1.2",
-                _LOG_FILE,
-                line_no,
-            )
-        if ticket_ref and not _TICKET_REF_RE.match(ticket_ref):
-            c.warn(
-                "log.ticket_ref",
-                f"ticket reference {ticket_ref!r} is neither a numeric T-### "
-                f"nor the literal T-none",
-                "RFC § 1.2",
-                _LOG_FILE,
-                line_no,
-            )
-
-        dated = _LOG_ENTRY_RE.match(line)
-        any_event = _LOG_ANY_EVENT_RE.match(line)
-        event = int(any_event.group(1))
-        if not dated:
-            undated += 1
-        else:
-            try:
-                stamp = datetime.datetime.strptime(
-                    f"{dated.group(1)} {dated.group(2)}", "%d.%m.%y %H:%M"
-                ).replace(tzinfo=datetime.timezone.utc)
-            except ValueError:
-                stamp = None
-            if stamp and (stamp - now).total_seconds() / 3600 > _FUTURE_HOURS:
+            if "�" in line:
                 c.fail(
-                    "log.timestamp.future",
-                    f"E-{event} is stamped more than {_FUTURE_HOURS}h ahead of "
-                    f"UTC -- a local clock was written where UTC was required",
+                    "log.replacement_char",
+                    "line carries a U+FFFD replacement character -- text was "
+                    "corrupted somewhere upstream and the repair must be explicit",
                     "RFC § 1.2",
-                    _LOG_FILE,
+                    path.name,
                     line_no,
                 )
-        if event in seen:
-            c.fail(
-                "log.event.duplicate",
-                f"E-{event} appears twice (first at line {seen[event]}) -- "
-                f"event ids are unique",
-                "RFC § 1.2",
-                _LOG_FILE,
-                line_no,
-            )
-        elif prev_event is not None and event < prev_event:
-            c.fail(
-                "log.event.order",
-                f"E-{event} follows E-{prev_event} -- event ids only increase",
-                "RFC § 1.2",
-                _LOG_FILE,
-                line_no,
-            )
-        seen[event] = line_no
-        prev_event = max(prev_event or 0, event)
 
-    if undated:
+            skeleton = _LOG_SKELETON_RE.match(line)
+            if not skeleton:
+                c.fail(
+                    "log.skeleton",
+                    f"line does not match the Event Graph skeleton "
+                    f"`- DD.MM.YY HH:MM [E-###] [parent: E-###] [T-###] VERB: "
+                    f"text`: {line[:80]!r}",
+                    "RFC § 1.2",
+                    path.name,
+                    line_no,
+                )
+                continue
+
+            _, _, ticket_ref, taxonomy, _ = skeleton.groups()
+            if taxonomy not in _LOG_TAXONOMY:
+                c.warn(
+                    "log.taxonomy",
+                    f"verb {taxonomy!r} is not one of "
+                    f"{'/'.join(sorted(_LOG_TAXONOMY))} -- non-conformant for new entries",
+                    "RFC § 1.2",
+                    path.name,
+                    line_no,
+                )
+            if ticket_ref and not _TICKET_REF_RE.match(ticket_ref):
+                c.warn(
+                    "log.ticket_ref",
+                    f"ticket reference {ticket_ref!r} is neither a numeric T-### "
+                    f"nor the literal T-none",
+                    "RFC § 1.2",
+                    path.name,
+                    line_no,
+                )
+
+            dated = _LOG_ENTRY_RE.match(line)
+            any_event = _LOG_ANY_EVENT_RE.match(line)
+            event = int(any_event.group(1))
+            if not dated:
+                # CORE § 1.2 makes DATE mandatory. The active log is still the
+                # writer's to get right (FAIL); sealed history is immutable by
+                # append-only, so it can only be reported (WARN).
+                undated += 1
+                if is_active:
+                    c.fail(
+                        "log.timestamp.missing",
+                        f"E-{event} in the active LOG has no DD.MM.YY HH:MM "
+                        f"stamp -- Recovery cannot order what it cannot date",
+                        "RFC § 1.2",
+                        path.name,
+                        line_no,
+                    )
+            else:
+                try:
+                    stamp = datetime.datetime.strptime(
+                        f"{dated.group(1)} {dated.group(2)}", "%d.%m.%y %H:%M"
+                    ).replace(tzinfo=datetime.timezone.utc)
+                except ValueError:
+                    stamp = None
+                # CORE § 1.2's clock tolerance is 5 minutes (tools/validate.py
+                # LOG_CLOCK_SLACK). The old 3-hour bound is exactly what let a
+                # guessed clock -- off by 20-40 minutes -- sail through clean.
+                if (
+                    stamp
+                    and (stamp - now).total_seconds() > protocol.LOG_CLOCK_SLACK_SECONDS
+                ):
+                    c.fail(
+                        "log.timestamp.future",
+                        f"E-{event} is stamped more than "
+                        f"{protocol.LOG_CLOCK_SLACK_SECONDS // 60}m ahead of "
+                        f"real UTC -- a local clock was written where UTC was "
+                        f"required",
+                        "RFC § 1.2",
+                        path.name,
+                        line_no,
+                    )
+            if event in seen:
+                c.fail(
+                    "log.event.duplicate",
+                    f"E-{event} appears twice (first at line {seen[event]}) -- "
+                    f"event ids are unique",
+                    "RFC § 1.2",
+                    path.name,
+                    line_no,
+                )
+            elif prev_event is not None and event < prev_event:
+                c.fail(
+                    "log.event.order",
+                    f"E-{event} follows E-{prev_event} -- event ids only increase",
+                    "RFC § 1.2",
+                    path.name,
+                    line_no,
+                )
+            seen[event] = line_no
+            prev_event = max(prev_event or 0, event)
+
+    if undated and not any(f.rule == "log.timestamp.missing" for f in c.findings):
         c.warn(
-            "log.timestamp.missing",
-            f"{undated} active LOG entr(y/ies) carry no DD.MM.YY HH:MM stamp "
-            f"-- Recovery cannot order what it cannot date",
+            "log.timestamp.undated_sealed",
+            f"{undated} sealed LOG entr(y/ies) carry no DD.MM.YY HH:MM stamp -- "
+            f"immutable by append-only; new entries are FAILed instead",
             "RFC § 1.2",
             _LOG_FILE,
         )
+
+    # CORE § 1.2/§ 1.5 freshness marker: at the current schema revision, a
+    # state with an event-bearing LOG MUST carry last_event equal to the LOG
+    # tail EXACTLY. Lower = stale state predating its own history; higher =
+    # corrupt, a state carried from a branch whose events were never written.
+    if state is not None:
+        sv = state.get("schema_version")
+        try:
+            sv_int = int(sv)
+        except (TypeError, ValueError):
+            sv_int = None
+        le = state.get("last_event")
+        try:
+            le_int = int(le)
+        except (TypeError, ValueError):
+            le_int = None
+        if sv_int == protocol.STATE_SCHEMA_VERSION and prev_event and le_int is None:
+            c.fail(
+                "state.last_event.missing",
+                f"STATE.md schema_version {protocol.STATE_SCHEMA_VERSION} "
+                f"requires last_event because the LOG tail is E-{prev_event}",
+                "RFC § 1.2",
+                _STATE_FILE,
+            )
+        if le_int is not None:
+            if le_int < 1:
+                c.fail(
+                    "state.last_event.minimum",
+                    f"last_event is E-{le_int}, but event IDs start at E-1",
+                    "RFC § 1.2",
+                    _STATE_FILE,
+                )
+            elif le_int > prev_event:
+                c.fail(
+                    "state.last_event.ahead",
+                    f"last_event is E-{le_int} but the LOG tail is "
+                    f"E-{prev_event} -- higher than the log means corrupt, or "
+                    f"a STATE carried over from an incompatible branch",
+                    "RFC § 1.2",
+                    _STATE_FILE,
+                )
+            elif le_int < prev_event:
+                c.fail(
+                    "state.last_event.stale",
+                    f"last_event is E-{le_int} but the LOG tail is "
+                    f"E-{prev_event} -- lower than the log means this STATE "
+                    f"predates its own history: a checkpoint wrote LOG lines "
+                    f"and did not finish updating STATE",
+                    "RFC § 1.2",
+                    _STATE_FILE,
+                )
 
 
 # --- subSaipens -----------------------------------------------------------
@@ -923,7 +1209,7 @@ def check_project(root: Path, state: dict[str, str], subs=None) -> Report:
     check_state(state, root, c)
     tickets = check_board(root, c)
     check_cross(state, tickets, root, c)
-    check_log(root, c)
+    check_log(root, c, state)
     if subs:
         check_subs(subs, c)
     # Fails first, then warns; stable within a severity by rule id so the list

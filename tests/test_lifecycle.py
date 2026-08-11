@@ -24,7 +24,6 @@ import pytest
 
 from saipenview.engines.base import AgentEngine
 from saipenview.events import event_bus
-from saipenview.paths import canonical_key
 from saipenview.runtime import ProcessManager
 from saipenview.sessions import SessionStore
 
@@ -90,12 +89,12 @@ class TestConcurrentLaunch:
             t = threading.Thread(target=do_launch)
             t.start()
             assert _wait_for(
-                lambda: canonical_key(root) in manager._launching or "first" in results
+                lambda: manager.ownership.agent_owns(tmp_path) or "first" in results
             ), "first launch never took the reservation"
             second = manager.launch(_EchoEngine(), root, "go2")
             assert second["ok"] is False
             assert (
-                "launching" in second["error"].lower()
+                "running" in second["error"].lower()
                 or "already" in second["error"].lower()
             )
             block.set()

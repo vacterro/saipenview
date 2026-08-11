@@ -512,10 +512,37 @@ class TestCross:
         assert "cross.done.wait" not in rules(grade(project))
 
     def test_markhunt_blocked_keeps_the_board_alive(self, project):
+        # CORE § 1.2's markhunt brake has a FIXED wording ("untriaged markhunt
+        # findings"); the MARKHUNT ticket itself must carry a real blocker cite
+        # (phases/markhunt.md's "no cite, no ticket"). With both in place the
+        # DONE WAIT is legal.
         board = project / ".saipen" / "BOARD.md"
         board.write_text(
             "# Board\n## DOING\n\n## TODO\n\n## DONE\n\n"
-            "## BLOCKED\n- [ ] T-005 [MARKHUNT] triage me\n",
+            "## BLOCKED\n- [ ] T-005 [MARKHUNT] triage me | blocker: "
+            "unvetted audit -- tests/test_conformance.py:514\n",
+            encoding="utf-8",
+        )
+        set_state(
+            project,
+            phase="DONE",
+            transition_from="SHIP",
+            task="none",
+            next_action='"WAIT: blocked -- untriaged markhunt findings pending"',
+        )
+        ruleset = rules(grade(project))
+        assert "cross.done.wait" not in ruleset
+        assert "cross.done.wait.empty_board" not in ruleset
+
+    def test_invented_markhunt_wait_still_fails(self, project):
+        # Red control for the fixed wording: free-prose "triage the MARKHUNT
+        # tickets" is indistinguishable from an agent asking the user what to
+        # do next -- § 2.1 forbids it, the fixed wording is the carve-out.
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n\n## DONE\n\n"
+            "## BLOCKED\n- [ ] T-005 [MARKHUNT] triage me | blocker: "
+            "unvetted audit -- tests/test_conformance.py:532\n",
             encoding="utf-8",
         )
         set_state(
@@ -525,7 +552,7 @@ class TestCross:
             task="none",
             next_action='"WAIT: blocked -- triage the MARKHUNT tickets"',
         )
-        assert "cross.done.wait" not in rules(grade(project))
+        assert "cross.done.wait.empty_board" in rules(grade(project))
 
 
 class TestLog:
@@ -544,11 +571,32 @@ class TestLog:
         assert "log.event.duplicate" in rules(grade(project))
 
     def test_undated_entry_warns(self, project):
+        # CORE § 1.2 makes DATE mandatory; the active log is still the writer's
+        # to get right, so a dateless ACTIVE entry FAILs (same severity the
+        # canonical validator applies).
         (project / ".saipen" / "LOG.md").write_text(
             "# Log\n\n- [E-1] RUN: no stamp at all\n", encoding="utf-8"
         )
         report = grade(project)
         assert "log.timestamp.missing" in rules(report)
+        assert report.verdict == "fail"
+
+    def test_undated_sealed_entry_warns_not_fails(self, project):
+        # A dateless line in a SEALED segment is immutable by append-only -- it
+        # can only be reported, never fixed. The active log still FAILs; the
+        # sealed history WARNs, matching the canonical severity split.
+        sealed = project / ".saipen" / "logs"
+        sealed.mkdir()
+        (sealed / "LOG-001.md").write_text(
+            "# Log\n\n- [E-1] RUN: pre-STYLE.md history\n", encoding="utf-8"
+        )
+        (project / ".saipen" / "LOG.md").write_text(
+            "# Log\n\n- 27.07.26 10:00 [E-2] [parent: E-1] RUN: current\n",
+            encoding="utf-8",
+        )
+        report = grade(project)
+        assert "log.timestamp.undated_sealed" in rules(report)
+        assert "log.timestamp.missing" not in rules(report)
         assert report.verdict == "warn"
 
     def test_future_timestamp(self, project):
@@ -684,3 +732,201 @@ class TestReportShape:
         d = grade(project).to_dict()
         assert set(d) == {"verdict", "fails", "warns", "baseline", "findings"}
         json.dumps(d)  # must survive the pywebview bridge
+
+
+class TestBlockerInvariant:
+    """CORE § 1.2: BLOCKED requires a non-empty blocker; a blocker field
+    anywhere else is active blocked-state data riding on an open ticket."""
+
+    def test_blocked_requires_blocker(self, project):
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n\n## DONE\n\n"
+            "## BLOCKED\n- [ ] T-005 stuck\n",
+            encoding="utf-8",
+        )
+        assert "board.blocked.requires_blocker" in rules(grade(project))
+
+    def test_blocker_outside_blocked_fails(self, project):
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n- [ ] T-002 open | blocker: leftover\n"
+            "## DONE\n- [x] T-000 boot | verify: booted\n\n## BLOCKED\n",
+            encoding="utf-8",
+        )
+        assert "board.blocker.outside_blocked" in rules(grade(project))
+
+    def test_blocked_with_blocker_passes(self, project):
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n\n## DONE\n\n"
+            "## BLOCKED\n- [ ] T-005 stuck | blocker: external dep\n",
+            encoding="utf-8",
+        )
+        assert "board.blocked.requires_blocker" not in rules(grade(project))
+
+    def test_done_requires_verify(self, project):
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n\n## DONE\n- [x] T-000 boot\n## BLOCKED\n",
+            encoding="utf-8",
+        )
+        assert "board.done.requires_verify" in rules(grade(project))
+
+
+class TestLastEvent:
+    """STATE.last_event <-> LOG tail, the § 1.5 freshness marker."""
+
+    def _state(self, project, last_event):
+        set_state(project, schema_version=3, last_event=last_event)
+
+    def test_missing_last_event_fails(self, project):
+        set_state(project, schema_version=3)
+        assert "state.last_event.missing" in rules(grade(project))
+
+    def test_matching_last_event_passes(self, project):
+        set_state(project, schema_version=3, last_event=2)
+        assert "state.last_event.missing" not in rules(grade(project))
+
+    def test_missing_style_contract_fails(self, project):
+        # At schema v3 the voice marker is REQUIRED, not "check it if present".
+        set_state(project, schema_version=3, last_event=2)
+        assert "state.style_contract.missing" in rules(grade(project))
+
+    def test_style_contract_present_passes(self, project):
+        set_state(project, schema_version=3, last_event=2, style_contract="ded-test")
+        assert "state.style_contract.missing" not in rules(grade(project))
+
+    def test_lower_last_event_is_stale(self, project):
+        set_state(project, schema_version=3, last_event=1)
+        assert "state.last_event.stale" in rules(grade(project))
+
+    def test_higher_last_event_is_corrupt(self, project):
+        set_state(project, schema_version=3, last_event=99)
+        assert "state.last_event.ahead" in rules(grade(project))
+
+    def test_last_event_tail_across_segments(self, project):
+        # The tail is the max E-### across segments + active, not the active
+        # file alone -- a sealed LOG-001 carrying E-1..E-3 must leave the
+        # active log free to start at E-4 with last_event matching the whole.
+        sealed = project / ".saipen" / "logs"
+        sealed.mkdir()
+        (sealed / "LOG-001.md").write_text(
+            "# Log\n\n- 27.07.26 10:00 [E-1] RUN: a\n- 27.07.26 10:01 [E-2] RUN: b\n",
+            encoding="utf-8",
+        )
+        (project / ".saipen" / "LOG.md").write_text(
+            "# Log\n\n- 27.07.26 10:02 [E-3] [parent: E-2] RUN: c\n",
+            encoding="utf-8",
+        )
+        set_state(project, schema_version=3, last_event=3)
+        ruleset = rules(grade(project))
+        assert "state.last_event.ahead" not in ruleset
+        assert "state.last_event.stale" not in ruleset
+
+
+class TestPickRule:
+    """CORE § 1.11: next_action is the pre-computed pick; blocked tickets are
+    never workable; session-level BLOCKED needs an empty workable board."""
+
+    def test_pick_names_missing_ticket(self, project):
+        set_state(project, next_action='"PHASE SCOUT T-999"')
+        assert "cross.pick.unknown" in rules(grade(project))
+
+    def test_pick_names_done_ticket(self, project):
+        set_state(project, next_action='"PHASE SCOUT T-000"')
+        assert "cross.pick.closed" in rules(grade(project))
+
+    def test_pick_names_blocked_ticket(self, project):
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n- [ ] T-001 wire the parser | needs: T-000\n"
+            "## DONE\n- [x] T-000 boot | verify: booted\n\n"
+            "## BLOCKED\n- [ ] T-002 frozen | blocker: dep\n",
+            encoding="utf-8",
+        )
+        set_state(project, next_action='"PHASE SCOUT T-002"')
+        assert "cross.pick.closed" in rules(grade(project))
+
+    def test_pick_names_ticket_with_malformed_blocker(self, project):
+        # A blocker field on a ## TODO ticket is malformed status; the pick
+        # must fail on it, never treat the ticket as executable.
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n- [ ] T-001 open | blocker: leftover\n"
+            "## DONE\n- [x] T-000 boot | verify: booted\n\n## BLOCKED\n",
+            encoding="utf-8",
+        )
+        set_state(project, next_action='"PHASE SCOUT T-001"')
+        assert "cross.pick.malformed_blocker" in rules(grade(project))
+
+    def test_pick_names_ticket_with_unmet_needs(self, project):
+        set_state(project, next_action='"PHASE SCOUT T-002"')
+        assert "cross.pick.unmet" in rules(grade(project))
+
+    def test_session_blocked_with_workable_todo_fails(self, project):
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n- [ ] T-002 write the tests\n"
+            "## DONE\n- [x] T-000 boot | verify: booted\n\n## BLOCKED\n",
+            encoding="utf-8",
+        )
+        set_state(
+            project,
+            phase="BLOCKED",
+            transition_from="BUILD",
+            blocker="a real obstacle",
+            next_action='"WAIT: blocked -- a real obstacle"',
+        )
+        assert "cross.blocked.workable" in rules(grade(project))
+
+    def test_workable_todo_definition_excludes_blocked(self, project):
+        # A ## BLOCKED ticket is never workable, however open its checkbox --
+        # that is what keeps the session-level-BLOCKED rule honest.
+        board = project / ".saipen" / "BOARD.md"
+        board.write_text(
+            "# Board\n## DOING\n\n## TODO\n\n## DONE\n- [x] T-000 boot | verify: booted\n"
+            "## BLOCKED\n- [ ] T-005 frozen | blocker: external dep\n",
+            encoding="utf-8",
+        )
+        set_state(
+            project,
+            phase="BLOCKED",
+            transition_from="BUILD",
+            blocker="a real obstacle",
+            next_action='"WAIT: blocked -- a real obstacle"',
+        )
+        assert "cross.blocked.workable" not in rules(grade(project))
+
+
+class TestWaitOneSentence:
+    def test_two_sentence_wait_fails(self, project):
+        set_state(
+            project,
+            next_action='"WAIT: user brake -- stop here. Session status is in the digest."',
+        )
+        assert "next_action.wait.one_sentence" in rules(grade(project))
+
+    def test_one_sentence_wait_passes(self, project):
+        set_state(project, next_action='"WAIT: user brake -- stop here"')
+        assert "next_action.wait.one_sentence" not in rules(grade(project))
+
+
+class TestGoalIntent:
+    def test_goal_intent_requires_counters(self, project):
+        # CORE § 2.4: execution_intent: goal REQUIRES the safety-valve
+        # counters; the canonical enum is what the viewer grades, not only the
+        # legacy boolean.
+        set_state(project, execution_intent="goal")
+        assert "goal.goal_waves" in rules(grade(project))
+        assert "goal.goal_tickets" in rules(grade(project))
+
+    def test_goal_intent_with_counters_passes(self, project):
+        set_state(project, execution_intent="goal", goal_waves=0, goal_tickets=0)
+        ruleset = rules(grade(project))
+        assert "goal.goal_waves" not in ruleset
+        assert "goal.goal_tickets" not in ruleset
+
+    def test_invalid_execution_intent_fails(self, project):
+        set_state(project, execution_intent="sprint")
+        assert "state.execution_intent.enum" in rules(grade(project))

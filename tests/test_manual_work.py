@@ -46,7 +46,8 @@ def test_record_appends_a_valid_log_evidence_line(project):
     assert res["event"] == "E-2"
     log = read_doc(project / ".saipen" / "LOG.md")
     assert re.search(
-        r"^- \d{2}\.\d{2}\.\d{2} \d{2}:\d{2} \[E-2\] \[T-004\] RUN: manual work recorded -- committed a fix",
+        r"^- \d{2}\.\d{2}\.\d{2} \d{2}:\d{2} \[E-2\] \[T-004\] \[op: \S+\] "
+        r"RUN: manual work recorded -- committed a fix",
         log,
         flags=re.MULTILINE,
     ), log
@@ -107,3 +108,66 @@ def test_record_then_board_is_valid(project):
         t.ticket_id == "T-004" and t.description.startswith("Manual:")
         for t in board.todo
     )
+
+
+# --- idempotency by OPERATION ID, never by human prose (repair mission P1) --
+
+
+def test_same_description_with_same_op_id_is_one_record(project):
+    op = "mw-test-op-1"
+    first = record_manual_work(project, "updated docs", operation_id=op)
+    second = record_manual_work(project, "updated docs", operation_id=op)
+    assert second.get("already") is True
+    assert second["ticket_id"] == first["ticket_id"]
+    board = read_doc(project / ".saipen" / "BOARD.md")
+    log = read_doc(project / ".saipen" / "LOG.md")
+    assert board.count("T-004") == 1
+    assert log.count("[E-2]") == 1
+
+
+def test_same_description_with_different_op_id_is_two_records(project):
+    record_manual_work(project, "updated docs", operation_id="mw-op-a")
+    record_manual_work(project, "updated docs", operation_id="mw-op-b")
+    board = read_doc(project / ".saipen" / "BOARD.md")
+    log = read_doc(project / ".saipen" / "LOG.md")
+    assert board.count("Manual: updated docs") == 2
+    assert log.count("manual work recorded -- updated docs") == 2
+    assert log.count("[E-2]") == 1 and log.count("[E-3]") == 1
+
+
+def test_dedupe_ignores_description_entirely(project):
+    # A prior record with a DIFFERENT description and the same op id resumes
+    # by the op id alone -- human prose is never the dedupe key.
+    record_manual_work(project, "first wording", operation_id="mw-op-x")
+    second = record_manual_work(project, "completely different", operation_id="mw-op-x")
+    assert second.get("already") is True
+    board = read_doc(project / ".saipen" / "BOARD.md")
+    assert board.count("T-004") == 1
+
+
+def test_retry_after_log_only_partial_resumes_original_ticket(project):
+    # A crash after the LOG write leaves the line with the op marker; a retry
+    # with the SAME op id resumes the original ticket instead of a new one.
+    op = "mw-crash-1"
+    log_path = project / ".saipen" / "LOG.md"
+    log_path.write_text(
+        read_doc(log_path)
+        + f"- 07.08.26 12:00 [E-2] [T-004] [op: {op}] RUN: manual work recorded -- half done\n",
+        encoding="utf-8",
+    )
+    res = record_manual_work(project, "half done", operation_id=op)
+    assert res["ok"] is True
+    assert res["ticket_id"] == "T-004"
+    assert res["event"] == "E-2"
+    board = read_doc(project / ".saipen" / "BOARD.md")
+    assert board.count("T-004") == 1
+    assert read_doc(log_path).count("[E-2]") == 1
+
+
+def test_same_description_no_op_id_generates_two_records(project):
+    # Backend-generated ids are distinct per call: without a stable operation
+    # id there is nothing to resume, so the same prose twice is two actions.
+    first = record_manual_work(project, "tuned knobs")
+    second = record_manual_work(project, "tuned knobs")
+    assert first["ticket_id"] == "T-004"
+    assert second["ticket_id"] == "T-005"

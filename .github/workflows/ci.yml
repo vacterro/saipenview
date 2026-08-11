@@ -21,6 +21,11 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full tag history: the release-gate tests run the gate in release
+          # mode, which REQUIRES git tag evidence and must never pass on a
+          # shallow clone that happens to carry no tags (T-197 family).
+          fetch-depth: 0
 
       - name: Install Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -33,10 +38,13 @@ jobs:
           pip install -e ".[dev]"
           pip install pytest ruff==0.16.0
 
-      # T-193: own-`.saipen` conformance must gate CI, not skip on a runner.
-      # test_conformance_legacy.py skips when the canonical validator is
-      # unreachable; clone the protocol repo and point SAIPEN_HOME at it so the
-      # memory regression test actually runs and turns CI red.
+      # Own-`.saipen` conformance, the honest split: the live `.saipen/` is
+      # gitignored and exists only locally, so CI CANNOT validate it and must
+      # not pretend otherwise. CI validates the tracked, sanitized,
+      # mechanically-generated snapshot (tests/fixtures/own_saipen_snapshot,
+      # produced by tools/snapshot_saipen.py); the LOCAL pre-ship gate
+      # validates the real live memory (test_own_saipen_memory_is_conformant,
+      # which skips on a CI checkout). The snapshot test runs everywhere.
       - name: Fetch canonical SAIPEN validator
         shell: bash
         run: |
@@ -175,6 +183,10 @@ jobs:
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release gate refuses to pass on missing tag evidence; a build
+          # that cannot see tags would fail for the wrong reason.
+          fetch-depth: 0
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -184,35 +196,21 @@ jobs:
       - name: Install build + verify deps
         run: pip install build
 
+      # Release identity: ONE implementation per invariant, in tools/. CI
+      # CALLS the tools; it does not reimplement them inline. The version is
+      # dynamic (saipenview.__version__), so no static `version = "..."`
+      # regex lives here -- that path has been dead since T-188.
+      - name: Release identity gate (tag evidence required)
+        run: python tools/release_gate.py
+
       - name: Build wheel
         run: python -m build --wheel
 
-      - name: Verify wheel exists
+      - name: Verify wheel (METADATA/import/tag identity)
         run: |
-          ls -la dist/
-          echo "Wheel built: $(ls dist/*.whl | head -1)"
-
-      - name: Verify version triple + installed-wheel smoke
-        run: |
-          python - <<'PY'
-          import re, subprocess, sys, tempfile, zipfile
-          from pathlib import Path
-          wheel = sorted(Path('dist').glob('*.whl'))[0]
-          with zipfile.ZipFile(wheel) as z:
-              meta = z.read(next(n for n in z.namelist() if n.endswith('.dist-info/METADATA'))).decode()
-          meta_ver = re.search(r'^Version:\s*(.+)$', meta, re.M).group(1).strip()
-          pyproj_ver = re.search(r'^version\s*=\s*"([^"]+)"', Path('pyproject.toml').read_text(), re.M).group(1)
-          with tempfile.TemporaryDirectory() as td:
-              subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', '--no-deps',
-                              '--target', td, str(wheel)], check=True)
-              sys.path.insert(0, td)
-              import saipenview
-              pkg_ver = saipenview.__version__
-              assert pyproj_ver == meta_ver == pkg_ver, (pyproj_ver, meta_ver, pkg_ver)
-              assert saipenview.__file__.startswith(td), saipenview.__file__
-              import saipenview.config, saipenview.parser, saipenview.paths
-          print(f'wheel verify PASS: {pyproj_ver} == {meta_ver} == {pkg_ver}, installed smoke clean')
-          PY
+          WHEEL=$(ls dist/*.whl | head -1)
+          echo "Wheel: $WHEEL"
+          python tools/verify_wheel.py "$WHEEL"
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4

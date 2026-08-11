@@ -22,8 +22,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 GATE = ROOT / "tools" / "release_gate.py"
 VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']")
@@ -74,9 +72,9 @@ def _git_init_and_tag(path: Path, tag: str) -> None:
         subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
 
 
-def _run_gate(sandbox: Path) -> subprocess.CompletedProcess:
+def _run_gate(sandbox: Path, *flags: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(GATE), "--root", str(sandbox)],
+        [sys.executable, str(GATE), *flags, "--root", str(sandbox)],
         capture_output=True,
         text=True,
         cwd=ROOT,
@@ -102,14 +100,44 @@ def test_release_gate_passes_at_shipped_head(tmp_path):
     # Version-agnostic (T-197): the sandbox carries a version above the newest
     # tag and no git history, so the live repo's tag state cannot flip the
     # verdict -- green at a tagged release commit, at a post-ship commit, and
-    # at a pre-bump HEAD alike.
+    # at a pre-bump HEAD alike. Sandbox has no git: --dev explicitly selects
+    # the dev/sandbox reading that may run without tag evidence.
     sandbox = _make_sandbox(tmp_path, _bumped_version())
-    r = _run_gate(sandbox)
+    r = _run_gate(sandbox, "--dev")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "PASS" in r.stdout
 
 
-def test_release_gate_fails_when_version_behind_newest_tag(tmp_path):
+def test_release_mode_fails_without_git(tmp_path):
+    # Release mode (default) REQUIRES git tag evidence: a sandbox with no git
+    # at all must FAIL, never pass "because nothing to compare".
+    sandbox = _make_sandbox(tmp_path, _bumped_version())
+    r = _run_gate(sandbox)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "git tag evidence unavailable" in r.stdout
+    assert "git command failed" in r.stdout
+
+
+def test_release_mode_fails_with_valid_repo_but_no_tags(tmp_path):
+    # A valid repo with zero tags is DIFFERENT from git being unavailable --
+    # the gate must say so. First-release territory still cannot prove the
+    # version is not behind a shipped tag in release mode.
+    sandbox = _make_sandbox(tmp_path, _bumped_version())
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@t.t"],
+        ["config", "user.name", "t"],
+        ["add", "-A"],
+        ["commit", "-qm", "sandbox"],
+    ):
+        subprocess.run(["git", *args], cwd=sandbox, check=True, capture_output=True)
+    r = _run_gate(sandbox)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "zero v* tags" in r.stdout
+    assert "git command failed" not in r.stdout
+
+
+def test_release_mode_fails_when_version_behind_newest_tag(tmp_path):
     # Sandbox is its own git repo tagged far above the declared version, so
     # the gate must refuse regardless of the real repo's tags.
     sandbox = _make_sandbox(tmp_path, _version())
@@ -122,26 +150,21 @@ def test_release_gate_fails_when_version_behind_newest_tag(tmp_path):
 def test_release_gate_fails_when_identity_surfaces_disagree(tmp_path):
     sandbox = _make_sandbox(tmp_path, "1.2.3")
     (sandbox / "CHANGELOG.md").write_text("## [9.9.9]", encoding="utf-8")
-    r = _run_gate(sandbox)
+    r = _run_gate(sandbox, "--dev")
     assert r.returncode == 1, r.stdout + r.stderr
     assert "CHANGELOG head [9.9.9] != __version__ [1.2.3]" in r.stdout
 
 
 def test_new_release_must_not_be_behind_newest_tag():
-    tags = subprocess.run(
-        ["git", "tag", "-l", "v[0-9]*"], capture_output=True, text=True, cwd=ROOT
-    ).stdout.split()
-    versions = [t[1:] for t in tags if re.match(r"^v\d+\.\d+\.\d+$", t)]
-    if not versions:
-        # A shallow CI checkout (actions/checkout@v4 without fetch-depth: 0)
-        # has no tags at all, so there is no "newest tag" to be behind --
-        # nothing to assert. Local clones carry the full tag history.
-        pytest.skip("no release tags in this checkout (shallow CI clone)")
-
-    def key(v):
-        return [int(x) for x in v.split(".")]
-
-    newest = max(versions, key=key)
-    assert key(_version()) >= key(newest), (
-        f"__version__ {_version()} is behind the newest tag {newest}"
-    )
+    # Runs the gate against the LIVE repo in release mode (CI fetches full tag
+    # history for this job). Verdict: either PASS (version >= newest tag) or a
+    # named tag-related FAIL -- never a skip, and never a silent pass on
+    # missing evidence. The missing-evidence case is FAILed, as
+    # test_release_mode_fails_* pin.
+    r = _run_gate(ROOT)
+    if r.returncode == 0:
+        assert "PASS" in r.stdout
+        return
+    out = r.stdout + r.stderr
+    assert "Release identity FAIL" in out, out
+    assert "tag" in out, out

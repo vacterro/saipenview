@@ -16,6 +16,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from saipenview.engines.base import AgentEngine
@@ -70,20 +71,30 @@ class ProcessManager:
 
     Enforces one agent per project (SAIPEN §1.4).  Captures stdout/stderr
     in a rolling deque and publishes events for real-time UI.
+
+    Single-writer ownership (T-183 + the repair mission): the launch
+    reservation lives in the SAME per-root lock the write coordinator
+    mutates under. A launch that reserved the root blocks every app protocol
+    mutation; an app transaction that is mid-flight refuses the launch. The
+    reservation is held from the launch decision until the process finalizes.
     """
 
-    def __init__(self, buffer_size: int = DEFAULT_OUTPUT_BUFFER_SIZE) -> None:
+    def __init__(
+        self,
+        buffer_size: int = DEFAULT_OUTPUT_BUFFER_SIZE,
+        ownership=None,
+    ) -> None:
         self._lock = threading.Lock()
         # Keyed by canonical_key(project_root) so one project -- however its
         # path is spelled -- maps to exactly one process (T-166).
         self._processes: dict[str, AgentProcess] = {}
-        # Roots currently between the "already launching" reservation and the
-        # recorded process. A second launch for the same root gets a
-        # deterministic "already launching/running" answer instead of a second
-        # Popen (T-166 concurrency).
-        self._launching: set[str] = set()
         self._buffer_size = buffer_size
         self.sessions = SessionStore()
+        if ownership is None:
+            from saipenview.protocol_write import get_coordinator
+
+            ownership = get_coordinator().ownership
+        self.ownership = ownership
 
     def _key(self, project_root: str) -> str:
         return canonical_key(project_root)
@@ -116,15 +127,20 @@ class ProcessManager:
                     f"(engine={existing.engine.name}, "
                     f"elapsed={existing.elapsed_seconds():.0f}s)",
                 }
-            if key in self._launching:
-                return {
-                    "ok": False,
-                    "error": f"Agent is already launching on {project_root}",
-                }
-            # Reservation held for the whole launch so a concurrent second
-            # call for the same project cannot slip past the check above while
-            # Popen is still running (T-166).
-            self._launching.add(key)
+        # Reservation is the ATOMIC ownership decision: checked and marked
+        # under the same per-root lock the write coordinator mutates under.
+        # A UI mutation in flight makes this refuse; a successful reservation
+        # makes every later mutation refuse. Refusal also covers a second
+        # launch for the same root (one reservation per root, ever).
+        if not self.ownership.reserve_agent(Path(project_root)):
+            return {
+                "ok": False,
+                "error": (
+                    f"Agent already running/launching on {project_root}, or an "
+                    f"app protocol transaction is active on it; launch refused "
+                    f"-- retry when the write finishes"
+                ),
+            }
 
         try:
             try:
@@ -132,6 +148,7 @@ class ProcessManager:
             except ValueError as exc:
                 # T-168: an engine rejects an empty/invalid command with a
                 # clear error instead of launching garbage.
+                self.ownership.release_agent(Path(project_root))
                 return {"ok": False, "error": str(exc)}
 
             env = None
@@ -160,6 +177,7 @@ class ProcessManager:
                     f"SAIPENVIEW: failed to launch {engine.name}: {exc}",
                     file=sys.stderr,
                 )
+                self.ownership.release_agent(Path(project_root))
                 return {"ok": False, "error": str(exc)}
 
             ap = AgentProcess(
@@ -203,9 +221,9 @@ class ProcessManager:
             )
 
             return {"ok": True, "engine": engine.name, "pid": proc.pid}
-        finally:
-            with self._lock:
-                self._launching.discard(key)
+        except Exception:  # noqa: BLE001 - reservation must not leak on any path
+            self.ownership.release_agent(Path(project_root))
+            raise
 
     def kill(self, project_root: str) -> dict:
         """Kill a running agent process."""
@@ -285,6 +303,10 @@ class ProcessManager:
 
         if ap.run_id:
             self.sessions.finish(ap.run_id, status, exit_code)
+
+        # The agent no longer owns the project: app protocol mutations may
+        # resume. Release happens exactly once, behind the finalize guard.
+        self.ownership.release_agent(Path(ap.project_root))
 
         event_bus.publish(
             "agent.finished",
@@ -429,12 +451,10 @@ class ProcessManager:
 
         The write coordinator refuses direct protocol mutation for a project
         an agent owns (T-183): SAIPENVIEW must never become writer #2 while
-        the agent it launched is mutating the same `.saipen/` files.
-        """
-        key = self._key(project_root)
-        with self._lock:
-            ap = self._processes.get(key)
-            return ap is not None or key in self._launching
+        the agent it launched is mutating the same `.saipen/` files. The
+        reservation lives in the shared RootOwnership, so this reads the same
+        state the coordinator's authoritative guard enforces."""
+        return self.ownership.agent_owns(Path(project_root))
 
     def stop_all(self) -> None:
         """Kill all running agents.  Called on app shutdown."""

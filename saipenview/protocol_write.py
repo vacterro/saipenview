@@ -30,15 +30,15 @@ import time as _time
 from collections.abc import Callable
 from pathlib import Path
 
-from saipenview.paths import canonical_key
+from saipenview.ownership import AgentOwnershipError, RootOwnership
 from saipenview.textio import read_doc_meta, write_doc
 
 _EVENT_ID_RE = re.compile(r"\[E-(\d+)\]")
 _TICKET_ID_RE = re.compile(r"\bT-(\d+)\b")
 
-# One coordinator per process; its per-root locks are process-local, which is
-# exactly what serializes two of the app's own threads. Out-of-process writers
-# are caught by the fingerprint, not by the lock.
+# One coordinator per process; its per-root ownership is process-local, which
+# is exactly what serializes two of the app's own threads. Out-of-process
+# writers are caught by the fingerprint, not by the lock.
 _coordinator: WriteCoordinator | None = None
 
 
@@ -137,17 +137,11 @@ class WriteCoordinator:
     """Per-root serialization + optimistic CAS for `.saipen/` documents."""
 
     def __init__(self) -> None:
-        self._locks: dict[str, threading.RLock] = {}
-        self._locks_guard = threading.Lock()
+        self.ownership = RootOwnership()
         self.self_writes = SelfWriteRegistry()
 
     def _lock(self, root: Path) -> threading.RLock:
-        key = canonical_key(root)
-        with self._locks_guard:
-            lock = self._locks.get(key)
-            if lock is None:
-                lock = self._locks[key] = threading.RLock()
-            return lock
+        return self.ownership.lock(root)
 
     @staticmethod
     def root_for(path: Path) -> Path:
@@ -186,6 +180,75 @@ class WriteCoordinator:
         with self._lock(root):
             yield
 
+    def _begin_tx(self, root: Path) -> None:
+        """Under the per-root lock: mark an app transaction, refusing while an
+        agent owns the root. This is the authoritative single-writer gate --
+        the Api's `_guard_protocol_write` is only the cheap pre-check."""
+        if not self.ownership.begin_app_tx(root):
+            raise AgentOwnershipError(
+                f"Core agent is running for {root}; direct .saipen mutation refused"
+            )
+
+    def _end_tx(self, root: Path) -> None:
+        self.ownership.end_app_tx(root)
+
+    def transaction(
+        self,
+        root: Path,
+        targets: dict[Path, Callable[[str], str | None]],
+        deps: list[Path] | None = None,
+    ) -> None:
+        """Atomic multi-file mutation with cross-document conflict detection.
+
+        ``targets`` maps each file to its transform. ``deps`` names every
+        canonical input whose truth the operation's DECISION depended on --
+        files read but not written. Both targets and deps are fingerprinted
+        from the read the caller reasoned over, and ALL fingerprints are
+        re-validated immediately before the first commit. An external change
+        to any of them (target OR dependency) aborts the whole transaction
+        with ``ConflictError`` -- never a silent composition of two realities.
+
+        Guard + reservation + mutation are one atomic ownership decision: the
+        agent-ownership check and the app-transaction mark happen under the
+        same per-root lock the launch path reserves, so a launch cannot slip
+        between a passed guard and its write.
+
+        Raises ``ConflictError`` (external drift), ``AgentOwnershipError``
+        (agent owns the root) or ``MutationRejected`` (a transform declined).
+        """
+        root = Path(root)
+        with self._lock(root):
+            self._begin_tx(root)
+            try:
+                dep_paths = [Path(p) for p in (deps or [])]
+                baseline: dict[Path, str] = {p: self.fingerprint(p) for p in dep_paths}
+                prepared: list[tuple[Path, str, str, str]] = []
+                for path, transform in targets.items():
+                    path = Path(path)
+                    if path not in baseline:
+                        baseline[path] = self.fingerprint(path)
+                    text, enc, newline = read_doc_meta(path)
+                    new_text = transform(text)
+                    if new_text is None or new_text == text:
+                        continue
+                    prepared.append((path, new_text, enc, newline))
+                if not prepared:
+                    return
+                # Revalidate EVERY canonical input (deps + targets) before the
+                # first commit. A non-target dependency that moved since our
+                # read aborts the operation, not just the file it touched.
+                for path, fp in baseline.items():
+                    if self.fingerprint(path) != fp:
+                        raise ConflictError(str(path))
+                for path, new_text, enc, newline in prepared:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    write_doc(path, new_text, enc, newline)
+                    self.self_writes.register(
+                        str(root), path.name, self.fingerprint(path)
+                    )
+            finally:
+                self._end_tx(root)
+
     def mutate_doc(
         self,
         path: Path,
@@ -198,38 +261,43 @@ class WriteCoordinator:
         `transform(text) -> new_text` (or None to decline without writing).
         Returns the new fingerprint, or None when the transform declined.
         Raises `ConflictError` when the file changed on disk between our read
-        and our commit (external writer -- never overwritten), and `OSError`
-        when the file is unreadable/absent.
+        and our commit (external writer -- never overwritten),
+        `AgentOwnershipError` when an agent owns the project (single-writer
+        gate), and `OSError` when the file is unreadable/absent.
         """
         path = Path(path)
         root = self.root_for(path)
         with self._lock(root):
+            self._begin_tx(root)
             try:
-                raw = path.read_bytes()
-            except OSError:
-                # Missing target: mutate from an empty base (the transform may
-                # create the file, e.g. a first _shared/inbox.md). An existing
-                # empty file and a missing file both fingerprint the same; the
-                # transform decides which is meaningful.
-                raw = b""
-            fp = hashlib.blake2b(raw).hexdigest()
-            if expected_fingerprint is not None and fp != expected_fingerprint:
-                raise ConflictError(str(path))
-            text, enc, newline = read_doc_meta(path)
-            new_text = transform(text)
-            if new_text is None or new_text == text:
-                return fp if new_text is not None else None
-            try:
-                raw_now = path.read_bytes()
-            except OSError:
-                raw_now = b""
-            if hashlib.blake2b(raw_now).hexdigest() != fp:
-                raise ConflictError(str(path))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            write_doc(path, new_text, enc, newline)
-            new_fp = self.fingerprint(path)
-            # T-190: register OUR successful write so the watcher can tell a
-            # self-change from an external one. Registered only now, after the
-            # write landed -- a failed write never marks anything.
-            self.self_writes.register(str(root), path.name, new_fp)
-            return new_fp
+                try:
+                    raw = path.read_bytes()
+                except OSError:
+                    # Missing target: mutate from an empty base (the transform may
+                    # create the file, e.g. a first _shared/inbox.md). An existing
+                    # empty file and a missing file both fingerprint the same; the
+                    # transform decides which is meaningful.
+                    raw = b""
+                fp = hashlib.blake2b(raw).hexdigest()
+                if expected_fingerprint is not None and fp != expected_fingerprint:
+                    raise ConflictError(str(path))
+                text, enc, newline = read_doc_meta(path)
+                new_text = transform(text)
+                if new_text is None or new_text == text:
+                    return fp if new_text is not None else None
+                try:
+                    raw_now = path.read_bytes()
+                except OSError:
+                    raw_now = b""
+                if hashlib.blake2b(raw_now).hexdigest() != fp:
+                    raise ConflictError(str(path))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                write_doc(path, new_text, enc, newline)
+                new_fp = self.fingerprint(path)
+                # T-190: register OUR successful write so the watcher can tell a
+                # self-change from an external one. Registered only now, after the
+                # write landed -- a failed write never marks anything.
+                self.self_writes.register(str(root), path.name, new_fp)
+                return new_fp
+            finally:
+                self._end_tx(root)

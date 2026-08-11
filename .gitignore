@@ -25,6 +25,12 @@ saipenview/_data/
 # canonical memory travels via tools/export_source.py, never via git.
 .saipen/
 .freebuff/
+# The own-`.saipen` CI snapshot is TRACKED by deliberate exception (repair
+# mission P1): CI cannot validate the gitignored live memory, so it validates
+# this sanitized, mechanically-generated fixture instead. Regenerate with
+# tools/snapshot_saipen.py --write.
+!tests/fixtures/own_saipen_snapshot/.saipen/
+!tests/fixtures/own_saipen_snapshot/.saipen/**
 
 # Test artifacts
 .pytest_cache/

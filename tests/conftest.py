@@ -327,3 +327,51 @@ _STALENESS_FILES = [
     "TEMPLATE/BOARD.md",
     "TEMPLATE/LOG.md",
 ]
+
+
+def make_ready_outbox(
+    root: Path,
+    sub: str,
+    entry_id: str,
+    title: str,
+    critical: str = "true",
+    summary: str = "fixture package",
+    producer: str | None = None,
+) -> Path:
+    """Write a COMPLETE, current, role-current `status: ready` OUTBOX entry.
+
+    Every handoff field is bound to the fixture root's CURRENT source identity
+    and a project-local charter's CURRENT role revision, so the entry passes
+    the collect gate exactly as a real produced package would. Callers that
+    want a red mutation overwrite one field afterwards."""
+    from saipenview.collect import compute_source_identity, current_role_revision
+
+    subs_dir = root / ".saipen" / "extensions" / "subs"
+    (subs_dir / sub / "kitchen").mkdir(parents=True, exist_ok=True)
+    charter = subs_dir / f"{sub}.md"
+    if not charter.is_file():
+        charter.write_text(
+            f"# {sub} charter\n```yaml\nrole_revision: fixture\n```\n"
+            f"The {sub} role, as a fixture charter.\n",
+            encoding="utf-8",
+        )
+    identity = compute_source_identity(root)
+    rr = current_role_revision(root, sub)
+    body = (
+        f"# OUTBOX\n\n"
+        f"## {entry_id}: {title}\n"
+        f"- **status:** ready\n"
+        f"- **producer:** {producer or sub}\n"
+        f"- **critical:** {critical}\n"
+        f"- **summary:** {summary}\n"
+        f"- **source_head:** {identity.source_head}\n"
+        f"- **source_tree_fingerprint:** {identity.source_tree_fingerprint}\n"
+        f"- **role_revision:** {rr}\n"
+        f"- **coverage:** fixture root files\n"
+        f"- **payload:** kitchen/{entry_id}.md\n"
+        f"- **verified:** gate fixture\n"
+        f"- **instructions:** apply the fixture payload\n"
+    )
+    outbox = subs_dir / sub / "kitchen" / "OUTBOX.md"
+    outbox.write_text(body, encoding="utf-8")
+    return outbox
