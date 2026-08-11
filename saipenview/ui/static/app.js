@@ -1491,8 +1491,13 @@ function renderDetailPane(detail) {
     recordBtn.addEventListener("click", () => {
       const desc = prompt("Describe what you changed manually:");
       if (desc === null || !desc.trim()) return;
-      window.pywebview.api.record_manual_work(detail.root, desc.trim()).then((res) => {
+      // Idempotency is by OPERATION ID, never by human prose (repair mission
+      // P1): mint the id BEFORE the RPC so a retry of THIS invocation reuses
+      // it, while a fresh deliberate action mints a fresh id.
+      const opId = pendingRecordOpId || ("mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8));
+      window.pywebview.api.record_manual_work(detail.root, desc.trim(), opId).then((res) => {
         if (res && res.ok) {
+          pendingRecordOpId = null;
           unrecordedChangeRoot = null;
           showToast("Recorded as " + (res.ticket_id || "ticket"), "success");
           window.pywebview.api.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
@@ -2082,9 +2087,14 @@ window.__saipenSetVisible = function (visible) {
 // consumed only one notification, and the global debounce collapsed events
 // across projects). A real external edit is always origin=external.
 let unrecordedChangeRoot = null;
+// The operation id for the CURRENT unrecorded-change intent: minted when the
+// external-change bar appears, reused on retry of the same invocation, cleared
+// on success. A fresh deliberate manual-work action mints a fresh id.
+let pendingRecordOpId = null;
 
 function showUnrecordedChange(root) {
   unrecordedChangeRoot = root;
+  pendingRecordOpId = "mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   // Re-render the detail so the persistent bar appears for the current root.
   const detailEl = document.getElementById("detailPane");
   if (detailEl && currentDetailRoot === root) {
