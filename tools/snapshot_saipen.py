@@ -21,6 +21,7 @@ memory is validated locally by test_own_saipen_memory_is_conformant.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -84,6 +85,26 @@ def generate(live: Path, tracked: Path) -> dict[str, str]:
     state_text = "\n".join(lines) + "\n"
 
     board = (live / "BOARD.md").read_text(encoding="utf-8-sig")
+
+    # A claimed ## DOING ticket carries live session data (owner identity,
+    # claim_time) -- the same volatile class as STATE's agent/updated. Scrub
+    # it to the snapshot's stable owner so the claimed ticket stays
+    # conformant: STATE's next_action names a ticket its own agent owns.
+    # Historical owner/claim_time on ## DONE / ## TODO tickets stay verbatim.
+    def _scrub_claim(heading: str, body: str) -> str:
+        if heading != "## DOING":
+            return body
+        body = re.sub(r"(\| owner: )\S+", r"\1snapshot", body)
+        body = re.sub(r"(\| claim_time: )\S+", r"\g<1>" + _FIXED_UPDATED, body)
+        return body
+
+    # Split into sections; scrub only the claimed ## DOING body. Historical
+    # owner/claim_time on ## DONE / ## TODO tickets stay verbatim.
+    _section_re = re.compile(r"(?m)^(## (?:DOING|TODO|DONE|BLOCKED))$")
+    parts = _section_re.split(board)
+    for i in range(1, len(parts), 2):
+        parts[i + 1] = _scrub_claim(parts[i].strip(), parts[i + 1])
+    board = "".join(parts)
     # The live board may carry trailing blank lines (scratch space). Strip
     # them -- `git diff --check` treats a blank line at EOF as an error, and
     # the snapshot is a tracked commit artifact, not a scratch pad.

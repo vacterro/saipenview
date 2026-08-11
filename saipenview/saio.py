@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -39,19 +41,63 @@ class SaioUnavailable(Exception):
 
 _ENGINE_CACHE: dict[str, dict[str, object]] = {}
 
+# Authority-bearing STATE keys: a duplicated one MUST NOT pick a winner.
+_AUTHORITY_STATE_KEYS = frozenset(
+    {
+        "saipen_home",
+        "agent",
+        "phase",
+        "task",
+        "last_event",
+        "schema_version",
+        "saipen_version",
+        "mode",
+        "transition_from",
+    }
+)
+
+
+def _strict_frontmatter(text: str) -> tuple[dict[str, str], list[str]]:
+    """Parse the DELIMITED STATE frontmatter WITHOUT last-write-wins: a
+    duplicated authority-bearing key is a structural error (P1 #10). Scans
+    only the `---`-delimited head, never the Markdown body (a body line like
+    `phase: example` inside prose must not trip the duplicate-key refusal).
+    Returns (fields, errors)."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, []
+    body: list[str] = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        body.append(line)
+    fields: dict[str, str] = {}
+    errors: list[str] = []
+    seen: set[str] = set()
+    for line in body:
+        line = line.strip()
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        if key in seen:
+            if key in _AUTHORITY_STATE_KEYS:
+                errors.append(f"duplicate authority key {key!r}")
+            continue
+        seen.add(key)
+        fields[key] = value.strip().strip("\"'")
+    return fields, errors
+
 
 def _state_frontmatter(root: Path) -> dict[str, str]:
+    """STATE frontmatter, refusing on duplicated authority keys."""
     state_path = root / ".saipen" / "STATE.md"
     if not state_path.is_file():
         return {}
-    out: dict[str, str] = {}
-    for line in read_doc(state_path).splitlines():
-        line = line.strip()
-        if line.startswith("---") or ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        out[key.strip()] = value.strip().strip("\"'")
-    return out
+    fields, errors = _strict_frontmatter(read_doc(state_path))
+    if errors:
+        raise SaioUnavailable(f"{root}: STATE.md " + "; ".join(errors))
+    return fields
 
 
 def resolve_home(root: Path) -> Path:
@@ -100,7 +146,7 @@ def engine(root: Path) -> dict[str, object]:
     home = resolve_home(root)
     key = str(home)
     cached = _ENGINE_CACHE.get(key)
-    if cached is not None:
+    if cached is not None and "operations" in cached:
         return cached
     tools = str(home / "tools")
     if tools not in sys.path:
@@ -111,6 +157,7 @@ def engine(root: Path) -> dict[str, object]:
         loaded["operations"] = importlib.import_module("saipen_engine.operations")
         loaded["plan"] = importlib.import_module("saipen_engine.plan")
         loaded["journal"] = importlib.import_module("saipen_engine.journal")
+        loaded["log"] = importlib.import_module("saipen_engine.log")
         loaded["lock"] = importlib.import_module("saipen_engine.lock")
         loaded["fast_check"] = importlib.import_module("saipen_engine.fast_check")
         loaded["codec"] = importlib.import_module("saipen_engine.codec")
@@ -212,6 +259,23 @@ def plan(
     )
 
 
+def normalize(result) -> dict:
+    """PUBLIC wrapper of the one Result adapter: a canonical `Result` dataclass
+    or a raw commit dict -> the normalized viewer contract. The ONLY place the
+    viewer probes a canonical result; never getattr(...) with an eager dict
+    default."""
+    return _normalize(result)
+
+
+def refusal_message(result) -> str | None:
+    """One adapter for the UI: None when *result* is a canonical success,
+    else its human message (or code when the message is empty)."""
+    norm = normalize(result)
+    if norm["ok"]:
+        return None
+    return norm["message"] or norm["code"]
+
+
 def _normalize(result, plan=None) -> dict:
     """Canonical Result / commit dict -> the one viewer failure contract.
 
@@ -254,35 +318,13 @@ def _normalize(result, plan=None) -> dict:
     return out
 
 
-def apply(root: Path, operation_plan) -> dict:
-    """APPLY a plan through the canonical lock + journal + recovery + verify.
-
-    Returns the normalized result. No partial write is ever reported as
-    success: any commit failure returns its own refusal (WRITER_BUSY /
-    STALE_STATE / RECOVERY_REQUIRED / CONFLICT) with recovery_required set.
-    """
-    ops = engine(root)["operations"]
-    try:
-        result = ops.apply_plan(root, operation_plan)
-    except SaioUnavailable:
-        raise
-    except Exception as exc:  # noqa: BLE001 - normalize any apply failure
-        return {
-            "ok": False,
-            "code": "VALIDATION_FAILED",
-            "message": f"apply failed: {exc}",
-            "changed_files": [],
-            "retryable": False,
-            "recovery_required": False,
-            "op_id": getattr(operation_plan, "op_id", None),
-        }
-    return _normalize(result, operation_plan)
-
-
-def apply_with_precheck(
-    root: Path, operation_plan, precheck=None, verification_policy: str = "core_fast"
+def apply(
+    root: Path,
+    operation_plan,
+    precheck=None,
+    verification_policy: str = "core_fast",
 ) -> dict:
-    """APPLY under the writer lock with a caller-supplied precheck.
+    """APPLY a plan through the canonical writer lock + journal + recovery.
 
     `precheck(root)` runs INSIDE the canonical writer lock, immediately before
     the journal is PREPARED -- the right place to revalidate a non-file proof
@@ -293,6 +335,10 @@ def apply_with_precheck(
     `verification_policy` defaults to core_fast (structural ops). A raw
     hand-edit (file editor) uses `none`: byte-verify only, so a user repairing
     a non-conformant project is not blocked by the very state they are fixing.
+
+    Returns the normalized result. No partial write is ever reported as
+    success: any commit failure returns its own refusal (WRITER_BUSY /
+    STALE_STATE / RECOVERY_REQUIRED / CONFLICT) with recovery_required set.
     """
     journal = engine(root)["journal"]
     lock = engine(root)["lock"]
@@ -337,11 +383,31 @@ def apply_with_precheck(
             "code": "WRITER_BUSY",
             "detail": "another live writer holds the project lock",
         }
-    except Exception as exc:  # noqa: BLE001 - normalize
+    except Exception as exc:  # noqa: BLE001 - normalize any apply failure
+        # A raised exception AFTER the journal was PREPARED means real journal
+        # debt exists: report RECOVERY_REQUIRED with the actual pending ops,
+        # never a hardcoded clean failure.
+        try:
+            debt = pending_ops(root)
+        except Exception:  # noqa: BLE001
+            debt = None
+        if debt:
+            return {
+                "ok": False,
+                "code": "RECOVERY_REQUIRED",
+                "message": f"apply raised {exc.__class__.__name__} after the "
+                "journal was prepared; pending operation(s) must be "
+                "recovered",
+                "changed_files": [],
+                "retryable": False,
+                "recovery_required": True,
+                "op_id": getattr(operation_plan, "op_id", None),
+                "pending_op_ids": [p.get("op_id") for p in debt],
+            }
         return {
             "ok": False,
-            "code": "VALIDATION_FAILED",
-            "message": f"apply failed: {exc}",
+            "code": "INTERNAL_ERROR",
+            "message": f"apply failed before any journal write: {exc}",
             "changed_files": [],
             "retryable": False,
             "recovery_required": False,
@@ -351,6 +417,22 @@ def apply_with_precheck(
     if commit.get("ok"):
         out["changed_files"] = [t.path for t in operation_plan.targets]
     return out
+
+
+def apply_with_precheck(
+    root: Path, operation_plan, precheck=None, verification_policy: str = "core_fast"
+) -> dict:
+    """Back-compat alias: `apply` now carries precheck + policy."""
+    return apply(
+        root, operation_plan, precheck=precheck, verification_policy=verification_policy
+    )
+
+
+def pending_ops(root: Path) -> list[dict]:
+    """Every UNRESOLVED canonical operation journal for a project (used by the
+    recovery-aware exception normalizer to report real journal debt)."""
+    journal = engine(root)["journal"]
+    return journal.pending_ops(root)
 
 
 def recovery_status(root: Path) -> dict:
@@ -393,9 +475,90 @@ def writer_lock(root: Path):
 
 
 def source_identity(root: Path):
-    """Current source identity via the canonical freshness primitive."""
-    freshness = engine(root)["freshness"]
-    return freshness.compute_source_identity(root)
+    """Current source identity via the canonical freshness primitive.
+    Stateless: hashes ANY directory (a `.saipen/` is not required), exactly
+    like the canonical compute_source_identity. Resolved from the project's
+    own saipen_home when the path is a project root (carries STATE.md) or
+    sits under one, else env/hardcoded home."""
+    home = None
+    if isinstance(root, Path):
+        r = _root_for_saipen_path(root)
+        if r is None and (Path(root) / ".saipen" / "STATE.md").is_file():
+            r = Path(root)
+        if r is not None:
+            try:
+                home = resolve_home(r)
+            except SaioUnavailable:
+                home = None
+    return _freshness_module(home).compute_source_identity(root)
+
+
+def _root_for_saipen_path(path: Path) -> Path | None:
+    """Derive the project root from any path under some `<root>/.saipen/`."""
+    p = Path(path).resolve()
+    for part in p.parents:
+        if part.name == ".saipen":
+            return part.parent
+    return None
+
+
+def _freshness_module(root: Path | None = None):
+    """The canonical freshness module from the project's OWN `saipen_home`
+    (STATE.md § 1.7) when a root is resolvable, else any reachable SAIPEN home
+    (SAIPEN_HOME env, then the known local canonical checkout). The freshness
+    authority MUST match the project's declared canonical home -- a project
+    pinned to one protocol version must hash roles with that version, not with
+    whatever the machine happens to have on PATH (T-204 review finding). A
+    project that declares NO home falls back to env/machine resolution (its
+    writer authority would fail the same way, but stateless hashing still
+    works)."""
+    if root is not None:
+        try:
+            home = resolve_home(root)
+        except SaioUnavailable:
+            home = None
+        if home is not None:
+            return _load_freshness_from(home)
+    env = os.environ.get("SAIPEN_HOME")
+    for home in ([Path(env)] if env else []) + [
+        Path(r"V:\___VAC\__K\__CODE\_AI_STUFF_AGENTIC\_SAIPEN"),
+    ]:
+        if (home / "tools" / "freshness.py").is_file():
+            return _load_freshness_from(home)
+    raise SaioUnavailable("canonical SAIPEN home unreachable for freshness")
+
+
+def _load_freshness_from(home: Path):
+    import importlib as _il
+
+    tools = str(home / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    key = str(home)
+    cached = _ENGINE_CACHE.get(key)
+    if cached is not None and "freshness" in cached:
+        return cached["freshness"]
+    # Load into a private slot, never a partial engine cache: engine() checks
+    # for a COMPLETE module set, so a half-built cache can never leak out.
+    mod = _il.import_module("freshness")
+    _ENGINE_CACHE.setdefault(key, {})["_freshness_only"] = mod
+    return mod
+
+
+def role_revision(charter: Path) -> str:
+    """Canonical role-charter revision (stateless hashing), resolved from the
+    project's own saipen_home when the charter sits under one."""
+    return _freshness_module(_root_for_saipen_path(charter)).compute_role_revision(
+        charter
+    )
+
+
+def generic_role_revision(protocol_path: Path) -> str:
+    """Canonical generic PROTOCOL.md role revision (stateless hashing),
+    resolved from the project's own saipen_home when the path sits under one."""
+    return _freshness_module(
+        _root_for_saipen_path(protocol_path)
+    ).compute_generic_role_revision(protocol_path)
 
 
 # --- canonical ticket operations (delegation, never re-implementation) ------
@@ -437,6 +600,15 @@ def fingerprint_missing() -> str:
     return "MISSING"
 
 
+def fingerprint_bytes(content: bytes) -> str:
+    """Typed identity for EXACT bytes the app wrote: FILE\\0<sha256>. Same
+    format as fingerprint_file but computed from known bytes -- the caller
+    registering a self-write must fingerprint what IT wrote, never a post-lock
+    disk re-read that could have been overwritten by an external writer
+    (T-204 review finding)."""
+    return "FILE\0" + hashlib.sha256(content).hexdigest()
+
+
 def fingerprint_file(path: Path) -> str:
     """Typed identity for an existing file: FILE\\0<sha256 of exact bytes>.
 
@@ -448,3 +620,80 @@ def fingerprint_file(path: Path) -> str:
     except OSError:
         return fingerprint_missing()
     return "FILE\0" + hashlib.sha256(raw).hexdigest()
+
+
+# --- canonical ID allocation (the ONE authority, incl. sealed history) --------
+
+_SEG_RE = re.compile(r"LOG-(\d+)\.md$")
+
+
+def _sealed_log_text(root: Path) -> str:
+    """Only the sealed LOG segments (numeric order), joined as the canonical
+    tail machinery sees them. Sealed segments are immutable by definition, so
+    reading them fresh at allocation time never violates snapshot binding."""
+    root = Path(root)
+    parts: list[str] = []
+    seg_dir = root / ".saipen" / "logs"
+    if seg_dir.is_dir():
+        segs = sorted(
+            (p for p in seg_dir.glob("LOG-*.md") if _SEG_RE.match(p.name)),
+            key=lambda p: int(_SEG_RE.match(p.name).group(1)),
+        )
+        codec = engine(root)["codec"]
+        for seg in segs:
+            parts.append(codec.read_document(seg).text_norm + "\n")
+    return "\n".join(parts)
+
+
+def full_log_text(root: Path) -> str:
+    """Sealed LOG segments (numeric order) + the active LOG, joined as the
+    canonical tail machinery sees them. Allocation must NEVER depend on the
+    active file alone: a fresh active LOG after rotation still derives its
+    tail from the sealed segments."""
+    root = Path(root)
+    sealed = _sealed_log_text(root).rstrip("\n")
+    active = engine(root)["codec"].read_document(root / ".saipen" / "LOG.md").text_norm
+    return (sealed + "\n" if sealed else "") + active
+
+
+def next_ticket_id(root: Path, board_text: str, log_text: str | None = None) -> int:
+    """The next production ticket ID via the canonical allocator: scans BOARD
+    AND LOG (full sequence incl. sealed), excludes the synthetic fixture
+    namespace (T-998/T-999). Never a VIEW-local copy of the rule.
+
+    `log_text` is the ACTIVE log snapshot the caller already holds; the sealed
+    segments are always merged in (immutable), so a caller-supplied active text
+    can never bypass the sealed history (T-204 review finding)."""
+    ops = engine(root)["operations"]
+    if log_text is None:
+        log_text = full_log_text(root)
+    else:
+        sealed = _sealed_log_text(root).rstrip("\n")
+        log_text = (sealed + "\n" if sealed else "") + log_text
+    return ops.next_ticket_id(board_text, log_text)
+
+
+def event_tail(root: Path, log_text: str | None = None) -> int:
+    """The ACTUAL current event tail (max E-### across sealed + active) -- the
+    value STATE.last_event MUST equal. Never bumps to a nonexistent id."""
+    log = engine(root)["log"]
+    if log_text is None:
+        log_text = full_log_text(root)
+    else:
+        sealed = _sealed_log_text(root).rstrip("\n")
+        log_text = (sealed + "\n" if sealed else "") + log_text
+    return log.log_tail_event(log_text) or 0
+
+
+def next_event_id(root: Path, log_text: str | None = None) -> int:
+    """The next event ID: the canonical tail (actual max E-### across sealed +
+    active, order-independent) + 1. Same sealed-merge contract as
+    next_ticket_id."""
+    log = engine(root)["log"]
+    if log_text is None:
+        log_text = full_log_text(root)
+    else:
+        sealed = _sealed_log_text(root).rstrip("\n")
+        log_text = (sealed + "\n" if sealed else "") + log_text
+    tail = log.log_tail_event(log_text)
+    return (tail or 0) + 1

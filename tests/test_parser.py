@@ -825,7 +825,6 @@ class TestLoadProject:
 
     def test_load_project_handles_state_stat_error(self, tmp_path):
         """If stat() on STATE.md fails for mtime (but is_file passes), mtime=0."""
-        import os
         from unittest.mock import patch
 
         from saipenview.parser import load_project
@@ -839,18 +838,24 @@ class TestLoadProject:
             "# BOARD\n\n## TODO\n\n## DONE\n\n", encoding="utf-8"
         )
 
-        # First call to os.stat (for is_file) passes, second call (for mtime) fails
-        real_stat = os.stat
+        # Deterministic across Python versions: patch the actual call site
+        # (Path.stat), not module os.stat -- pathlib routes through the module
+        # name only on 3.11+, so the old interception was version-fragile (CI
+        # #42, 3.10 leg). On 3.10 is_file() itself calls Path.stat, so the
+        # FIRST call (is_file) must pass and only the mtime stat raises.
+        from pathlib import Path as _Path
+
+        real_stat = _Path.stat
         _calls = {}
 
-        def _mock_stat(path, *args, **kwargs):
-            key = str(path)
+        def _mock_stat(self, *args, **kwargs):
+            key = str(self)
             _calls[key] = _calls.get(key, 0) + 1
-            if "STATE.md" in key and _calls[key] > 1:
+            if self.name == "STATE.md" and _calls[key] > 1:
                 raise OSError("access denied")
-            return real_stat(path, *args, **kwargs)
+            return real_stat(self, *args, **kwargs)
 
-        with patch("os.stat", new=_mock_stat):
+        with patch("pathlib.Path.stat", new=_mock_stat):
             proj = load_project(root, with_git=False)
             assert proj is not None
             assert proj.mtime == 0

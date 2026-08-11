@@ -14,6 +14,63 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## [0.1.29] - 2026-08-11
+
+### Changed
+
+- **Canonical ID allocation is the one authority, sealed history included.**
+  The viewer's local `next_event_id`/`next_ticket_id` copies are gone; both
+  delegate to the canonical allocator and ALWAYS merge the sealed
+  `.saipen/logs/LOG-*.md` segments with the caller-supplied active log, so a
+  fresh active LOG after rotation still allocates above the sealed tail.
+  `saio.engine()` also loads `saipen_engine.log` so the tail machinery sees
+  the same file the canonical validator reads.
+
+- **Freshness resolves from the project's own `saipen_home`.** `source_identity`
+  / `role_revision` / `generic_role_revision` load the canonical freshness
+  module from the project's declared `saipen_home` (STATE.md § 1.7) when the
+  path carries or sits under one, falling back to `SAIPEN_HOME`/machine only
+  for a home-less project. A project pinned to one protocol version hashes
+  roles with that version, not whatever the machine has on PATH.
+
+- **Self-writes register exactly the bytes the app wrote.** `finalize_self_writes`
+  fingerprints the OperationPlan's staged content (`FILE\0sha256(plan bytes)`)
+  instead of re-reading the file after the canonical lock released, so an
+  external writer landing in the commit-to-register window can no longer get
+  its bytes consumed as a self-write. Delegated operations re-read under the
+  canonical writer lock; `SelfWriteRegistry` keys are canonicalized on both
+  write and consume.
+
+- **Strict STATE frontmatter is scoped to the delimited head.** `_strict_frontmatter`
+  parses only the `---`-delimited block, so authority-looking keys in the
+  Markdown body cannot trip the duplicate-key refusal.
+
+### Fixed
+
+- **`collect_outbox_entry` resume keeps `STATE.last_event` at the real tail.**
+  When the `RUN: collect` log line already existed (idempotent resume), the
+  retry bumped `last_event` to the next unused id -- an event that does not
+  exist in the LOG. It now equals the actual current tail.
+
+- **Interrupted full-suite runs (T-179 family, shutdown fd-crash).** Three
+  tests launched real scans over the machine's actual drives; the abandoned
+  daemon scan workers killed mid-`subprocess.run(git)` at interpreter exit
+  left `subprocess._readerthread` reading a closed pipe (`Bad file
+  descriptor`), crashing pytest at ~25% of runs. The tests now scan `tmp_path`
+  / empty roots, every git subprocess carries a 10s timeout, and `scan()` waits
+  a bounded 30s on abandoned futures before shutting its pool. 3 consecutive
+  full-suite runs clean; suite wall-time dropped ~94s -> ~77s.
+
+- **Manual-work operation id minted before the RPC (P1).** The UI now mints
+  and passes the `operation_id` for manual-work records before calling the
+  API, and reuses it on retry, so the backend idempotency contract is
+  actually reachable from the UI.
+
+- **Python 3.10 CI failure (#42) fixed.** The mtime test intercepted
+  `Path.stat` in a way only present on 3.11+; it now patches
+  `pathlib.Path.stat` deterministically across versions. Full suite green on
+  3.10 (951 passed).
+
 ## [0.1.28] - 2026-08-11
 
 ### Changed

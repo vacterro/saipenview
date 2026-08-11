@@ -365,6 +365,13 @@ def scan(
                 _push_error(f"scan of {root} failed: {e}")
     except concurrent.futures.TimeoutError:
         _push_error("overall scan timeout reached, some roots skipped")
+    pending = [f for f in futures if not f.done()]
+    if pending:
+        # A root that blew the overall timeout is abandoned, but its worker
+        # thread is still alive (daemon). Give it a bounded grace window so a
+        # mid-run git subprocess can't leave a dead _readerthread at process
+        # exit (T-179 / Bad file descriptor shutdown crash).
+        concurrent.futures.wait(pending, timeout=30)
     _set_scan_progress(
         pct=100, root="", roots_done=_scan_progress.get("roots_total", 0)
     )

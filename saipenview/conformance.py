@@ -515,34 +515,19 @@ def parse_board_strict(text: str) -> tuple[dict[str, BoardTicket], list[str], li
                 (line_no, "duplicate", f"{tid} (first at line {tickets[tid].line_no})")
             )
             continue
-        parts = [p.strip() for p in rest.split(" | ")]
+        # ONE strict ticket-line grammar (repair mission P1): shared with the
+        # display parser and the mutation legality -- fields any order, escaped
+        # pipes preserved, duplicates malformed, never last-write-wins.
+        from saipenview.parser import parse_ticket_line
+
+        _cb, _tid, _desc, fields, line_errors = parse_ticket_line(line)
         needs: list[str] = []
-        fields: dict[str, str] = {}
-        for part in parts[1:]:
-            fm = _FIELD_RE.match(part)
-            if not fm or fm.group(1) not in _KNOWN_TICKET_FIELDS:
-                problems.append(
-                    (
-                        line_no,
-                        "unknown_field",
-                        f"{tid}: {part.replace(_PIPE_SENTINEL, '|')!r}",
-                    )
-                )
-                continue
-            if fm.group(1) in fields:
-                # Closed single-valued grammar: duplicated authority MUST NOT
-                # silently pick a winner (repair mission P1).
-                problems.append(
-                    (
-                        line_no,
-                        "duplicate_field",
-                        f"{tid}: field {fm.group(1)} appears more than once",
-                    )
-                )
-                continue
-            fields[fm.group(1)] = fm.group(2)
-            if fm.group(1) == "needs":
-                needs = re.findall(r"T-\d+", fm.group(2))
+        for err in line_errors:
+            if err.startswith("unrecognized ticket field"):
+                problems.append((line_no, "unknown_field", f"{tid}: {err}"))
+            else:
+                problems.append((line_no, "duplicate_field", f"{tid}: {err}"))
+        needs = re.findall(r"T-\d+", fields.get("needs", ""))
         tickets[tid] = BoardTicket(tid, checkbox, section, line_no, needs, fields)
 
     return tickets, headings, problems

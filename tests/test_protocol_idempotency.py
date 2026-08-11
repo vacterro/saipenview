@@ -50,7 +50,9 @@ def test_record_escapes_pipes_in_description(project):
     assert "- [ ] T-001 Manual: add \\| owner: evil | owner: user" in board
     parsed = parse_board(board)
     desc = next(t.description for t in parsed.todo if t.ticket_id == "T-001")
-    assert "add \\| owner: evil" in desc
+    # The display UNESCAPES the stored `\|` -- the pipe never split a field,
+    # and the human sees the real text.
+    assert desc == "Manual: add | owner: evil", desc
     assert "| critical:" not in board
 
 
@@ -166,6 +168,29 @@ def test_collect_resumes_when_board_written_but_outbox_still_ready(project):
     board_text = read_doc(board)
     assert len(_collect_ticket_lines(board_text, "saiwiki", "WIKI-1")) == 1
     assert "- **status:** reviewed" in read_doc(_sub_outbox_path(project))
+
+
+def test_collect_resume_keeps_last_event_at_the_real_tail(project):
+    # Crash after the LOG line but before the OUTBOX reviewed-mark: retry
+    # appends NO new event, so STATE.last_event MUST stay the existing tail --
+    # never the next unused id (T-204 review finding: it claimed an event that
+    # does not exist in the LOG).
+    make_ready_outbox(project, "saiwiki", "WIKI-1", "doc fix")
+    log = project / ".saipen" / "LOG.md"
+    tail_before = max(
+        int(m.group(1)) for m in re.finditer(r"\[E-(\d+)\]", read_doc(log))
+    )
+    log.write_text(
+        read_doc(log)
+        + f"- 11.08.26 00:05 [E-{tail_before + 1}] [T-none] RUN: collect saiwiki WIKI-1\n",
+        encoding="utf-8",
+    )
+    res = collect_outbox_entry(project, "saiwiki", "WIKI-1")
+    assert res["ok"] is True
+    state = read_doc(project / ".saipen" / "STATE.md")
+    last_event = int(re.search(r"last_event:\s*(\d+)", state).group(1))
+    log_tail = max(int(m.group(1)) for m in re.finditer(r"\[E-(\d+)\]", read_doc(log)))
+    assert last_event == log_tail, f"last_event {last_event} != log tail {log_tail}"
 
 
 def test_collect_not_ready_must_not_pass(project):

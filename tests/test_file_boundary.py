@@ -68,7 +68,7 @@ def _seed_project(root: Path, state_bytes: bytes | None = None) -> Path:
         doc = codec.read_document(probe)
         probe.unlink()
         text = doc.text_norm.replace(
-            "---\n", f"saipen_home: '{home}'\nagent: testseat\n", 1
+            "---\n", f"---\nsaipen_home: '{home}'\nagent: testseat\n", 1
         )
         payload = doc.encode(text)
     (saipen / "STATE.md").write_bytes(payload)

@@ -29,7 +29,6 @@ Two app-level guarantees still live here:
 from __future__ import annotations
 
 import contextlib
-import re
 import threading
 import time as _time
 from collections.abc import Callable
@@ -37,9 +36,7 @@ from pathlib import Path
 
 from saipenview import saio
 from saipenview.ownership import AgentOwnershipError, RootOwnership
-
-_EVENT_ID_RE = re.compile(r"\[E-(\d+)\]")
-_TICKET_ID_RE = re.compile(r"\bT-(\d+)\b")
+from saipenview.paths import canonical_key
 
 # One coordinator per process; its per-root ownership is process-local, which
 # is exactly what serializes two of the app's own threads. Cross-process
@@ -62,25 +59,6 @@ class ConflictError(Exception):
 
 class MutationRejected(Exception):
     """DEPRECATED legacy exception: see ConflictError."""
-
-
-def next_event_id(text: str) -> int:
-    """Highest E-### in a LOG text + 1; 1 when the log carries none.
-
-    The ONLY event-id allocation in the codebase. Must be called under the
-    per-root lock (via a coordinator mutation) so two writers cannot derive
-    the same next id from the same stale read.
-    """
-    return max((int(m.group(1)) for m in _EVENT_ID_RE.finditer(text)), default=0) + 1
-
-
-def next_ticket_id(text: str) -> int:
-    """Highest T-### in a BOARD text + 1; 1 when the board carries none.
-
-    The ONLY ticket-id allocation in the codebase. Same lock discipline as
-    `next_event_id`.
-    """
-    return max((int(m.group(1)) for m in _TICKET_ID_RE.finditer(text)), default=0) + 1
 
 
 def escape_pipe(text: str) -> str:
@@ -113,16 +91,18 @@ class SelfWriteRegistry:
 
     def register(self, root: str, file_name: str, fingerprint: str) -> None:
         now = _time.monotonic()
+        key_root = canonical_key(root)
         with self._lock:
-            self._entries[(root, file_name)] = (fingerprint, now + self._ttl)
+            self._entries[(key_root, file_name)] = (fingerprint, now + self._ttl)
 
     def consume(self, root: str, file_name: str, fingerprint: str) -> bool:
         """True when *fingerprint* matches our own post-write record for
         (root, file) and the record is consumed."""
         now = _time.monotonic()
+        key_root = canonical_key(root)
         with self._lock:
             self._purge_locked(now)
-            key = (root, file_name)
+            key = (key_root, file_name)
             entry = self._entries.get(key)
             if entry is None:
                 return False
@@ -219,35 +199,48 @@ class WriteCoordinator:
     def _end_tx(self, root: Path) -> None:
         self.ownership.end_app_tx(root)
 
-    def mutate(self, root: Path, op_fn: Callable[[Path, int], object]) -> dict:
+    def mutate(
+        self,
+        root: Path,
+        planner: Callable[[Path, int], object],
+        *,
+        precheck: Callable[[Path], dict | None] | None = None,
+        verification_policy: str = "core_fast",
+    ) -> dict:
         """Commit one decision through the canonical pipeline.
 
-        `op_fn(root, attempt)` must build an immutable OperationPlan from a
-        fresh canonical snapshot (via saio.plan) -- or return a refusal dict
-        {ok: False, code, message}. It is called at most twice: once, and once
-        more with attempt=1 when the first apply returned STALE_STATE (the
-        decision's world moved; the SECOND call is a fresh decision on the new
-        snapshot, never a replay of stale bytes).
+        CONTRACT: `planner(root, attempt)` returns ONLY an immutable
+        OperationPlan (or a refusal dict) -- it NEVER applies. APPLY happens
+        HERE, and every successful APPLY reaches ONE `_finalize_success()`
+        path that registers exact post-write self-write fingerprints for ALL
+        changed files. No callback may secretly APPLY and then masquerade as a
+        result dict (that bypassed self-write attribution).
 
-        Returns the normalized result contract. Self-writes are registered for
-        every changed file so the watcher attributes them to the app.
+        `planner` is called at most twice: once, and once more with attempt=1
+        when the first apply returned STALE_STATE (the decision's world moved;
+        the second call is a FRESH decision on the new snapshot, never a
+        replay of stale bytes). `precheck(root)` runs inside the canonical
+        writer lock immediately before the journal is PREPARED. Returns the
+        normalized result contract.
         """
         root = Path(root)
         with self._lock(root):
             self._begin_tx(root)
             try:
                 for attempt in range(2):
-                    planned = op_fn(root, attempt)
+                    planned = planner(root, attempt)
                     if isinstance(planned, dict):
                         return planned
-                    result = saio.apply(root, planned)
+                    result = saio.apply(
+                        root,
+                        planned,
+                        precheck=precheck,
+                        verification_policy=verification_policy,
+                    )
                     if result["code"] == "STALE_STATE" and attempt == 0:
                         continue
-                    for rel in result.get("changed_files", []):
-                        path = root / rel
-                        self.self_writes.register(
-                            str(root), path.name, saio.fingerprint_file(path)
-                        )
+                    if result.get("ok"):
+                        self._finalize_success(root, result, planned)
                     return result
                 return {
                     "ok": False,
@@ -260,6 +253,68 @@ class WriteCoordinator:
                 }
             finally:
                 self._end_tx(root)
+
+    def _finalize_success(self, root: Path, result: dict, planned=None) -> None:
+        """The ONE self-write finalization for a successful APPLY: register the
+        exact post-write fingerprint of EVERY changed file, so the watcher
+        attributes each to the app and never to an external writer.
+
+        `planned` is the OperationPlan when the coordinator APPLYed it: its
+        targets carry the EXACT bytes the canonical journal wrote, so the
+        fingerprints come from those bytes -- never from a post-lock disk
+        re-read that an external writer could have overwritten in the window
+        between commit and registration (T-204 review finding)."""
+        if planned is not None:
+            by_path = {
+                t.path: saio.fingerprint_bytes(t.content)
+                for t in getattr(planned, "targets", ())
+            }
+            rel_paths = result.get("changed_files", [])
+            self.finalize_self_writes(
+                root,
+                rel_paths,
+                fingerprints={p: by_path[p] for p in rel_paths if p in by_path},
+            )
+        else:
+            self.finalize_self_writes(root, result.get("changed_files", []))
+
+    def finalize_self_writes(
+        self,
+        root: Path,
+        rel_paths: list[str],
+        fingerprints: dict[str, str] | None = None,
+    ) -> None:
+        """Register post-write fingerprints for `rel_paths` under *root*.
+        Shared by coordinator-applied plans and delegated canonical operations
+        (claim/finish/ticket_move), so every successful protocol APPLY reaches
+        the same attribution path.
+
+        `fingerprints` maps watcher-relative path -> the fingerprint of the
+        EXACT bytes the app wrote (from the plan). When absent (a delegated
+        canonical op applied internally and returned no bytes), the re-read is
+        wrapped in the canonical OS writer lock so no other CANONICAL writer
+        can land in the commit->register window; a plain external editor write
+        in that sub-second gap remains the same tolerated window the original
+        T-190 design already accepted.
+
+        The registry key is the watcher-relative path (relative to `.saipen/`,
+        the watcher's `file` contract) -- NOT the basename, which would collide
+        for two same-named files in different subdirectories (e.g. two subs'
+        OUTBOX.md) and would fail to consume for any nested file."""
+        root = Path(root)
+        for rel in rel_paths:
+            rel_text = str(rel).replace("\\", "/")
+            file_key = (
+                rel_text[len(".saipen/") :]
+                if rel_text.startswith(".saipen/")
+                else rel_text.split("/")[-1]
+            )
+            if fingerprints is not None and rel_text in fingerprints:
+                fp = fingerprints[rel_text]
+            else:
+                with saio.writer_lock(root):
+                    fp = saio.fingerprint_file(root / rel)
+            self.self_writes.register(str(root), file_key, fp)
 
     def mutate_doc(
         self,
@@ -328,7 +383,7 @@ class WriteCoordinator:
                 }
             written = {rel}
             missing = [rel] if not (r / rel).exists() else None
-            operation_plan = saio.plan(
+            return saio.plan(
                 r,
                 f"viewer-{role}",
                 {"operation": f"viewer-{role}"},
@@ -337,18 +392,10 @@ class WriteCoordinator:
                 read_deps=_canonical_read_deps(r, written),
                 missing_paths=missing,
             )
-            return operation_plan, verification_policy
 
-        def runner(root: Path, attempt: int):
-            planned = op_fn(root, attempt)
-            if isinstance(planned, tuple):
-                operation_plan, policy = planned
-                return saio.apply_with_precheck(
-                    root, operation_plan, verification_policy=policy
-                )
-            return planned
-
-        return self.mutate(root, runner)
+        # The planner returns ONLY a plan or a refusal; APPLY + self-write
+        # finalization happen in mutate (one _finalize_success path).
+        return self.mutate(root, op_fn, verification_policy=verification_policy)
 
     def recovery_status(self, root: Path) -> dict:
         """Unresolved canonical operations / conflicts blocking new mutation."""

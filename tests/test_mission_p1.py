@@ -16,6 +16,7 @@ from saipenview.outbox import parse_outbox_strict, reviewed_transform
 from saipenview.parser import (
     check_subs_staleness,
     collect_outbox_entry,
+    record_manual_work,
 )
 from saipenview.protocol_write import get_coordinator
 from saipenview.textio import read_doc
@@ -75,22 +76,65 @@ def test_multiple_roots_and_files_coexist(api, tmp_path):
     assert len(get_registry().pending(str(root_b))) == 1
 
 
-def test_self_write_consumes_only_exact_fingerprint(api, tmp_path):
+def test_external_violation_survives_a_later_app_write(api, tmp_path):
+    # P1 #8: an external boundary violation is NOT erased by a later app write
+    # that happens to produce matching bytes -- only an explicit acknowledge
+    # or a verified protocol resolution clears it.
     root = make_conformant_project(tmp_path)
     state = root / ".saipen" / "STATE.md"
     state.write_text(read_doc(state) + "# external\n", encoding="utf-8")
     fp = get_coordinator().fingerprint(state)
     get_registry().record(str(root), "STATE.md", fp)
-    # A self write producing a DIFFERENT fingerprint does not consume it.
-    state.write_text(read_doc(state) + "# app write\n", encoding="utf-8")
-    consumed = get_registry().consume_self_write(
-        str(root), "STATE.md", get_coordinator().fingerprint(state)
-    )
-    assert consumed is False
+    # A later write (even byte-identical content) does not clear it.
+    state.write_text(read_doc(state) + "# external\n", encoding="utf-8")
     assert len(get_registry().pending(str(root))) == 1
-    # Ack clears it.
+    assert get_registry().unresolved(str(root))
+    # Explicit acknowledge clears it.
     assert get_registry().acknowledge(str(root), "STATE.md") is True
     assert get_registry().pending(str(root)) == []
+
+
+def test_registry_keys_are_canonicalized(tmp_path):
+    root = make_conformant_project(tmp_path)
+    # Case / slash variants of the SAME root+file are ONE key.
+    get_registry().record(str(root), "STATE.md", "fp1")
+    root_lower = str(root).lower()
+    assert len(get_registry().pending(root_lower)) == 1
+    assert get_registry().acknowledge(root_lower, "STATE.md") is True
+    # Forward/backslash variants are one key.
+    get_registry().record(
+        str(root), r"extensions\subs\saihunt\kitchen\OUTBOX.md", "fp2"
+    )
+    assert len(get_registry().pending(str(root))) == 1
+    assert get_registry().pending(str(root))[0].rel_path == (
+        "extensions/subs/saihunt/kitchen/OUTBOX.md"
+    )
+    assert (
+        get_registry().acknowledge(
+            str(root), "extensions/subs/saihunt/kitchen/OUTBOX.md"
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "/absolute/path.md",
+        "C:/absolute.md",
+        "../escape.md",
+        "a/../b.md",
+        "./leading.md",
+    ],
+)
+def test_registry_rejects_invalid_rel_paths(tmp_path, bad):
+    from saipenview.external_changes import ExternalChangeRegistry, normalize_rel
+
+    with pytest.raises(ValueError):
+        normalize_rel(bad)
+    root = make_conformant_project(tmp_path)
+    with pytest.raises(ValueError):
+        ExternalChangeRegistry().record(str(root), bad, "fp")
 
 
 def test_collect_blocked_by_unresolved_external_change(tmp_path):
@@ -104,6 +148,104 @@ def test_collect_blocked_by_unresolved_external_change(tmp_path):
     assert res["ok"] is False
     assert res["code"] == "BOUNDARY_VIOLATION", res
     assert "HUNT-001" not in read_doc(board)
+
+
+# --- #2/#3 self-write attribution through the real watcher path -------------
+
+
+def _origin(api, root, file) -> str:
+    """Simulate the watcher firing for a changed file; return the origin.
+    `file` is relative to `.saipen/` (the watcher's own contract)."""
+    pushed = {}
+    api._window = type(
+        "W", (), {"evaluate_js": lambda self, s: pushed.setdefault("js", s)}
+    )()
+    with patch.object(api, "_refresh_one_project"):
+        api._on_file_changed({"root": str(root), "file": file})
+    return "self" if pushed.get("js") and '"self"' in pushed["js"] else "external"
+
+
+def test_mutate_doc_watcher_event_is_self(api, tmp_path):
+    root = make_conformant_project(tmp_path)
+    api._config["pinned_roots"] = [str(root)]
+    board = root / ".saipen" / "BOARD.md"
+    res = get_coordinator().mutate_doc(
+        board, lambda t: t.replace("## TODO\n", "## TODO\n- [ ] T-099 x\n", 1)
+    )
+    assert res.get("ok") is True, res
+    assert _origin(api, root, "BOARD.md") == "self"
+    # An unrelated file the app did NOT write reports external.
+    state = root / ".saipen" / "STATE.md"
+    state.write_text(read_doc(state) + "# ext\n", encoding="utf-8")
+    assert _origin(api, root, "STATE.md") == "external"
+
+
+def test_collect_watcher_events_all_self(api, tmp_path):
+    root = make_conformant_project(tmp_path)
+    api._config["pinned_roots"] = [str(root)]
+    make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix", critical="true")
+    res = collect_outbox_entry(root, "saihunt", "HUNT-001")
+    assert res.get("ok") is True, res
+    # EVERY written protocol file of the collect is attributed to the app.
+    # The watcher's `file` is relative to `.saipen/`.
+    for rel in res.get("changed_files", []):
+        watcher_rel = rel[len(".saipen/") :]
+        assert _origin(api, root, watcher_rel) == "self", f"{rel} not attributed self"
+
+
+def test_registry_empty_after_own_transaction(api, tmp_path):
+    root = make_conformant_project(tmp_path)
+    api._config["pinned_roots"] = [str(root)]
+    res = record_manual_work(root, "own write", operation_id="mw-own-1")
+    assert res.get("ok") is True
+    assert get_registry().pending(str(root)) == [], (
+        "own writes must never poison ExternalChangeRegistry"
+    )
+
+
+def test_external_edit_after_own_write_is_external(api, tmp_path):
+    root = make_conformant_project(tmp_path)
+    api._config["pinned_roots"] = [str(root)]
+    board = root / ".saipen" / "BOARD.md"
+    res = get_coordinator().mutate_doc(
+        board, lambda t: t.replace("## TODO\n", "## TODO\n- [ ] T-099 x\n", 1)
+    )
+    assert res.get("ok") is True, res
+    assert _origin(api, root, "BOARD.md") == "self"
+    board.write_text(read_doc(board) + "external noise\n", encoding="utf-8")
+    assert _origin(api, root, "BOARD.md") == "external"
+
+
+def test_failed_and_noop_writes_register_nothing(api, tmp_path):
+    root = make_conformant_project(tmp_path)
+    api._config["pinned_roots"] = [str(root)]
+    board = root / ".saipen" / "BOARD.md"
+    # No-op transform -> NOOP, nothing registered.
+    noop = get_coordinator().mutate_doc(board, lambda t: t)
+    assert noop.get("code") == "NOOP"
+    assert get_coordinator().self_writes.consume(str(root), "BOARD.md", "x") is False
+    # Failed write (stale baseline) registers nothing.
+    failed = get_coordinator().mutate_doc(
+        board, lambda t: t + "- [ ] T-999 y\n", expected_fingerprint="stale"
+    )
+    assert failed.get("ok") is False
+    assert get_coordinator().self_writes.consume(str(root), "BOARD.md", "x") is False
+
+
+def test_multiple_changed_files_consume_own_fingerprints(api, tmp_path):
+    root = make_conformant_project(tmp_path)
+    api._config["pinned_roots"] = [str(root)]
+    res = record_manual_work(root, "multi", operation_id="mw-multi-1")
+    assert res.get("ok") is True
+    coord = get_coordinator()
+    for rel in res.get("changed_files", []):
+        path = root / rel
+        # Each file's OWN post-write fingerprint is consumed; a foreign one is not.
+        assert (
+            coord.self_writes.consume(str(root), path.name, coord.fingerprint(path))
+            is True
+        )
+        assert coord.self_writes.consume(str(root), path.name, "nope") is False
 
 
 # --- #8 operation_id end-to-end + validation --------------------------------
@@ -257,3 +399,33 @@ def test_fingerprint_missing_differs_from_empty(tmp_path):
         == "FILE\x00" + __import__("hashlib").sha256(b"").hexdigest()
     )
     assert coord.fingerprint(missing) != coord.fingerprint(empty)
+
+
+# --- #10 fail closed on duplicate STATE authority keys ----------------------
+
+
+def test_duplicate_authority_key_refuses_mutation(tmp_path):
+    root = make_conformant_project(tmp_path)
+    state = root / ".saipen" / "STATE.md"
+    # Duplicate the authority-bearing `phase` key.
+    state.write_text(
+        read_doc(state).replace("phase: DONE\n", "phase: DONE\nphase: HUNT\n", 1),
+        encoding="utf-8",
+    )
+    res = record_manual_work(root, "x", operation_id="mw-dup-1")
+    assert res["ok"] is False
+    assert res["code"] in ("SAIO_UNAVAILABLE", "VALIDATION_FAILED"), res
+    # Nothing was written.
+    assert "T-001" not in read_doc(root / ".saipen" / "BOARD.md")
+
+
+def test_duplicate_saipen_home_refuses_resolution(tmp_path):
+    root = make_conformant_project(tmp_path)
+    state = root / ".saipen" / "STATE.md"
+    text = read_doc(state)
+    dup = text.replace("saipen_home:", "saipen_home:\nsaipen_home:", 1)
+    state.write_text(dup, encoding="utf-8")
+    from saipenview import saio
+
+    with pytest.raises(saio.SaioUnavailable):
+        saio.resolve_home(root)

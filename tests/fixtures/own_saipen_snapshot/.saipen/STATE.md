@@ -1,9 +1,9 @@
 ---
 schema_version: 3
-phase: DONE
-transition_from: SHIP
-task: none
-next_action: "saipen continue"
+phase: SHIP
+transition_from: REVIEW
+task: T-204
+next_action: "saipen ship"
 blocker: none
 mode: full
 saipen_version: 7

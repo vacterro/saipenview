@@ -20,7 +20,7 @@ from conftest import make_conformant_project
 from saipenview.api import Api
 from saipenview.config import DEFAULTS
 from saipenview.parser import move_ticket, parse_board, record_manual_work
-from saipenview.protocol_write import get_coordinator, next_event_id, next_ticket_id
+from saipenview.protocol_write import get_coordinator
 from saipenview.textio import read_doc
 
 
@@ -101,10 +101,14 @@ def test_external_change_between_read_and_commit_aborts(project):
 
 
 def test_ids_are_centralized(project):
+    # The ONE allocation authority is the canonical SAIOPS allocator (sealed
+    # history included, synthetic T-998/999 excluded).
+    from saipenview import saio
+
     board = read_doc(project / ".saipen" / "BOARD.md")
     log = read_doc(project / ".saipen" / "LOG.md")
-    assert next_ticket_id(board) == 3
-    assert next_event_id(log) == 3
+    assert saio.next_ticket_id(project, board, log) == 3
+    assert saio.next_event_id(project, log) == 3
 
 
 def test_stale_reader_cannot_append_to_a_moved_tail(project):

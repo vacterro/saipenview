@@ -212,13 +212,16 @@ class TestAutoRoots:
         for r in roots:
             assert r.upper() != SYSTEM_DRIVE.upper()
 
-    def test_returns_paths_with_trailing_slash(self):
+    def test_returns_paths_with_trailing_slash(self, tmp_path):
         from saipenview.scanner import scan
 
-        # scan() normalizes roots with trailing backslash
-        # Just test the normalization logic — no crash expected
-        scan(scan_roots=["D:", "E:\\projects"], max_depth=3, delay=0)
-        # No assertion on results (drives may not exist on CI), just no crash
+        # scan() normalizes roots with trailing backslash. tmp_path stands in
+        # for real drive roots: a real-drive scan here crawled the whole
+        # machine mid-suite and its abandoned daemon git workers could hit a
+        # dead subprocess._readerthread at interpreter shutdown (Bad file
+        # descriptor) -- T-179 family.
+        scan(scan_roots=[str(tmp_path) + "\\", "E:\\nonexistent"], max_depth=3, delay=0)
+        # No assertion on results (roots may not exist on CI), just no crash
 
 
 class TestScan:
@@ -312,7 +315,7 @@ class TestBackgroundScanner:
         from saipenview.scanner import BackgroundScanner, _is_gen_current, _next_gen
 
         gen = _next_gen()
-        bs = BackgroundScanner(on_result=lambda p: None)
+        bs = BackgroundScanner(on_result=lambda p: None, scan_roots=[])
         bs.start()
         bs.stop()
         assert not _is_gen_current(gen)
@@ -321,7 +324,7 @@ class TestBackgroundScanner:
         """Starting an already-running scanner is a no-op."""
         from saipenview.scanner import BackgroundScanner
 
-        bs = BackgroundScanner(on_result=lambda p: None)
+        bs = BackgroundScanner(on_result=lambda p: None, scan_roots=[])
         bs.start()
         bs.start()  # Should not error
         bs.stop()

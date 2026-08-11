@@ -14,14 +14,12 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from saipenview import saio
+from saipenview import protocol, saio
 from saipenview.ownership import AgentOwnershipError
 from saipenview.protocol_write import (
     _canonical_read_deps,
     escape_pipe,
     get_coordinator,
-    next_event_id,
-    next_ticket_id,
 )
 from saipenview.textio import read_doc
 
@@ -184,6 +182,7 @@ class Ticket:
     status: str  # " " open, "x" done, "/" in-progress
     description: str
     blocker: str = ""
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -219,22 +218,50 @@ _SECTION_LISTS = {
 _VIEWER_TICKET_ACTIONS = ("start", "done", "block", "unblock", "reopen")
 
 # The closed ticket-field vocabulary is owned by protocol.py (synced from
-# tools/saipen_engine/board.py); the blocker/verify reads here just use it.
+# tools/saipen_engine/board.py). ONE strict ticket-line grammar serves the
+# display parser, the mutation legality and the conformance grader alike:
+# escaped pipes preserved, fields order-independent, duplicate single-valued
+# fields malformed (never last-write-wins), unknown fields surfaced.
 _TICKET_FIELD_RE = re.compile(r"^([a-z_]+):\s*(.*)$")
 _PIPE_SENTINEL = "\x00"
 
 
-def _ticket_parts(rest: str) -> tuple[str, dict[str, str]]:
-    """Split a ticket line's pipe-delimited tail into (description, fields).
-    An escaped pipe is hidden before splitting so it never invents a field."""
-    masked = rest.replace("\\|", _PIPE_SENTINEL)
-    parts = [p.strip() for p in masked.split(" | ")]
+def _parse_ticket_line(line: str) -> tuple[str, str, str, dict[str, str], list[str]]:
+    """Parse ONE ticket line strictly: (checkbox, tid, description, fields,
+    errors). `errors` is empty only for a conformant line -- a malformed line
+    is surfaced, never silently normalized."""
+    masked = line.replace("\\|", _PIPE_SENTINEL)
+    m = TICKET_RE.match(masked)
+    if not m:
+        return ("", "", "", {}, ["line does not match `- [ ] T-### description`"])
+    checkbox, tid, rest = m.groups()
+    parts = [p.strip() for p in rest.split(" | ")]
+    description = parts[0].replace(_PIPE_SENTINEL, "|")
     fields: dict[str, str] = {}
+    errors: list[str] = []
     for part in parts[1:]:
-        m = _TICKET_FIELD_RE.match(part)
-        if m:
-            fields[m.group(1)] = m.group(2).replace(_PIPE_SENTINEL, "|")
-    return parts[0].replace(_PIPE_SENTINEL, "|"), fields
+        fm = _TICKET_FIELD_RE.match(part)
+        if not fm or fm.group(1) not in protocol.TICKET_FIELDS:
+            errors.append(f"unrecognized ticket field {part!r}")
+            continue
+        key = fm.group(1)
+        if key in fields:
+            errors.append(f"duplicate single-valued field {key}")
+            continue
+        fields[key] = fm.group(2).replace(_PIPE_SENTINEL, "|")
+    return checkbox, tid, description, fields, errors
+
+
+def parse_ticket_line(line: str) -> tuple[str, str, str, dict[str, str], list[str]]:
+    """PUBLIC strict ticket-line grammar: (checkbox, tid, description, fields,
+    errors). The display parser, the mutation legality and the conformance
+    grader all consume THIS -- one grammar, never three."""
+    return _parse_ticket_line(line)
+
+
+def ticket_fields(line: str) -> dict[str, str]:
+    """The strict fields of one ticket line (empty when malformed)."""
+    return _parse_ticket_line(line)[3]
 
 
 def _set_field(line: str, field: str, value: str) -> str:
@@ -287,42 +314,22 @@ def ticket_transition_error(
     ops = saio.engine(root)["operations"]
     with get_coordinator().locked(root):
         if action == "start":
+            # Public dry-run: the same claim authority the mutation uses.
             result = ops.plan_claim(root, ticket_id, agent, explicit=True)
         elif action == "done":
-            result = ops._plan_finish_ticket(
-                root,
-                ticket_id,
-                agent,
-                _dt.datetime.now(_dt.timezone.utc).strftime("%d.%m.%y %H:%M"),
-                _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            )
+            result = ops.finish_ticket(root, ticket_id, agent, dry_run=True)
         elif action in ("block", "unblock"):
             payload = (reason or "").strip()
             if action == "block" and not payload:
                 return "block requires a non-empty reason: the facts/dead ends that justify the block"
             if action == "unblock" and not payload:
                 return "unblock requires a non-empty decision: the evidence that lifts the block"
-            result = ops._ticket_targets(
-                root,
-                action,
-                ticket_id,
-                agent,
-                payload,
-                _dt.datetime.now(_dt.timezone.utc).strftime("%d.%m.%y %H:%M"),
-                _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            result = ops.ticket_move(
+                root, action, ticket_id, agent, payload, dry_run=True
             )
         elif action == "reopen":
             result = _reopen_legality(root, ticket_id)
-    if result is None:
-        return None
-    ok = (
-        getattr(result, "ok", result.get("ok", True))
-        if hasattr(result, "ok") or isinstance(result, dict)
-        else True
-    )
-    if ok is False:
-        return getattr(result, "message", None) or result.get("message", "")
-    return None
+    return saio.refusal_message(result) if result is not None else None
 
 
 def _reopen_legality(root: Path, ticket_id: str) -> dict | None:
@@ -371,20 +378,28 @@ def move_ticket(
     except saio.SaioUnavailable as exc:
         return _refuse_dict(saio.SAIO_UNAVAILABLE, str(exc))
     try:
-        with get_coordinator().locked(root):
+        coord = get_coordinator()
+        with coord.locked(root):
             if action == "start":
-                return saio.claim(root, ticket_id, agent, explicit=True)
-            if action == "done":
-                return saio.finish(root, ticket_id, agent)
-            if action == "block":
-                return saio.ticket_block(
+                result = saio.claim(root, ticket_id, agent, explicit=True)
+            elif action == "done":
+                result = saio.finish(root, ticket_id, agent)
+            elif action == "block":
+                result = saio.ticket_block(
                     root, ticket_id, agent, (blocker_reason or "").strip()
                 )
-            if action == "unblock":
-                return saio.ticket_unblock(
+            elif action == "unblock":
+                result = saio.ticket_unblock(
                     root, ticket_id, agent, (blocker_reason or "").strip()
                 )
-            return _reopen_ticket(root, ticket_id)
+            else:
+                return _reopen_ticket(root, ticket_id)
+            # The delegated canonical ops apply internally; register their
+            # post-write fingerprints so the watcher attributes every written
+            # protocol file to the app (same finalize path as coordinator plans).
+            if result.get("ok"):
+                coord.finalize_self_writes(root, result.get("changed_files", []))
+            return result
     except AgentOwnershipError as exc:
         return _refuse_dict("WRITER_BUSY", str(exc))
     except saio.SaioUnavailable as exc:
@@ -612,8 +627,8 @@ def record_manual_work(
                     expected={"ticket_id": ticket_id, "event": event_id},
                 )
 
-        next_event = next_event_id(log_text)
-        next_ticket = next_ticket_id(board_text)
+        next_event = saio.next_event_id(r, log_text)
+        next_ticket = saio.next_ticket_id(r, board_text, log_text)
         ticket_id = f"T-{next_ticket:03d}"
         stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%d.%m.%y %H:%M")
         utc = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -690,6 +705,7 @@ def _manual_work_git_note(root: Path) -> str:
             text=True,
             encoding="utf-8",
             check=False,
+            timeout=10,
         )
         status = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain"],
@@ -697,6 +713,7 @@ def _manual_work_git_note(root: Path) -> str:
             text=True,
             encoding="utf-8",
             check=False,
+            timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -713,6 +730,10 @@ def _manual_work_git_note(root: Path) -> str:
 
 
 def parse_board(text: str) -> Board:
+    """Display parse via the ONE strict ticket-line grammar: fields parse
+    identically regardless of order or position, escaped pipes preserved,
+    duplicate single-valued fields surfaced as errors (never last-write-wins),
+    and `| blocker: X | verify: Y` renders blocker as exactly `X`."""
     board = Board()
     current: str | None = None
     for line in text.splitlines():
@@ -720,19 +741,22 @@ def parse_board(text: str) -> Board:
         if heading:
             current = heading.group(1)
             continue
-        ticket = TICKET_RE.match(line.strip())
-        if ticket and current:
-            status, ticket_id, description = ticket.groups()
-            # A `| blocker:` field rides on the end of the line; show it
-            # separately so a BLOCKED row can display WHY it is blocked.
-            blocker = ""
-            field = re.search(r"\s*\|\s*blocker:\s*(.+)$", description)
-            if field:
-                blocker = field.group(1).strip()
-                description = description[: field.start()]
-            getattr(board, _SECTION_LISTS[current]).append(
-                Ticket(ticket_id, status, description, blocker)
+        if not current:
+            continue
+        checkbox, ticket_id, description, fields, errors = _parse_ticket_line(
+            line.strip()
+        )
+        if not ticket_id:
+            continue
+        getattr(board, _SECTION_LISTS[current]).append(
+            Ticket(
+                ticket_id,
+                checkbox,
+                description,
+                fields.get("blocker", ""),
+                errors,
             )
+        )
     return board
 
 
@@ -1199,7 +1223,9 @@ def collect_outbox_entry(
                         board_text,
                     )
                     if not already_ticket:
-                        created_ticket_id = f"T-{next_ticket_id(board_text):03d}"
+                        created_ticket_id = (
+                            f"T-{saio.next_ticket_id(r, board_text, log_text):03d}"
+                        )
                         desc = escape_pipe(
                             " ".join(
                                 (
@@ -1260,7 +1286,9 @@ def collect_outbox_entry(
                         rf"\[from {re.escape(sub_name)} {re.escape(entry_id)}\]",
                         board_text,
                     ):
-                        created_ticket_id = f"T-{next_ticket_id(board_text):03d}"
+                        created_ticket_id = (
+                            f"T-{saio.next_ticket_id(r, board_text, log_text):03d}"
+                        )
                         desc = escape_pipe(
                             " ".join(
                                 (
@@ -1284,12 +1312,13 @@ def collect_outbox_entry(
                             )
                         )
 
-                if not re.search(
+                appended_log = not re.search(
                     rf"RUN: collect {re.escape(sub_name)} "
                     rf"{re.escape(entry_id)}(?:\s|$)",
                     log_text,
-                ):
-                    next_event = next_event_id(log_text)
+                )
+                if appended_log:
+                    next_event = saio.next_event_id(r, log_text)
                     parent = f" [parent: E-{next_event - 1}]" if next_event > 1 else ""
                     target = f" -> {created_ticket_id}" if created_ticket_id else ""
                     log_line = (
@@ -1321,9 +1350,16 @@ def collect_outbox_entry(
                     )
                 )
 
+                # STATE.last_event MUST equal the real LOG tail. When the
+                # collect LOG line already existed (idempotent resume), no new
+                # event was appended -- bumping last_event to the NEXT unused id
+                # would claim a nonexistent event (T-204 review finding).
+                last_event = (
+                    next_event if appended_log else saio.event_tail(r, log_text)
+                )
                 new_state = _patch_state_last_event(
                     state_doc.text_norm,
-                    next_event_id(log_text),
+                    last_event,
                     now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 )
                 targets.append((".saipen/STATE.md", "state", new_state, state_doc))
@@ -1347,11 +1383,16 @@ def collect_outbox_entry(
                     preconditions,
                     expected={"ticket_id": created_ticket_id, "message": message},
                 )
-                return operation_plan, proof
+                return operation_plan
 
-            # Apply with a commit-time precheck that revalidates the freshness
-            # proof under the OS writer lock.
-            return _collect_apply(root, op_fn)
+            def precheck(r: Path):
+                return _collect_freshness_precheck(r, proof)
+
+            # The coordinator APPLYs the plan (one _finalize_success path for
+            # self-write attribution) and runs the freshness precheck under
+            # the canonical writer lock immediately before the journal is
+            # PREPARED. STALE_STATE re-decides once on a fresh snapshot.
+            return get_coordinator().mutate(root, op_fn, precheck=precheck)
 
     except AgentOwnershipError as exc:
         return _refuse_dict("WRITER_BUSY", str(exc))
@@ -1369,88 +1410,59 @@ def _hash_rel(root: Path, rel: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def _collect_apply(root: Path, op_fn) -> dict:
-    """Run the collect decision; the proof is revalidated under the lock."""
+def _collect_freshness_precheck(root: Path, proof: dict) -> dict | None:
+    """Commit-time freshness proof revalidation (runs under the canonical
+    writer lock, immediately before the journal is PREPARED). Any moved input
+    of the proof => STALE_FRESHNESS, zero writes."""
+    from saipenview import collect as collect_gate
 
-    def run(attempt: int):
-        planned = op_fn(root, attempt)
-        if isinstance(planned, tuple):
-            operation_plan, proof = planned
-        elif isinstance(planned, dict):
-            return planned
-        else:
-            operation_plan, proof = planned, {}
-
-        def precheck(r: Path):
-            from saipenview import collect as collect_gate
-
-            # The source identity must STILL match the proof's recorded values.
-            try:
-                identity = collect_gate.compute_source_identity(r)
-            except collect_gate.FreshnessError as exc:
-                return _refuse_dict(
-                    saio.STALE_FRESHNESS,
-                    f"source freshness computation BLOCKED at apply: {exc}",
-                )
-            if (
-                proof.get("source_head")
-                and identity.source_head != proof["source_head"]
-            ):
-                return _refuse_dict(
-                    saio.STALE_FRESHNESS,
-                    "source_head moved after the gate; zero writes",
-                )
-            if (
-                proof.get("source_tree_fingerprint")
-                and identity.source_tree_fingerprint != proof["source_tree_fingerprint"]
-            ):
-                return _refuse_dict(
-                    saio.STALE_FRESHNESS,
-                    "source tree changed (same HEAD or not) after the gate; "
-                    "zero writes",
-                )
-            if proof.get("role_revision"):
-                try:
-                    current_rr = collect_gate.current_role_revision(
-                        r, proof.get("sub_name", "")
-                    )
-                except collect_gate.FreshnessError as exc:
-                    return _refuse_dict(saio.STALE_FRESHNESS, str(exc))
-                if current_rr != proof["role_revision"]:
-                    return _refuse_dict(
-                        saio.STALE_FRESHNESS,
-                        "role charter changed after the gate; zero writes",
-                    )
-            # Every hashed input of the proof must still match live: OUTBOX,
-            # and the main checkpoints the decision was made against.
-            for key, rel in (
-                (
-                    "outbox_hash",
-                    f".saipen/extensions/subs/{proof.get('sub_name', '')}"
-                    "/kitchen/OUTBOX.md",
-                ),
-                ("state_hash", ".saipen/STATE.md"),
-                ("board_hash", ".saipen/BOARD.md"),
-                ("log_hash", ".saipen/LOG.md"),
-            ):
-                if not proof.get(key):
-                    continue
-                live = _hash_rel(r, rel)
-                if live != proof[key]:
-                    return _refuse_dict(
-                        saio.STALE_FRESHNESS,
-                        f"{rel} changed after the gate; zero writes",
-                    )
-            return None
-
-        return saio.apply_with_precheck(root, operation_plan, precheck)
-
-    result = run(0)
-    if result.get("code") == "STALE_STATE":
-        second = run(1)
-        if second.get("code") != "STALE_STATE":
-            return second
-    return result
+    try:
+        identity = collect_gate.compute_source_identity(root)
+    except collect_gate.FreshnessError as exc:
+        return _refuse_dict(
+            saio.STALE_FRESHNESS,
+            f"source freshness computation BLOCKED at apply: {exc}",
+        )
+    if proof.get("source_head") and identity.source_head != proof["source_head"]:
+        return _refuse_dict(
+            saio.STALE_FRESHNESS, "source_head moved after the gate; zero writes"
+        )
+    if (
+        proof.get("source_tree_fingerprint")
+        and identity.source_tree_fingerprint != proof["source_tree_fingerprint"]
+    ):
+        return _refuse_dict(
+            saio.STALE_FRESHNESS,
+            "source tree changed (same HEAD or not) after the gate; zero writes",
+        )
+    if proof.get("role_revision"):
+        try:
+            current_rr = collect_gate.current_role_revision(
+                root, proof.get("sub_name", "")
+            )
+        except collect_gate.FreshnessError as exc:
+            return _refuse_dict(saio.STALE_FRESHNESS, str(exc))
+        if current_rr != proof["role_revision"]:
+            return _refuse_dict(
+                saio.STALE_FRESHNESS, "role charter changed after the gate; zero writes"
+            )
+    for key, rel in (
+        (
+            "outbox_hash",
+            f".saipen/extensions/subs/{proof.get('sub_name', '')}/kitchen/OUTBOX.md",
+        ),
+        ("state_hash", ".saipen/STATE.md"),
+        ("board_hash", ".saipen/BOARD.md"),
+        ("log_hash", ".saipen/LOG.md"),
+    ):
+        if not proof.get(key):
+            continue
+        live = _hash_rel(root, rel)
+        if live != proof[key]:
+            return _refuse_dict(
+                saio.STALE_FRESHNESS, f"{rel} changed after the gate; zero writes"
+            )
+    return None
 
 
 def load_log_tail(root: Path, max_lines: int = 5) -> list[str]:
@@ -1522,6 +1534,7 @@ def get_git_status(root: Path) -> tuple[str, bool]:
             text=True,
             check=False,
             creationflags=CREATE_NO_WINDOW,
+            timeout=10,
         )
         if bp.returncode != 0:
             return "", False
@@ -1534,6 +1547,7 @@ def get_git_status(root: Path) -> tuple[str, bool]:
             text=True,
             check=False,
             creationflags=CREATE_NO_WINDOW,
+            timeout=10,
         )
         dirty = bool((sp.stdout or "").strip())
         return branch, dirty
