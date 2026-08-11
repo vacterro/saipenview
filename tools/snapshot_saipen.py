@@ -46,7 +46,6 @@ _KEPT_STATE_FIELDS = (
     "blocker",
     "mode",
     "saipen_version",
-    "execution_intent",
 )
 
 
@@ -74,6 +73,10 @@ def generate(live: Path, tracked: Path) -> dict[str, str]:
             lines.append(f"{key}: {value}")
     lines.append("agent: snapshot")
     lines.append("saipen_home: snapshot")
+    # execution_intent is per-session volatile (normal/goal/converge), like
+    # agent/updated/last_event -- the snapshot carries the stable shape, not a
+    # transient intent that would flip the fixture every convergence run.
+    lines.append("execution_intent: normal")
     lines.append(f"updated: {_FIXED_UPDATED}")
     lines.append("last_event: 2")
     lines.append("style_contract: ded-4ae736e4")
