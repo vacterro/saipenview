@@ -22,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 GATE = ROOT / "tools" / "release_gate.py"
 VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']")
@@ -130,6 +132,11 @@ def test_new_release_must_not_be_behind_newest_tag():
         ["git", "tag", "-l", "v[0-9]*"], capture_output=True, text=True, cwd=ROOT
     ).stdout.split()
     versions = [t[1:] for t in tags if re.match(r"^v\d+\.\d+\.\d+$", t)]
+    if not versions:
+        # A shallow CI checkout (actions/checkout@v4 without fetch-depth: 0)
+        # has no tags at all, so there is no "newest tag" to be behind --
+        # nothing to assert. Local clones carry the full tag history.
+        pytest.skip("no release tags in this checkout (shallow CI clone)")
 
     def key(v):
         return [int(x) for x in v.split(".")]
