@@ -69,6 +69,13 @@ def generate(live: Path, tracked: Path) -> dict[str, str]:
     for key in _KEPT_STATE_FIELDS:
         if key in state:
             value = state[key]
+            if key == "next_action" and re.search(r"\bT-\d+\b", value):
+                # A ticket-naming next_action is session routing (the live
+                # Pick Rule's choice for THIS agent); the snapshot's fixed
+                # `agent: snapshot` cannot own a live ticket claim, so the
+                # shape keeps the generic continuation instead of a stale
+                # ticket ref that would fail the cross-agent claim check.
+                value = "saipen continue"
             if " " in value or value == "":
                 value = f'"{value}"'
             lines.append(f"{key}: {value}")

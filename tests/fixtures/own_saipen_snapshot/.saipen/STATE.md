@@ -3,7 +3,7 @@ schema_version: 3
 phase: DONE
 transition_from: SHIP
 task: none
-next_action: "PHASE SCOUT T-195"
+next_action: "saipen continue"
 blocker: none
 mode: full
 saipen_version: 7
