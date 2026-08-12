@@ -268,9 +268,19 @@ class SessionStore:
                 continue
             if rec.status == "running" and rec.run_id not in live:
                 rec.status = "interrupted"
-            out.append(rec.to_dict())
-        out.sort(key=lambda r: r.get("started_at") or "", reverse=True)
-        return out[:limit]
+            # started_at alone can tie: two runs started in the same clock
+            # tick (datetime.now() resolution under load) then sort back to
+            # the stable _meta_files order, which is alphabetical by run_id --
+            # aider before gemini regardless of which came second, and the
+            # newer run loses last_run. Break the tie by file mtime (creation
+            # order): the second run's meta file was written after the first's.
+            try:
+                mtime = meta.stat().st_mtime_ns
+            except OSError:
+                mtime = 0
+            out.append(((rec.started_at or "", mtime), rec.to_dict()))
+        out.sort(key=lambda pair: pair[0], reverse=True)
+        return [d for _, d in out][:limit]
 
     def transcript(self, run_id: str, max_lines: int = 2000) -> dict:
         """The last ``max_lines`` lines of one run's transcript."""

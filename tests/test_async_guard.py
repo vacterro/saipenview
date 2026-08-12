@@ -49,7 +49,7 @@ const document = {{
   }},
   createElement: (tag) => ({{ __kind: tag, className: "", textContent: "", appendChild(){{}} }}),
 }};
-const window = {{ pywebview: {{ api: {{}} }} }};
+const window = {{ SaiApi: {{ get_last_agent_transcript: () => Promise.resolve({{ found: false }}), ready: true }} }};
 function t() {{ return "RESTORED"; }}
 function formatLocalTime() {{ return "now"; }}
 {fn}
@@ -113,7 +113,7 @@ class TestProjectSwitchRace:
     def test_stale_response_cannot_touch_the_new_panel(self, node_ok):
         body = SCENARIOS.format(
             scenario=(
-                "window.pywebview.api.get_last_agent_transcript = (root) => "
+                "window.SaiApi.get_last_agent_transcript = (root) => "
                 "new Promise((res) => { window.__resolve = res; });\n"
                 'restoreLastTranscript("A", {});\n'
                 'currentDetailRoot = "B"; datasetRoot.value = "B";\n'
@@ -129,7 +129,7 @@ class TestProjectSwitchRace:
     def test_no_switch_restores_and_marks(self, node_ok):
         body = SCENARIOS.format(
             scenario=(
-                "window.pywebview.api.get_last_agent_transcript = (root) => "
+                "window.SaiApi.get_last_agent_transcript = (root) => "
                 "new Promise((res) => { window.__resolve = res; });\n"
                 'restoreLastTranscript("A", {});\n'
                 'window.__resolve({ found: true, run: {}, total: 1, lines: ["L"] });'
@@ -142,7 +142,7 @@ class TestProjectSwitchRace:
     def test_found_false_is_not_permanently_blocked(self, node_ok):
         body = SCENARIOS.format(
             scenario=(
-                "window.pywebview.api.get_last_agent_transcript = (root) => "
+                "window.SaiApi.get_last_agent_transcript = (root) => "
                 "new Promise((res) => { window.__resolve = res; });\n"
                 'restoreLastTranscript("A", {});\n'
                 "window.__resolve({ found: false });"
@@ -154,7 +154,7 @@ class TestProjectSwitchRace:
     def test_transient_failure_is_not_permanently_blocked(self, node_ok):
         body = SCENARIOS.format(
             scenario=(
-                "window.pywebview.api.get_last_agent_transcript = (root) => "
+                "window.SaiApi.get_last_agent_transcript = (root) => "
                 "new Promise((res, rej) => { window.__reject = rej; });\n"
                 'restoreLastTranscript("A", {});\n'
                 'window.__reject(new Error("boom"));'

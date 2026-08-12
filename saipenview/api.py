@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -1200,11 +1201,20 @@ class Api:
     def clipboard_copy(self, text: str) -> bool:
         """Copy text to system clipboard via PowerShell (works in pywebview
         where navigator.clipboard is unavailable due to WebView2 secure-context
-        requirement). PowerShell escapes double-quotes inside double-quoted
-        strings by doubling them: "" -> literal "."""
+        requirement). The whole command travels as a base64-encoded UTF-16LE
+        blob (-EncodedCommand) and the value is a single-quoted PS literal, so
+        user-controlled clipboard text can never be parsed as PowerShell code
+        (a `$(...)` payload stays inert data, not an invocation)."""
         try:
-            cmd = f'Set-Clipboard -Value "{text.replace(chr(34), chr(34) + chr(34))}"'
-            subprocess.run(["powershell", "-NoProfile", "-Command", cmd], check=True)
+            # PS single-quoted literal: only ' needs doubling; $, `, " are inert.
+            quoted = "'" + text.replace("'", "''") + "'"
+            script = f"Set-Clipboard -Value {quoted}"
+            encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+            subprocess.run(
+                ["powershell", "-NoProfile", "-EncodedCommand", encoded],
+                check=True,
+                timeout=5,
+            )
             return True
         except (OSError, subprocess.SubprocessError) as e:
             print(f"SAIPENVIEW: clipboard_copy failed: {e}", file=sys.stderr)

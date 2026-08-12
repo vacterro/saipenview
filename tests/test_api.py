@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -731,12 +732,41 @@ class TestClipboardCopy:
             result = api.clipboard_copy("test text")
             assert result is True
             mock_run.assert_called_once()
-            assert "Set-Clipboard" in mock_run.call_args[0][0][-1]
+            args = mock_run.call_args[0][0]
+            assert args[0] == "powershell"
+            # Command rides as a base64 UTF-16LE blob, so the payload is data.
+            decoded = base64.b64decode(args[3]).decode("utf-16-le")
+            assert decoded == "Set-Clipboard -Value 'test text'"
 
     def test_handles_exception(self, api):
         with patch("subprocess.run", side_effect=OSError("no powershell")):
             result = api.clipboard_copy("test")
             assert result is False
+
+    def test_payload_is_data_not_powershell_code(self, api):
+        # A copied string containing $()/backtick must be passed as a literal
+        # value, never parsed as PowerShell. EncodedCommand base64 must decode
+        # to a single-quoted Set-Clipboard literal that cannot interpolate.
+        payload = '$(Start-Process calc) `evil` "quote"'
+        with patch("subprocess.run") as mock_run:
+            result = api.clipboard_copy(payload)
+            assert result is True
+            args = mock_run.call_args[0][0]
+            assert args[0] == "powershell"
+            assert args[2] == "-EncodedCommand"
+            decoded = base64.b64decode(args[3]).decode("utf-16-le")
+            assert decoded.startswith("Set-Clipboard -Value '")
+            # The raw payload must appear inside the PS single-quoted literal
+            # with only ' doubled -- never as live PS code after the string.
+            assert "$(Start-Process calc)" in decoded
+            assert decoded.count("'" ) == 2 + payload.count("'")
+
+    def test_run_has_a_timeout(self, api):
+        with patch("subprocess.run") as mock_run:
+            api.clipboard_copy("x")
+            kwargs = mock_run.call_args[1]
+            assert kwargs.get("timeout") is not None
+
 
 
 class TestStartStop:

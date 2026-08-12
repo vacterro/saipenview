@@ -45,9 +45,9 @@ def test_on_saipen_file_changed_takes_origin_and_prompts_only_on_external():
 def test_record_button_calls_the_backend():
     src = APP_JS.read_text(encoding="utf-8")
     body = src[src.index('getElementById("recordManualWorkBtn")') :]
-    # The operation id is minted before the RPC and passed through (repair
-    # mission P1): idempotency by operation id, never by human prose.
-    assert "record_manual_work(detail.root, desc.trim(), opId)" in body
+    # The operation id is minted per intent and carried through retry/resume
+    # (repair mission P1): idempotency is by operation id, never by prose.
+    assert "SaiApi.record_manual_work(detail.root, desc.trim(), opId)" in body
     assert 'prompt("Describe what you changed manually:")' in body
     assert "unrecordedChangeRoot = null" in body
     assert "pendingRecordOpId" in src

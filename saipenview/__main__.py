@@ -2,6 +2,11 @@
 
 `python -m saipenview` launches the GUI. `python -m saipenview --dry-run`
 validates config + path-safety layers without starting a window (T-138).
+`python -m saipenview --service --host 127.0.0.1 --port 0` starts the headless
+backend (no window) for SAIWORK embedding; it prints a single structured
+`SAIPENVIEW_SERVICE_READY {json}` line on stdout with the bound port and the
+per-launch token, then serves the authenticated loopback surface described in
+`saipenview/service.py`.
 """
 
 import argparse
@@ -11,6 +16,27 @@ from pathlib import Path
 
 from saipenview.config import config_path, load_config
 from saipenview.paths import canonical, validate_file_path
+
+
+def _run_service(args: argparse.Namespace) -> int:
+    from saipenview.service import run_service
+
+    try:
+        import signal
+
+        service = run_service(host=args.host, port=args.port, token=args.token)
+
+        def _stop(*_a, **_k) -> None:
+            service.stop()
+
+        signal.signal(signal.SIGINT, _stop)
+        signal.signal(signal.SIGTERM, _stop)
+        service.wait()
+        service.stop()
+        return 0
+    except Exception as e:  # noqa: BLE001 - surface start failure on stderr, exit non-zero
+        print(f"SAIPENVIEW service failed to start: {e}", file=sys.stderr)
+        return 1
 
 
 def _dry_run() -> int:
@@ -69,9 +95,32 @@ def main() -> int:
         action="store_true",
         help="validate config and path-safety layers, exit, no GUI",
     )
+    parser.add_argument(
+        "--service",
+        action="store_true",
+        help="headless backend mode (no window) for SAIWORK embedding",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind host (loopback only; default 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="bind port (0 = ephemeral; default 0)",
+    )
+    parser.add_argument(
+        "--token",
+        default=None,
+        help="per-launch session token (default: generated randomly)",
+    )
     args = parser.parse_args()
     if args.dry_run:
         return _dry_run()
+    if args.service:
+        return _run_service(args)
 
     import ctypes
     import traceback

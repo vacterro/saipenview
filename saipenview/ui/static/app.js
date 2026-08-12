@@ -195,8 +195,8 @@ function persistCollapseState() {
     s[el.getAttribute('data-section')] = el.classList.contains('collapsed');
   });
   collapsedConfig = Object.assign({}, collapsedConfig, { [currentDetailRoot]: s });
-  if (window.pywebview && window.pywebview.api) {
-    window.pywebview.api.save_view_config({ collapsed_sections: collapsedConfig });
+  if (window.SaiApi.ready) {
+    window.SaiApi.save_view_config({ collapsed_sections: collapsedConfig });
   }
 }
 
@@ -295,14 +295,14 @@ function showContextMenu(e, root, phase) {
     if (action === "show-phase" && phase) {
       showPhaseOverlay(phase);
     } else if (action === "copy-root" && root) {
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.clipboard_copy) {
-        window.pywebview.api.clipboard_copy(root).catch((e) => console.error("clipboard_copy(root) failed:", e));
+      if (window.SaiApi.ready && window.SaiApi.clipboard_copy) {
+        window.SaiApi.clipboard_copy(root).catch((e) => console.error("clipboard_copy(root) failed:", e));
       } else {
         navigator.clipboard.writeText(root).catch((e) => console.error("clipboard writeText(root) failed:", e));
       }
       showToast("Copied: " + root, "info", 2000);
     } else if (action === "open-folder" && root) {
-      window.pywebview.api.open_folder(root);
+      window.SaiApi.open_folder(root);
     }
   });
 
@@ -380,21 +380,21 @@ function showSectionContextMenu(e, root, section) {
     if (action === "open-section-file") {
       const path = item.getAttribute("data-path");
       const fn = item.getAttribute("data-filename");
-      window.pywebview.api.read_file_text(path).then((text) => {
+      window.SaiApi.read_file_text(path).then((text) => {
         if (text !== null) openFileViewer(fn, path, text);
         else showToast("Can't read " + fn, "error", 2000);
       });
     } else if (action === "copy-section-path") {
       const path = item.getAttribute("data-path");
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.clipboard_copy) {
-        window.pywebview.api.clipboard_copy(path).catch((e) => console.error("clipboard_copy(path) failed:", e));
+      if (window.SaiApi.ready && window.SaiApi.clipboard_copy) {
+        window.SaiApi.clipboard_copy(path).catch((e) => console.error("clipboard_copy(path) failed:", e));
       } else {
         navigator.clipboard.writeText(path).catch((e) => console.error("clipboard writeText(path) failed:", e));
       }
       showToast("Copied path", "info", 2000);
     } else if (action === "open-project-folder") {
       const r = item.getAttribute("data-root");
-      if (r) window.pywebview.api.open_folder(r);
+      if (r) window.SaiApi.open_folder(r);
     }
   });
 
@@ -1022,7 +1022,7 @@ function renderDetailPane(detail) {
     }
 
     // Fetch scan errors for the error card (polled fresh each renderDetailPane)
-    const errorApi = window.pywebview && window.pywebview.api;
+    const errorApi = window.SaiApi;
     let errorCardHtml = "";
     if (errorApi) {
       errorApi.get_scan_error_log().then((errors) => {
@@ -1168,16 +1168,16 @@ function renderDetailPane(detail) {
     `;
 
   document.getElementById("openFolderBtn")?.addEventListener("click", () => {
-    window.pywebview.api.open_folder(detail.root);
+    window.SaiApi.open_folder(detail.root);
   });
 
   document.getElementById("openTerminalBtn")?.addEventListener("click", () => {
-    window.pywebview.api.open_terminal(detail.root);
+    window.SaiApi.open_terminal(detail.root);
   });
 
   document.getElementById("openEditorBtn")?.addEventListener("click", (e) => {
     const btn = e.currentTarget;
-    window.pywebview.api.open_editor(detail.root).then((ok) => {
+    window.SaiApi.open_editor(detail.root).then((ok) => {
       if (!ok) {
         btn.textContent = "VS Code not found";
         setTimeout(() => { btn.textContent = "📝 Code"; }, 2000);
@@ -1186,7 +1186,7 @@ function renderDetailPane(detail) {
   });
 
   document.getElementById("togglePinDetailBtn")?.addEventListener("click", () => {
-    window.pywebview.api.toggle_pin(detail.root).then((updatedProjects) => {
+    window.SaiApi.toggle_pin(detail.root).then((updatedProjects) => {
       rawProjects = updatedProjects;
       loadDetail(detail.root);
       render(rawProjects, isScanned);
@@ -1198,7 +1198,7 @@ function renderDetailPane(detail) {
     btn.addEventListener("click", (e) => {
       const cmd = e.currentTarget.getAttribute("data-command");
       if (cmd) {
-        window.pywebview.api.run_command(detail.root, cmd);
+        window.SaiApi.run_command(detail.root, cmd);
       }
     });
   });
@@ -1208,7 +1208,7 @@ function renderDetailPane(detail) {
     btn.addEventListener("click", (e) => {
       const cmd = e.currentTarget.getAttribute("data-command");
       if (cmd) {
-        window.pywebview.api.run_command(detail.root, cmd);
+        window.SaiApi.run_command(detail.root, cmd);
       }
     });
   });
@@ -1217,7 +1217,7 @@ function renderDetailPane(detail) {
     btn.addEventListener("click", (e) => {
       const fileName = e.currentTarget.getAttribute("data-file");
       const path = detail.root + "\\.saipen\\" + fileName;
-      window.pywebview.api.read_file_text(path).then((text) => {
+      window.SaiApi.read_file_text(path).then((text) => {
         if (text !== null) {
           openFileViewer(fileName, path, text);
         } else {
@@ -1233,7 +1233,7 @@ function renderDetailPane(detail) {
     btn.addEventListener("click", (e) => {
       const path = e.currentTarget.getAttribute("data-path");
       const label = e.currentTarget.getAttribute("data-name");
-      window.pywebview.api.read_file_text(path).then((text) => {
+      window.SaiApi.read_file_text(path).then((text) => {
         if (text !== null) {
           openFileViewer(label, path, text);
         } else {
@@ -1254,7 +1254,7 @@ function renderDetailPane(detail) {
       if (!subPath || !fileName) return;
       const path = subPath + "\\" + fileName;
       const label = btn.parentElement.parentElement.querySelector(".sub-name").textContent + " " + fileName;
-      window.pywebview.api.read_file_text(path).then((text) => {
+      window.SaiApi.read_file_text(path).then((text) => {
         if (text !== null) {
           openFileViewer(label, path, text);
         } else {
@@ -1274,7 +1274,7 @@ function renderDetailPane(detail) {
         e.stopPropagation();
         const path = sp + "\\STATE.md";
         const label = (item.querySelector(".sub-name") || {}).textContent || "sub";
-        window.pywebview.api.read_file_text(path).then((text) => {
+        window.SaiApi.read_file_text(path).then((text) => {
           if (text !== null) openFileViewer(label + " STATE.md", path, text);
           else showToast("Can't read STATE.md", "error", 2000);
         });
@@ -1292,7 +1292,7 @@ function renderDetailPane(detail) {
       const fileName = _sectionFileFor(sec);
       const path = _sectionFilePath(root, sec);
       if (path && fileName) {
-        window.pywebview.api.read_file_text(path).then((text) => {
+        window.SaiApi.read_file_text(path).then((text) => {
           if (text !== null) openFileViewer(fileName, path, text);
           else showToast("Can't read " + fileName, "error", 2000);
         });
@@ -1310,7 +1310,7 @@ function renderDetailPane(detail) {
       const fileName = _sectionFileFor(sec);
       const path = _sectionFilePath(root, sec);
       if (path && fileName) {
-        window.pywebview.api.read_file_text(path).then((text) => {
+        window.SaiApi.read_file_text(path).then((text) => {
           if (text !== null) openFileViewer(fileName, path, text);
           else showToast("Can't read " + fileName, "error", 2000);
         });
@@ -1319,7 +1319,7 @@ function renderDetailPane(detail) {
   });
 
   document.getElementById("hideDetailBtn")?.addEventListener("click", () => {
-    window.pywebview.api.hide_project(detail.root).then((updatedProjects) => {
+    window.SaiApi.hide_project(detail.root).then((updatedProjects) => {
       rawProjects = updatedProjects;
       selectedRoot = null;
       render(rawProjects, isScanned);
@@ -1345,13 +1345,13 @@ function renderDetailPane(detail) {
     const taskV = document.getElementById("editTask").value;
     const updates = { "next_action": nextA, "task": taskV };
     btn.textContent = "Saving...";
-    window.pywebview.api.update_project_state(detail.root, updates).then((updatedDetail) => {
+    window.SaiApi.update_project_state(detail.root, updates).then((updatedDetail) => {
       // Clear the freeze only once the write actually came back, otherwise the
       // next poll could repaint over the editor before the save landed.
       stateEditActive = false;
       if (updatedDetail) {
         renderDetailPane(updatedDetail);
-        window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
+        window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
         if (typeof showToast === "function") showToast("State saved", "info", 1500);
       } else {
         btn.textContent = "Save failed -- retry?";
@@ -1422,11 +1422,11 @@ function renderDetailPane(detail) {
         liveBtn.textContent = "...";
         liveBtn.disabled = true;
 
-        window.pywebview.api.collect_outbox(detail.root, subName, eid).then((result2) => {
+        window.SaiApi.collect_outbox(detail.root, subName, eid).then((result2) => {
           if (result2 && result2.ok) {
             if (result2.updated_detail) {
               renderDetailPane(result2.updated_detail);
-              window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
+              window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
             } else {
               liveBtn.textContent = "Done!";
               setTimeout(() => { liveBtn.textContent = origText2; liveBtn.disabled = false; }, 2000);
@@ -1450,10 +1450,10 @@ function renderDetailPane(detail) {
   // T-174: real-time ticket checkboxes. Clicking a checkbox advances the
   // ticket's status (start/done/reopen/unblock); Block prompts for a reason.
   function toggleTicket(tid, action, reason) {
-    window.pywebview.api.toggle_ticket_status(detail.root, tid, action, reason || null).then((updatedDetail) => {
+    window.SaiApi.toggle_ticket_status(detail.root, tid, action, reason || null).then((updatedDetail) => {
       if (updatedDetail) {
         renderDetailPane(updatedDetail);
-        window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
+        window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
       } else {
         showToast("Toggle failed", "error");
       }
@@ -1491,16 +1491,17 @@ function renderDetailPane(detail) {
     recordBtn.addEventListener("click", () => {
       const desc = prompt("Describe what you changed manually:");
       if (desc === null || !desc.trim()) return;
-      // Idempotency is by OPERATION ID, never by human prose (repair mission
-      // P1): mint the id BEFORE the RPC so a retry of THIS invocation reuses
-      // it, while a fresh deliberate action mints a fresh id.
+      // The operation id is generated HERE, once per user intent, and reused
+      // on a retry of the same intent -- idempotency is by operation id,
+      // never by human prose, so two separate actions named the same way stay
+      // two records.
       const opId = pendingRecordOpId || ("mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8));
-      window.pywebview.api.record_manual_work(detail.root, desc.trim(), opId).then((res) => {
+      window.SaiApi.record_manual_work(detail.root, desc.trim(), opId).then((res) => {
         if (res && res.ok) {
           pendingRecordOpId = null;
           unrecordedChangeRoot = null;
           showToast("Recorded as " + (res.ticket_id || "ticket"), "success");
-          window.pywebview.api.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
+          window.SaiApi.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
         } else {
           showToast("Record failed: " + ((res && res.error) || "unknown"), "error");
         }
@@ -1538,10 +1539,10 @@ function renderDetailPane(detail) {
       const targetTid = row.getAttribute('data-tid');
       if (!dragState || !list || list.getAttribute('data-section') !== dragState.section) return;
       if (dragState.tid === targetTid) return;
-      window.pywebview.api.reorder_ticket(detail.root, dragState.tid, dragState.section, targetTid).then((updatedDetail) => {
+      window.SaiApi.reorder_ticket(detail.root, dragState.tid, dragState.section, targetTid).then((updatedDetail) => {
         if (updatedDetail) {
           renderDetailPane(updatedDetail);
-          window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
+          window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
         }
       });
     });
@@ -1554,10 +1555,10 @@ function renderDetailPane(detail) {
     list.addEventListener('drop', (e) => {
       e.preventDefault();
       if (!dragState || list.getAttribute('data-section') !== dragState.section) return;
-      window.pywebview.api.reorder_ticket(detail.root, dragState.tid, dragState.section, null).then((updatedDetail) => {
+      window.SaiApi.reorder_ticket(detail.root, dragState.tid, dragState.section, null).then((updatedDetail) => {
         if (updatedDetail) {
           renderDetailPane(updatedDetail);
-          window.pywebview.api.get_projects().then((proj) => render(proj, isScanned));
+          window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
         }
       });
     });
@@ -1581,8 +1582,8 @@ function renderDetailPane(detail) {
           fs.appendChild(opt);
         }
         fs.value = phase;
-        if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-          window.pywebview.api.save_view_config({ filter_phase: phase });
+        if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+          window.SaiApi.save_view_config({ filter_phase: phase });
         }
       }
       render(rawProjects, isScanned);
@@ -1626,7 +1627,7 @@ function loadDetail(rootStr) {
     renderDetailPane(null);
     return;
   }
-  window.pywebview.api.get_project_detail(rootStr).then((detail) => {
+  window.SaiApi.get_project_detail(rootStr).then((detail) => {
     renderDetailPane(detail);
   });
 }
@@ -1636,8 +1637,8 @@ function selectProject(rootStr) {
   // T-066 would follow you to the new project and stop it ever refreshing.
   if (rootStr !== selectedRoot) stateEditActive = false;
   selectedRoot = rootStr;
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-    window.pywebview.api.save_view_config({ selected_root: selectedRoot });
+  if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+    window.SaiApi.save_view_config({ selected_root: selectedRoot });
   }
   loadDetail(selectedRoot);
 
@@ -1667,8 +1668,8 @@ function linkedWorktreeHtml(wt) {
 function renderLinkedWorktrees() {
   const list = document.getElementById("projectList");
   const status = document.getElementById("status");
-  if (!window.pywebview || !window.pywebview.api) return;
-  window.pywebview.api.get_linked_worktrees().then((wts) => {
+  if (!window.SaiApi.ready) return;
+  window.SaiApi.get_linked_worktrees().then((wts) => {
     linkedWorktrees = wts || [];
     const badge = document.getElementById("wtBadge");
     if (badge) {
@@ -1691,7 +1692,7 @@ function renderLinkedWorktrees() {
         const root = row.getAttribute("data-root");
         if (root) {
           row.addEventListener("click", () => {
-            window.pywebview.api.open_folder(root);
+            window.SaiApi.open_folder(root);
           });
         }
       });
@@ -1743,7 +1744,7 @@ function render(projects, scanned) {
   const status = document.getElementById("status");
 
   if (showHidden) {
-    window.pywebview.api.get_hidden_projects().then((hidden) => {
+    window.SaiApi.get_hidden_projects().then((hidden) => {
       if (!hidden || !hidden.length) {
         list.innerHTML = '<div class="empty">no hidden projects</div>';
         status.textContent = "0 hidden";
@@ -1773,7 +1774,7 @@ function render(projects, scanned) {
             if (e.target.classList.contains("unhide-btn")) {
               e.stopPropagation();
               const hRoot = e.target.getAttribute("data-unhide-root");
-              window.pywebview.api.unhide_project(hRoot).then((updatedProjects) => {
+              window.SaiApi.unhide_project(hRoot).then((updatedProjects) => {
                 rawProjects = updatedProjects;
                 render(rawProjects, isScanned);
               });
@@ -1811,7 +1812,7 @@ function render(projects, scanned) {
       if (e.target.classList.contains("pin-btn")) {
         e.stopPropagation();
         const pinRoot = e.target.getAttribute("data-pin-root");
-        window.pywebview.api.toggle_pin(pinRoot).then((updatedProjects) => {
+        window.SaiApi.toggle_pin(pinRoot).then((updatedProjects) => {
           rawProjects = updatedProjects;
           if (selectedRoot === pinRoot) loadDetail(selectedRoot);
           render(rawProjects, isScanned);
@@ -1822,13 +1823,13 @@ function render(projects, scanned) {
         e.stopPropagation();
         const hRoot = e.target.getAttribute("data-hide-root") || e.target.getAttribute("data-unhide-root");
         if (e.target.classList.contains("hide-btn")) {
-          window.pywebview.api.hide_project(hRoot).then((updatedProjects) => {
+          window.SaiApi.hide_project(hRoot).then((updatedProjects) => {
             rawProjects = updatedProjects;
             if (selectedRoot === hRoot) { selectedRoot = null; }
             render(rawProjects, isScanned);
           });
         } else {
-          window.pywebview.api.unhide_project(hRoot).then((updatedProjects) => {
+          window.SaiApi.unhide_project(hRoot).then((updatedProjects) => {
             rawProjects = updatedProjects;
             render(rawProjects, isScanned);
           });
@@ -1840,7 +1841,7 @@ function render(projects, scanned) {
 
     row.addEventListener("dblclick", () => {
       const path = root + "\\.saipen\\STATE.md";
-      window.pywebview.api.read_file_text(path).then((text) => {
+      window.SaiApi.read_file_text(path).then((text) => {
         if (text !== null) openFileViewer("STATE.md", path, text);
         else showToast("Can't read STATE.md", "error", 2000);
       });
@@ -1861,7 +1862,7 @@ function render(projects, scanned) {
         e.stopPropagation();
         const path = sp + "\\STATE.md";
         const label = (sr.querySelector(".name") || {}).textContent || "sub";
-        window.pywebview.api.read_file_text(path).then((text) => {
+        window.SaiApi.read_file_text(path).then((text) => {
           if (text !== null) openFileViewer(label + " STATE.md", path, text);
           else showToast("Can't read STATE.md", "error", 2000);
         });
@@ -1954,7 +1955,7 @@ function renderDrives(drives, selectedRoots) {
       const newRoots = (selected.length === drives.length && currentCustomRoots.length === 0) ? null : selected;
       document.getElementById("status").textContent = "rescanning...";
       document.getElementById("projectList").innerHTML = '<div class="empty">scanning...</div>';
-      window.pywebview.api.set_scan_roots(newRoots).then((projects) => {
+      window.SaiApi.set_scan_roots(newRoots).then((projects) => {
         render(projects, true);
       });
     });
@@ -1969,7 +1970,7 @@ function renderDrives(drives, selectedRoots) {
       const newRoots = remaining.length ? remaining : null;
       document.getElementById("status").textContent = "rescanning...";
       document.getElementById("projectList").innerHTML = '<div class="empty">scanning...</div>';
-      window.pywebview.api.set_scan_roots(newRoots).then((projects) => {
+      window.SaiApi.set_scan_roots(newRoots).then((projects) => {
         render(projects, true);
       });
     });
@@ -1988,8 +1989,8 @@ function updateScanIndicator(scanning) {
     return;
   }
   wrap.style.display = "inline-flex";
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.get_scan_progress) {
-    window.pywebview.api.get_scan_progress().then((p) => {
+  if (window.SaiApi.ready && window.SaiApi.get_scan_progress) {
+    window.SaiApi.get_scan_progress().then((p) => {
       const fill = document.getElementById("scanProgressFill");
       if (fill) {
         const pct = Math.min(100, Math.max(0, p.pct || 0));
@@ -2002,8 +2003,8 @@ function updateScanIndicator(scanning) {
 
 function updateErrorBadge() {
   const badge = document.getElementById("errorBadge");
-  if (!badge || !window.pywebview || !window.pywebview.api) return;
-  window.pywebview.api.get_scan_errors().then((errors) => {
+  if (!badge || !window.SaiApi.ready) return;
+  window.SaiApi.get_scan_errors().then((errors) => {
     if (errors && errors.length) {
       badge.textContent = "!" + errors.length;
       badge.style.display = "inline";
@@ -2029,8 +2030,8 @@ if (wtBadge) {
 }
 
 document.getElementById("errorBadge")?.addEventListener("click", () => {
-  if (!window.pywebview || !window.pywebview.api) return;
-  window.pywebview.api.get_scan_errors().then((errors) => {
+  if (!window.SaiApi.ready) return;
+  window.SaiApi.get_scan_errors().then((errors) => {
     if (errors && errors.length) {
       showToast(errors.length + " scan error(s) — see Scan Errors card in detail pane", "error", 6000);
     }
@@ -2046,7 +2047,7 @@ document.getElementById("errorBadge")?.addEventListener("click", () => {
         if (icon) icon.textContent = "▼";
       }
       // Fetch fresh error log and fill the body
-      window.pywebview.api.get_scan_error_log().then((log) => {
+      window.SaiApi.get_scan_error_log().then((log) => {
         const body = errorCard.querySelector(".collapsible-body");
         if (body && log) {
           body.innerHTML = log.slice(0, 20).map(e =>
@@ -2087,18 +2088,18 @@ window.__saipenSetVisible = function (visible) {
 // consumed only one notification, and the global debounce collapsed events
 // across projects). A real external edit is always origin=external.
 let unrecordedChangeRoot = null;
-// The operation id for the CURRENT unrecorded-change intent: minted when the
-// external-change bar appears, reused on retry of the same invocation, cleared
-// on success. A fresh deliberate manual-work action mints a fresh id.
 let pendingRecordOpId = null;
 
 function showUnrecordedChange(root) {
   unrecordedChangeRoot = root;
+  // A fresh unrecorded external change is a fresh user intent: mint the
+  // operation id now so a retry of THIS intent resumes, while a later
+  // separate change gets its own id.
   pendingRecordOpId = "mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   // Re-render the detail so the persistent bar appears for the current root.
   const detailEl = document.getElementById("detailPane");
   if (detailEl && currentDetailRoot === root) {
-    window.pywebview.api.get_project_detail(root).then((d) => {
+    window.SaiApi.get_project_detail(root).then((d) => {
       if (d && currentDetailRoot === root) renderDetailPane(d);
     }).catch(() => {});
   }
@@ -2115,7 +2116,7 @@ window.onSaipenFileChanged = function(root, fileName, origin) {
   // NOT calling refresh_known() again -- is the one-refresh-per-event rule;
   // a second full re-parse of every project for one file change is the
   // defect T-124 removes.
-  window.pywebview.api.get_projects().then(projects => {
+  window.SaiApi.get_projects().then(projects => {
     render(projects, true);
     renderLinkedWorktrees();
   }).catch(() => {});
@@ -2131,7 +2132,7 @@ function poll() {
   // know (no drive walk, git skipped -> ~1.7ms/project), so edits show up in
   // seconds instead of waiting out rescan_interval, and the sidebar can no
   // longer disagree with the detail pane's live read (T-071 + T-072).
-  Promise.all([window.pywebview.api.get_status(), window.pywebview.api.refresh_known()])
+  Promise.all([window.SaiApi.get_status(), window.SaiApi.refresh_known()])
     .then(([status, projects]) => {
       render(projects, status.scanned);
       renderLinkedWorktrees();
@@ -2148,7 +2149,7 @@ function poll() {
 document.getElementById("rescanBtn")?.addEventListener("click", () => {
   document.getElementById("status").textContent = "rescanning...";
   updateScanIndicator(true);
-  window.pywebview.api.rescan().then((projects) => {
+  window.SaiApi.rescan().then((projects) => {
     render(projects, true);
     renderLinkedWorktrees();
     updateScanIndicator(false);
@@ -2161,12 +2162,12 @@ document.getElementById("rescanBtn")?.addEventListener("click", () => {
 
 document.getElementById("browseBtn")?.addEventListener("click", () => {
   document.getElementById("status").textContent = "selecting folder...";
-  window.pywebview.api.browse_folder().then((projects) => {
+  window.SaiApi.browse_folder().then((projects) => {
     render(projects, true);
     renderLinkedWorktrees();
     updateErrorBadge();
-    window.pywebview.api.get_config().then((cfg) => {
-      window.pywebview.api.get_local_drives().then((drives) => {
+    window.SaiApi.get_config().then((cfg) => {
+      window.SaiApi.get_local_drives().then((drives) => {
         renderDrives(drives, cfg.scan_roots);
       });
     });
@@ -2353,8 +2354,8 @@ function showPhaseOverlay(phase) {
           fs.appendChild(opt);
         }
         fs.value = phase;
-        if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-          window.pywebview.api.save_view_config({ filter_phase: phase });
+        if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+          window.SaiApi.save_view_config({ filter_phase: phase });
         }
       }
       render(rawProjects, isScanned);
@@ -2380,14 +2381,14 @@ const searchInput = document.getElementById("searchInput");
 if (searchInput) {
   searchInput.addEventListener("input", () => {
     searchQuery = searchInput.value;
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-      window.pywebview.api.save_view_config({ search_query: searchQuery });
+    if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+      window.SaiApi.save_view_config({ search_query: searchQuery });
     }
-    if (searchQuery.trim() && deepSearchMode && window.pywebview && window.pywebview.api) {
+    if (searchQuery.trim() && deepSearchMode && window.SaiApi.ready) {
       // Deep search: debounced, query backend for ticket + project matches
       clearTimeout(deepSearchTimer);
       deepSearchTimer = setTimeout(function() {
-        window.pywebview.api.quick_search(searchQuery.trim()).then(function(results) {
+        window.SaiApi.quick_search(searchQuery.trim()).then(function(results) {
           renderSearchResults(searchQuery.trim(), results);
         }).catch(function() {
           render(rawProjects, isScanned);
@@ -2408,8 +2409,8 @@ if (filterSelect) {
     if (["ALL", "ACTIVE", "DONE", "BLOCKED"].includes(currentFilter)) {
       filterSelect.querySelectorAll("option[data-dynamic]").forEach((o) => o.remove());
     }
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-      window.pywebview.api.save_view_config({ filter_phase: currentFilter });
+    if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+      window.SaiApi.save_view_config({ filter_phase: currentFilter });
     }
     render(rawProjects, isScanned);
   });
@@ -2436,8 +2437,8 @@ const sortSelect = document.getElementById("sortSelect");
 if (sortSelect) {
   sortSelect.addEventListener("change", () => {
     currentSort = sortSelect.value;
-    if (window.pywebview && window.pywebview.api) {
-      window.pywebview.api.set_sort_order(currentSort).then(() => {
+    if (window.SaiApi.ready) {
+      window.SaiApi.set_sort_order(currentSort).then(() => {
         render(rawProjects, isScanned);
       });
     }
@@ -2451,8 +2452,8 @@ if (excludeInput) {
     clearTimeout(excludeTimer);
     excludeTimer = setTimeout(() => {
       const dirs = excludeInput.value.split(",").map((s) => s.trim()).filter(Boolean);
-      if (window.pywebview && window.pywebview.api) {
-        window.pywebview.api.set_exclude_dirs(dirs).then((projects) => {
+      if (window.SaiApi.ready) {
+        window.SaiApi.set_exclude_dirs(dirs).then((projects) => {
           render(projects, true);
         });
       }
@@ -2469,8 +2470,8 @@ if (compactModeChk) {
     } else {
       list.classList.remove("compact");
     }
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-      window.pywebview.api.save_view_config({ compact_mode: compactModeChk.checked });
+    if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+      window.SaiApi.save_view_config({ compact_mode: compactModeChk.checked });
     }
   });
 }
@@ -2478,8 +2479,8 @@ if (compactModeChk) {
 const autoScanChk = document.getElementById("autoScanChk");
 if (autoScanChk) {
   autoScanChk.addEventListener("change", () => {
-    if (window.pywebview && window.pywebview.api) {
-      window.pywebview.api.set_auto_scan(autoScanChk.checked);
+    if (window.SaiApi.ready) {
+      window.SaiApi.set_auto_scan(autoScanChk.checked);
     }
   });
 }
@@ -2488,8 +2489,8 @@ const showHiddenChk = document.getElementById("showHiddenChk");
 if (showHiddenChk) {
   showHiddenChk.addEventListener("change", () => {
     showHidden = showHiddenChk.checked;
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-      window.pywebview.api.save_view_config({ show_hidden: showHidden });
+    if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+      window.SaiApi.save_view_config({ show_hidden: showHidden });
     }
     if (showHidden) {
       selectedRoot = null;
@@ -2502,8 +2503,8 @@ if (showHiddenChk) {
 const quitBtn = document.getElementById("quitBtn");
 if (quitBtn) {
   quitBtn.addEventListener("click", () => {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.quit) {
-      window.pywebview.api.quit();
+    if (window.SaiApi.ready && window.SaiApi.quit) {
+      window.SaiApi.quit();
     }
   });
 }
@@ -2511,8 +2512,8 @@ if (quitBtn) {
 const minimizeBtn = document.getElementById("minimizeBtn");
 if (minimizeBtn) {
   minimizeBtn.addEventListener("click", () => {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.minimize_window) {
-      window.pywebview.api.minimize_window();
+    if (window.SaiApi.ready && window.SaiApi.minimize_window) {
+      window.SaiApi.minimize_window();
     }
   });
 }
@@ -2523,8 +2524,8 @@ if (minimizeBtn) {
 const closeBtn = document.getElementById("closeBtn");
 if (closeBtn) {
   closeBtn.addEventListener("click", () => {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.close_window) {
-      window.pywebview.api.close_window();
+    if (window.SaiApi.ready && window.SaiApi.close_window) {
+      window.SaiApi.close_window();
     }
   });
 }
@@ -2532,8 +2533,8 @@ if (closeBtn) {
 const maximizeBtn = document.getElementById("maximizeBtn");
 if (maximizeBtn) {
   maximizeBtn.addEventListener("click", () => {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.maximize_window) {
-      window.pywebview.api.maximize_window();
+    if (window.SaiApi.ready && window.SaiApi.maximize_window) {
+      window.SaiApi.maximize_window();
     }
   });
 }
@@ -2551,8 +2552,8 @@ function toggleCollapse() {
   const isCollapsed = document.body.classList.toggle("collapsed");
   const btn = document.getElementById("togglePanelBtn");
   if (btn) btn.textContent = isCollapsed ? "▼" : "▲";
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-    window.pywebview.api.save_view_config({ top_panel_collapsed: isCollapsed });
+  if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+    window.SaiApi.save_view_config({ top_panel_collapsed: isCollapsed });
   }
   showCollapseHint();
   // The titlebar used to be toggled from here, so collapsed mode looked like a
@@ -2584,7 +2585,7 @@ function closeWiki() {
 }
 
 function loadWikiPages() {
-  const api = window.pywebview && window.pywebview.api;
+  const api = window.SaiApi;
   if (!api) return;
   document.getElementById("wikiLoading").style.display = "block";
   document.getElementById("wikiMarkdown").innerHTML = "";
@@ -2615,7 +2616,7 @@ function loadWikiPages() {
 
 function navigateToWikiPage(pageId) {
   _currentWikiPage = pageId;
-  const api = window.pywebview && window.pywebview.api;
+  const api = window.SaiApi;
   if (!api) return;
   document.getElementById("wikiLoading").style.display = "block";
   document.getElementById("wikiMarkdown").innerHTML = "";
@@ -2746,7 +2747,7 @@ function closeQuickHelp() {
 const settingsBtn = document.getElementById("settingsBtn");
 
 function openSettings() {
-  Promise.all([window.pywebview.api.get_config(), window.pywebview.api.get_autostart_enabled()]).then(([cfg, autostart]) => {
+  Promise.all([window.SaiApi.get_config(), window.SaiApi.get_autostart_enabled()]).then(([cfg, autostart]) => {
     document.getElementById("setZoomLevel").value = String(cfg.zoom_level || 1.0);
     document.getElementById("setHotkeys").value = (cfg.hotkeys || []).join(", ");
     document.getElementById("setSnapHotkey").value = Array.isArray(cfg.snap_hotkey) ? cfg.snap_hotkey.join(", ") : (cfg.snap_hotkey || "ctrl+q");
@@ -2769,7 +2770,7 @@ function openSettings() {
     themeBeforeSettings = currentTheme || cfg.theme || "";
     const themePicker = document.getElementById("setTheme");
     if (themePicker) {
-      window.pywebview.api.get_themes().then((list) => {
+      window.SaiApi.get_themes().then((list) => {
         themePicker.innerHTML = (list || []).map((th) =>
           '<option value="' + escapeHtml(th.slug) + '">' + escapeHtml(th.label) + '</option>'
         ).join("");
@@ -2823,7 +2824,7 @@ function openSettings() {
     }
     document.getElementById("saveSettingsBtn").textContent = "Save";
     settingsModal.style.display = "flex";
-    window.pywebview.api.get_local_drives().then((drives) => {
+    window.SaiApi.get_local_drives().then((drives) => {
       renderDrives(drives, cfg.scan_roots);
     });
   });
@@ -2833,7 +2834,7 @@ function closeSettings() {
   settingsModal.style.display = "none";
   // Undo a live preview the user did not save.
   if (themeBeforeSettings && themeBeforeSettings !== currentTheme) {
-    window.pywebview.api.get_theme_tokens(themeBeforeSettings).then(applyTheme);
+    window.SaiApi.get_theme_tokens(themeBeforeSettings).then(applyTheme);
   }
 }
 
@@ -2852,8 +2853,8 @@ document.getElementById("closeSettingsBtn")?.addEventListener("click", closeSett
     btn.textContent = isSwapped ? "⇆" : "⇄";
     btn.title = isSwapped ? "Restore default layout" : "Swap sidebar/detail pane position";
   }
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-    window.pywebview.api.save_view_config({ layout_swap: isSwapped });
+  if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+    window.SaiApi.save_view_config({ layout_swap: isSwapped });
   }
 });
 
@@ -2909,7 +2910,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
   }
 
   const saveBtn = document.getElementById("saveSettingsBtn");
-  const api = window.pywebview.api;
+  const api = window.SaiApi;
   // T-178: parse the engine_overrides JSON up front -- invalid JSON or a
   // wrong shape aborts the save with a visible error, so a bad override can
   // never reach the disk.
@@ -3037,16 +3038,16 @@ if (resizeHandle && projectListEl) {
     if (!resizing) return;
     resizing = false;
     resizeHandle.classList.remove("dragging");
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-      window.pywebview.api.save_view_config({ sidebar_width: projectListEl.getBoundingClientRect().width });
+    if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+      window.SaiApi.save_view_config({ sidebar_width: projectListEl.getBoundingClientRect().width });
     }
   });
 }
 
 document.getElementById("hintGotIt")?.addEventListener("click", () => {
   collapseHintAcknowledged = true;
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.save_view_config) {
-    window.pywebview.api.save_view_config({ collapse_hint_acknowledged: true });
+  if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+    window.SaiApi.save_view_config({ collapse_hint_acknowledged: true });
   }
   document.getElementById("collapseHint").style.display = "none";
 });
@@ -3167,16 +3168,16 @@ window.addEventListener("keydown", (e) => {
     selectProject(filtered[prevIndex].root);
   } else if (e.key === "Enter" && selectedRoot) {
     e.preventDefault();
-    window.pywebview.api.open_folder(selectedRoot);
+    window.SaiApi.open_folder(selectedRoot);
   }
 });
 
-window.addEventListener("pywebviewready", () => {
-  window.pywebview.api.get_engines().then(e => { availableEnginesCache = e || []; });
-  Promise.all([window.pywebview.api.get_config(), window.pywebview.api.get_local_drives()])
+window.addEventListener("saiapiready", () => {
+  window.SaiApi.get_engines().then(e => { availableEnginesCache = e || []; });
+  Promise.all([window.SaiApi.get_config(), window.SaiApi.get_local_drives()])
     .then(([cfg, drives]) => {
       applyFontFamily(cfg.font_family);
-      window.pywebview.api.get_theme_tokens(cfg.theme).then(applyTheme);
+      window.SaiApi.get_theme_tokens(cfg.theme).then(applyTheme);
       if (cfg.zoom_level) {
         document.body.style.zoom = cfg.zoom_level;
       }
@@ -3372,7 +3373,7 @@ document.getElementById("saveFileViewerBtn")?.addEventListener("click", () => {
   const content = document.getElementById("fileViewerContent").value;
   const btn = document.getElementById("saveFileViewerBtn");
   btn.textContent = "Saving...";
-  window.pywebview.api.write_file_text(currentFilePath, content).then((ok) => {
+  window.SaiApi.write_file_text(currentFilePath, content).then((ok) => {
     if (ok) {
       btn.textContent = "Saved";
       setTimeout(() => { btn.textContent = "Save"; }, 2000);
@@ -3387,8 +3388,8 @@ document.getElementById("saveFileViewerBtn")?.addEventListener("click", () => {
 // --- Quick UI Zoom ---
 let currentZoomLevel = 1.0;
 
-window.addEventListener("pywebviewready", () => {
-  window.pywebview.api.get_config().then((cfg) => {
+window.addEventListener("saiapiready", () => {
+  window.SaiApi.get_config().then((cfg) => {
     currentZoomLevel = cfg.zoom_level || 1.0;
     if (cfg.file_viewer_default) fileViewerDefault = cfg.file_viewer_default;
   });
@@ -3415,8 +3416,8 @@ function adjustZoomLevel(delta) {
   if (newSize !== currentZoomLevel) {
     currentZoomLevel = newSize;
     document.body.style.zoom = currentZoomLevel;
-    if (window.pywebview && window.pywebview.api) {
-      window.pywebview.api.set_zoom_level(currentZoomLevel);
+    if (window.SaiApi.ready) {
+      window.SaiApi.set_zoom_level(currentZoomLevel);
     }
     const setZoomLevelInput = document.getElementById("setZoomLevel");
     if (setZoomLevelInput) setZoomLevelInput.value = currentZoomLevel;
@@ -3509,7 +3510,7 @@ window.addEventListener("keydown", (e) => {
       if (currentZoomLevel !== 1.0) {
         currentZoomLevel = 1.0;
         document.body.style.zoom = "1.0";
-        if (window.pywebview && window.pywebview.api) window.pywebview.api.set_zoom_level(1.0);
+        if (window.SaiApi.ready) window.SaiApi.set_zoom_level(1.0);
         const setZoomLevelInput = document.getElementById("setZoomLevel");
         if (setZoomLevelInput) setZoomLevelInput.value = 1.0;
       }
@@ -3689,7 +3690,7 @@ ${testBadgeHtml}
   const stopBtn = container.querySelector(".stop-agent-btn");
   if (stopBtn) {
     stopBtn.addEventListener("click", () => {
-      window.pywebview.api.stop_agent(root).then(res => {
+      window.SaiApi.stop_agent(root).then(res => {
         if (res.ok) showToast("Agent stopped", "info");
         else showToast("Stop failed: " + res.error, "error");
         pollAgentOutput();
@@ -3709,7 +3710,7 @@ ${testBadgeHtml}
     const sendInput = () => {
       const text = chatInput.value;
       if (!text.trim()) return;
-      window.pywebview.api.send_agent_input(root, text).then(res => {
+      window.SaiApi.send_agent_input(root, text).then(res => {
         if (res.ok) {
           chatInput.value = "";
           showToast("Sent", "success");
@@ -3734,7 +3735,7 @@ ${testBadgeHtml}
       btn.addEventListener("click", (e) => {
         const cmd = e.target.getAttribute("data-cmd");
         if (cmd) {
-          window.pywebview.api.send_agent_input(root, cmd).then(res => {
+          window.SaiApi.send_agent_input(root, cmd).then(res => {
             if (res.ok) showToast("Sent: " + cmd, "success");
             else showToast("Send failed: " + res.error, "error");
           });
@@ -3753,9 +3754,9 @@ ${testBadgeHtml}
         }
         if (engine !== defaultEngine) {
           defaultEngine = engine;
-          window.pywebview.api.save_view_config({ default_engine: engine });
+          window.SaiApi.save_view_config({ default_engine: engine });
         }
-        window.pywebview.api.launch_agent(root, engine, instruction.trim()).then(res => {
+        window.SaiApi.launch_agent(root, engine, instruction.trim()).then(res => {
           if (res.ok) {
             agentSinceLineNum[root] = 0;
             // Drop the restored transcript: the console now belongs to the
@@ -3781,7 +3782,7 @@ ${testBadgeHtml}
       humanNoteBtn.addEventListener("click", () => {
         const note = prompt("Enter human note to append to STATE.md:");
         if (note) {
-          window.pywebview.api.add_human_note(root, note).then(res => {
+          window.SaiApi.add_human_note(root, note).then(res => {
             if (res.ok) showToast("Note added", "success");
             else showToast("Failed to add note: " + res.error, "error");
           });
@@ -3844,7 +3845,7 @@ function isCurrentProjectPanel(root) {
 
 function restoreLastTranscript(root, container) {
   if (agentRestoredRoots.has(root)) return;
-  const api = window.pywebview && window.pywebview.api;
+  const api = window.SaiApi;
   if (!api || !api.get_last_agent_transcript) return;
   api.get_last_agent_transcript(root).then((res) => {
     if (!res || !res.found) return;
@@ -3897,7 +3898,7 @@ function restoreLastTranscript(root, container) {
 // check so a stale transcript can never land in another project's panel.
 function renderAgentHistorySelect(root, selectEl) {
   if (!selectEl) return;
-  window.pywebview.api.get_agent_history(root, 20).then((runs) => {
+  window.SaiApi.get_agent_history(root, 20).then((runs) => {
     if (!isCurrentProjectPanel(root)) return;
     const previous = selectEl.value;
     selectEl.innerHTML = "";
@@ -3933,7 +3934,7 @@ function renderAgentHistorySelect(root, selectEl) {
 function loadAgentRun(root, runId) {
   if (!runId) return;
   if (!isCurrentProjectPanel(root)) return;
-  window.pywebview.api.get_agent_transcript(runId).then((res) => {
+  window.SaiApi.get_agent_transcript(runId).then((res) => {
     if (!isCurrentProjectPanel(root)) return;
     const linesContainer = document.getElementById("agentOutputLines");
     if (!linesContainer) return;
@@ -3970,7 +3971,7 @@ function loadAgentRun(root, runId) {
 }
 
 function pollAgentOutput() {
-  window.pywebview.api.list_running_agents().then(agents => {
+  window.SaiApi.list_running_agents().then(agents => {
     const badge = document.getElementById("runningAgentsBadge");
     if (badge) {
       if (agents && agents.length > 0) {
@@ -3985,7 +3986,7 @@ function pollAgentOutput() {
   if (!currentDetailRoot) return;
   const root = currentDetailRoot;
   
-  window.pywebview.api.get_agent_status(root).then(status => {
+  window.SaiApi.get_agent_status(root).then(status => {
     // T-169: a project switch while this was in flight must not let the old
     // project's status rebuild the current panel.
     if (currentDetailRoot !== root) return;
@@ -3997,7 +3998,7 @@ function pollAgentOutput() {
     
     if (status && (status.status === "running" || status.status === "done" || status.status === "failed" || status.status === "killed")) {
       let since = agentSinceLineNum[root] || 0;
-      window.pywebview.api.get_agent_output(root, since).then(res => {
+      window.SaiApi.get_agent_output(root, since).then(res => {
         if (currentDetailRoot !== root) return;
         if (res && res.lines && res.lines.length > 0) {
           const linesContainer = document.getElementById("agentOutputLines");
@@ -4034,8 +4035,8 @@ document.body.addEventListener("mousemove", (e) => {
   const dx = e.screenX - _dragState.sx;
   const dy = e.screenY - _dragState.sy;
   if (dx === 0 && dy === 0) return;
-  if (window.pywebview && window.pywebview.api) {
-    window.pywebview.api.move_by(dx, dy);
+  if (window.SaiApi.ready) {
+    window.SaiApi.move_by(dx, dy);
   }
   _dragState.sx = e.screenX;
   _dragState.sy = e.screenY;
@@ -4108,7 +4109,7 @@ function refreshDiff() {
   const content = document.getElementById("diffViewerContent");
   const status = document.getElementById("diffViewerStatus");
   const requestedRoot = currentDiffRoot;
-  window.pywebview.api.get_diff(requestedRoot).then(res => {
+  window.SaiApi.get_diff(requestedRoot).then(res => {
     // T-169: the modal may have been reopened for another project while this
     // was in flight -- a stale response must not overwrite it.
     if (currentDiffRoot !== requestedRoot) return;
@@ -4141,7 +4142,7 @@ document.getElementById("commitChangesBtn")?.addEventListener("click", () => {
   const tracked = (c.staged || 0) + (c.modified || 0) + (c.deleted || 0) + (c.renamed || 0);
   const total = tracked + (c.untracked || 0);
   showConfirm("Commit " + total + " file(s)? (tracked " + tracked + ", untracked " + (c.untracked || 0) + "). Ignored files excluded. This is everything the preview shows.", () => {
-    window.pywebview.api.commit_agent_work(currentDiffRoot, msg, currentDiffFingerprint).then(res => {
+    window.SaiApi.commit_agent_work(currentDiffRoot, msg, currentDiffFingerprint).then(res => {
       if (res.ok) {
         showToast("Committed", "success");
         refreshDiff();
@@ -4160,7 +4161,7 @@ document.getElementById("revertChangesBtn")?.addEventListener("click", () => {
   const tracked = (c.staged || 0) + (c.modified || 0) + (c.deleted || 0) + (c.renamed || 0);
   const untracked = c.untracked || 0;
   showConfirm("Restore " + tracked + " tracked file(s) to the last commit? " + untracked + " untracked file(s) will NOT be touched.", () => {
-    window.pywebview.api.revert_agent_work(currentDiffRoot, currentDiffFingerprint).then(res => {
+    window.SaiApi.revert_agent_work(currentDiffRoot, currentDiffFingerprint).then(res => {
       if (res.ok) {
         showToast("Restored tracked changes", "info");
         refreshDiff();
@@ -4182,7 +4183,7 @@ document.getElementById("deleteUntrackedBtn")?.addEventListener("click", () => {
   const msg = "DELETE " + total + " untracked file(s)? This cannot be undone. Ignored files are safe."
     + (total > 30 ? " First 30 listed:" : " Listed:") + "\n" + listed;
   showConfirm(msg, () => {
-    window.pywebview.api.delete_untracked_files(currentDiffRoot, currentDiffFingerprint).then(res => {
+    window.SaiApi.delete_untracked_files(currentDiffRoot, currentDiffFingerprint).then(res => {
       if (res.ok) {
         showToast("Untracked files deleted", "info");
         refreshDiff();
@@ -4207,7 +4208,7 @@ function refreshFleetDashboard() {
   const summary = document.getElementById("fleetDashboardSummary");
   if (!tbody || !summary) return;
 
-  window.pywebview.api.list_running_agents().then(agents => {
+  window.SaiApi.list_running_agents().then(agents => {
     if (!agents || agents.length === 0) {
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding: 10px; color:var(--textMuted)">No running agents</td></tr>';
       summary.textContent = "0 agents running";
@@ -4246,7 +4247,7 @@ function refreshFleetDashboard() {
     tbody.querySelectorAll(".kill-agent-btn").forEach(btn => {
       btn.addEventListener("click", () => {
         const root = btn.getAttribute("data-root");
-        window.pywebview.api.stop_agent(root).then(res => {
+        window.SaiApi.stop_agent(root).then(res => {
           if (res.ok) {
             showToast("Agent stopped", "info");
             refreshFleetDashboard();
@@ -4275,11 +4276,11 @@ document.getElementById("refreshFleetBtn")?.addEventListener("click", refreshFle
 
 document.getElementById("killAllAgentsBtn")?.addEventListener("click", () => {
   showConfirm("Are you sure you want to kill ALL running agents?", () => {
-    window.pywebview.api.list_running_agents().then(agents => {
+    window.SaiApi.list_running_agents().then(agents => {
       const running = agents.filter(a => a.status === "running");
       if (running.length === 0) return showToast("No agents to kill", "info");
       
-      let promises = running.map(a => window.pywebview.api.stop_agent(a.root));
+      let promises = running.map(a => window.SaiApi.stop_agent(a.root));
       Promise.all(promises).then(() => {
         showToast(`Killed ${running.length} agent(s)`, "info");
         refreshFleetDashboard();

@@ -347,7 +347,7 @@ mismatch, each named on stdout.
 ```
 saipenview/
 ├── app.py              Entry wiring — tray, hotkey, window, api, single-instance guard
-├── api.py              JS-facing pywebview bridge (77 public methods)
+├── api.py              JS-facing pywebview bridge (87 public methods)
 ├── scanner.py          Drive walk + parallel per-root scan + background rescan loop
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsing, tickets, subs, git status
 ├── textio.py           One reader/writer for every .saipen/ file — BOM, UTF-16, cp1251

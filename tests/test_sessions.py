@@ -8,6 +8,7 @@ erased both the transcript and any evidence a run had happened.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -186,6 +187,24 @@ class TestLimits:
         assert store.transcript(first.run_id)["lines"] == ["first"]
         assert store.transcript(second.run_id)["lines"] == ["second"]
         assert len(store.history(ROOT)) == 2
+
+    def test_identical_started_at_orders_by_creation_not_engine_name(self, store):
+        # Regression (T-532): two runs started in the same clock tick tie on
+        # started_at, and the old sort key (started_at alone) fell back to the
+        # stable _meta_files order -- alphabetical by run_id, so "aider" beat
+        # "gemini" even though gemini started second, and last_run returned the
+        # older run. Tie-break must be file mtime (creation order).
+        first = _run(store, engine="aider")
+        second = _run(store, engine="gemini")
+        same = first.to_dict()["started_at"]
+        for rec in (first, second):
+            path = store._dir / f"{rec.run_id}.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["started_at"] = same
+            path.write_text(json.dumps(data), encoding="utf-8")
+            # Rewriting bumps mtime; force the intended creation order back.
+            os.utime(path, ns=(1_000_000_000, 1_000_000_000 if rec is first else 2_000_000_000))
+        assert store.last_run(ROOT)["run_id"] == second.run_id
 
 
 class TestUnicode:
