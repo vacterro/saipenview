@@ -1,8 +1,8 @@
 ---
 schema_version: 3
-phase: BUILD
-transition_from: SCOUT
-task: T-533
+phase: DONE
+transition_from: SHIP
+task: none
 next_action: "saipen continue"
 blocker: none
 mode: full
