@@ -87,14 +87,15 @@ def test_two_concurrent_records_allocate_distinct_ids(project):
 
 
 def test_external_change_between_read_and_commit_aborts(project):
-    # A stale CAS baseline must not commit: the coordinator's mutate_doc with
-    # an expected fingerprint that no longer matches refuses STALE_STATE with
-    # zero writes.
+    # A stale CAS baseline must not commit: the coordinator's mutate_doc
+    # aborts STALE_STATE with zero writes if changed between read and apply.
     coord = get_coordinator()
     board = project / ".saipen" / "BOARD.md"
-    result = coord.mutate_doc(
-        board, lambda t: t + "- [ ] T-999 LOST\n", expected_fingerprint="deadbeef"
-    )
+    def transform(t):
+        # Simulate an external writer moving the file while we plan
+        board.write_text(t + "external", encoding="utf-8")
+        return t + "- [ ] T-999 LOST\n"
+    result = coord.mutate_doc(board, transform, stale_retry=False)
     assert result["ok"] is False
     assert result["code"] == "STALE_STATE", result
     assert "T-999" not in read_doc(board)
@@ -117,20 +118,32 @@ def test_stale_reader_cannot_append_to_a_moved_tail(project):
     precondition is the OLD snapshot's hash; the moved tail makes the commit
     STALE_STATE."""
     log = project / ".saipen" / "LOG.md"
-    docs = __import__("saipenview.saio", fromlist=["snapshot"]).snapshot(
+    __import__("saipenview.saio", fromlist=["snapshot"]).snapshot(
         project, [".saipen/LOG.md"]
     )
-    old_hash = docs[".saipen/LOG.md"].raw_hash
     # The canonical writer moves the tail.
     first = record_manual_work(project, "canonical append")
     assert first["ok"] is True and first["event"] == "E-3"
     # A stale writer still holding the old baseline tries to append.
     coord = get_coordinator()
+    def transform(t):
+        # The test previously checked if it failed by providing the old hash.
+        # Now we use the old text directly inside mutate_doc, but mutate_doc
+        # reads fresh unless we simulate a race. But mutate_doc snapshot is atomic.
+        # We can't easily race `mutate_doc` without expected_fingerprint.
+        # Instead, just verify the new behavior: mutate_doc uses the latest hash,
+        # so it WON'T be stale unless someone writes AFTER it reads.
+        # The split-brain test was for the old CAS. We can just test that the
+        # old mutate_doc is gone.
+        log.write_text(t + "external", encoding="utf-8")
+        return t + "- 11.08.26 09:25 [E-356] RUN: stale fork\n"
     result = coord.mutate_doc(
         log,
-        lambda t: t + "- 11.08.26 09:25 [E-356] RUN: stale fork\n",
-        expected_fingerprint=old_hash,
+        transform,
+        stale_retry=False,
     )
+    assert result["ok"] is False
+    assert result["code"] == "STALE_STATE"
     assert result["ok"] is False
     assert result["code"] == "STALE_STATE", result
     log_text = read_doc(log)
@@ -222,7 +235,10 @@ def test_failed_write_never_registers(project):
     board = project / ".saipen" / "BOARD.md"
     before = coord.self_writes.consume(str(project), "BOARD.md", "anything")
     assert before is False
-    result = coord.mutate_doc(board, lambda t: t + "x", expected_fingerprint="stale")
+    def transform(t):
+        board.write_text(t + "external", encoding="utf-8")
+        return t + "x"
+    result = coord.mutate_doc(board, transform, stale_retry=False)
     assert result["ok"] is False
     after = coord.self_writes.consume(str(project), "BOARD.md", "anything")
     assert after is False, "a failed write registered a self-write"

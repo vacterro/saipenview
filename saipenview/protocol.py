@@ -22,7 +22,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.223.8"
+BASELINE_VERSION = "7.223.12"
 
 # CORE § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.

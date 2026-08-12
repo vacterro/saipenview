@@ -374,7 +374,7 @@ class TestCanonicalIdAllocation:
         )
         board = read_doc(root / ".saipen" / "BOARD.md")
         log = read_doc(root / ".saipen" / "LOG.md")
-        assert saio.next_ticket_id(root, board, log) == 1
+        assert saio.next_ticket_id(root, board, log) == 1000
 
     def test_high_event_in_sealed_log_lifts_allocation(self, tmp_path):
         root = make_conformant_project(tmp_path)

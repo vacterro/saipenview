@@ -206,6 +206,7 @@ class WriteCoordinator:
         *,
         precheck: Callable[[Path], dict | None] | None = None,
         verification_policy: str = "core_fast",
+        stale_retry: bool = True,
     ) -> dict:
         """Commit one decision through the canonical pipeline.
 
@@ -224,10 +225,24 @@ class WriteCoordinator:
         normalized result contract.
         """
         root = Path(root)
+        from saipenview import saio
+
         with self._lock(root):
             self._begin_tx(root)
             try:
-                for attempt in range(2):
+                recovery = saio.recovery_status(root)
+                if recovery.get("blocked"):
+                    pending = ", ".join(str(p.get("op_id")) for p in recovery.get("pending", []))
+                    return {
+                        "ok": False,
+                        "code": "RECOVERY_REQUIRED",
+                        "message": f"unresolved canonical operation(s) block mutation: {pending}",
+                        "changed_files": [],
+                        "retryable": False,
+                        "recovery_required": True,
+                    }
+                max_attempts = 2 if stale_retry else 1
+                for attempt in range(max_attempts):
                     planned = planner(root, attempt)
                     if isinstance(planned, dict):
                         return planned
@@ -237,7 +252,7 @@ class WriteCoordinator:
                         precheck=precheck,
                         verification_policy=verification_policy,
                     )
-                    if result["code"] == "STALE_STATE" and attempt == 0:
+                    if result["code"] == "STALE_STATE" and attempt == 0 and max_attempts > 1:
                         continue
                     if result.get("ok"):
                         self._finalize_success(root, result, planned)
@@ -321,15 +336,13 @@ class WriteCoordinator:
         path: Path,
         transform: Callable[[str], str | None],
         *,
-        expected_fingerprint: str | None = None,
         verification_policy: str = "core_fast",
+        stale_retry: bool = True,
     ) -> dict:
         """Single-file canonical mutation (text transform -> exact bytes).
 
         `transform(text_norm) -> new_text` (None declines without writing).
-        Returns the normalized result contract. `expected_fingerprint` is the
-        legacy CAS baseline: when it does not match the live bytes, the
-        mutation refuses STALE_STATE without writing.
+        Returns the normalized result contract. 
 
         `verification_policy`: core_fast (default) for structural ops;
         `none` for a raw hand-edit (file editor), which byte-verifies only so
@@ -346,30 +359,7 @@ class WriteCoordinator:
         def op_fn(r: Path, attempt: int):
             docs = saio.snapshot(r, [rel])
             doc = docs[rel]
-            if (
-                expected_fingerprint is not None
-                and expected_fingerprint != "MISSING"
-                and doc.raw_hash != expected_fingerprint
-            ):
-                return {
-                    "ok": False,
-                    "code": "STALE_STATE",
-                    "message": f"{rel} changed since the read (CAS baseline)",
-                    "changed_files": [],
-                    "retryable": True,
-                    "recovery_required": False,
-                    "op_id": None,
-                }
-            if expected_fingerprint == "MISSING" and doc.raw_hash:
-                return {
-                    "ok": False,
-                    "code": "STALE_STATE",
-                    "message": f"{rel} was created since the read",
-                    "changed_files": [],
-                    "retryable": True,
-                    "recovery_required": False,
-                    "op_id": None,
-                }
+            
             new_text = transform(doc.text_norm)
             if new_text is None or new_text == doc.text_norm:
                 return {
@@ -395,7 +385,9 @@ class WriteCoordinator:
 
         # The planner returns ONLY a plan or a refusal; APPLY + self-write
         # finalization happen in mutate (one _finalize_success path).
-        return self.mutate(root, op_fn, verification_policy=verification_policy)
+        return self.mutate(
+            root, op_fn, verification_policy=verification_policy, stale_retry=stale_retry
+        )
 
     def recovery_status(self, root: Path) -> dict:
         """Unresolved canonical operations / conflicts blocking new mutation."""

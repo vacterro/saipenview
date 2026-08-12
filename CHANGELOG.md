@@ -71,7 +71,7 @@ Semantic versioning — see `saipenview/__init__.py`.
   `pathlib.Path.stat` deterministically across versions. Full suite green on
   3.10 (951 passed).
 
-## [0.1.28] - 2026-08-11
+## [Unreleased]
 
 ### Changed
 

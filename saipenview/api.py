@@ -940,7 +940,7 @@ class Api:
                 # non-conformant project, and core_fast would block exactly
                 # the repair.
                 result = get_coordinator().mutate_doc(
-                    path, lambda _t, c=content: c, verification_policy="none"
+                    path, lambda _t, c=content: c, verification_policy="none", stale_retry=False
                 )
                 return bool(result.get("ok"))
             except (OSError, AgentOwnershipError) as e:

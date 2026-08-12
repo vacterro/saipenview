@@ -119,7 +119,7 @@ plainly — each one matches implemented behavior:
 - **Missing roots are quarantined, not dropped** — they stay in the list and are reported in the scan error log, so when the drive returns the next scan picks them up again.
 - **`engine_overrides`** are shape-validated (`path` string, `extra_args` list of strings, `env` dict of strings) before a launch or a save.
 - **stdin gating** — the console "Send" control is offered only for engines with proven stdin support; currently no engine adapter advertises it (all are one-shot command launches), so the control stays hidden rather than promising input that would not be read.
-- **Protocol writes** go through the central write coordinator with per-root locking and CAS, and are refused for a project while a Core agent runs there — SAIPENVIEW never becomes a silent second writer.
+- **Protocol writes** go through the central write coordinator which delegates directly to the canonical SAIOPS engine. It uses the canonical OS writer lock and journaled recovery, never a local copy of the state machine.
 - **`generic-cli` is a deliberate shell escape hatch, not a sandbox.** It runs a user-supplied command through `cmd.exe /d /s /c` with the project as working directory. Quotes, pipes and `&&` work. Only a local user who already controls the machine can supply that command, and only they are responsible for what it runs.
 - **Git Revert** restores tracked changes only; deleting untracked files requires the separate, explicitly-labelled operation.
 
@@ -366,7 +366,7 @@ saipenview/
 ├── watcher.py          Watchdog file watcher on .saipen/ files
 ├── themes.py           Colour themes — palette + hexBlend computation
 ├── paths.py            Path canonicalization + file-boundary checks
-├── protocol_write.py   Write coordinator — atomic .saipen mutations, CAS + E/T allocation
+├── protocol_write.py   Write coordinator — canonical journal delegation, recovery preflight
 ├── engines/            Supported CLI engines (claude-code, codex, aider, gemini,
 │                       cline, goose, agy, generic-cli, opencode)
 ├── ui/

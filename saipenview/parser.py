@@ -98,8 +98,12 @@ def parse_frontmatter(text: str) -> dict[str, str]:
         line = line.strip()
         if not line or ":" not in line:
             continue
-        key, _, value = line.partition(":")
-        fields[key.strip()] = _unquote(value)
+        key_raw, _, value = line.partition(":")
+        key = key_raw.strip()
+        if key in fields:
+            # duplicate closed field => MALFORMED
+            return {}
+        fields[key] = _unquote(value)
     return fields
 
 

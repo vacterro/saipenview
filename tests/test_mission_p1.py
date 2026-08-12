@@ -225,9 +225,13 @@ def test_failed_and_noop_writes_register_nothing(api, tmp_path):
     assert noop.get("code") == "NOOP"
     assert get_coordinator().self_writes.consume(str(root), "BOARD.md", "x") is False
     # Failed write (stale baseline) registers nothing.
+    def transform(t):
+        board.write_text(t + "external", encoding="utf-8")
+        return t + "- [ ] T-999 y\n"
     failed = get_coordinator().mutate_doc(
-        board, lambda t: t + "- [ ] T-999 y\n", expected_fingerprint="stale"
+        board, transform, stale_retry=False
     )
+    assert failed.get("ok") is False
     assert failed.get("ok") is False
     assert get_coordinator().self_writes.consume(str(root), "BOARD.md", "x") is False
 

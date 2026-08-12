@@ -136,18 +136,31 @@ def _load_codec_from(home: Path):
 
 
 def engine(root: Path) -> dict[str, object]:
-    """Load (once per home) the canonical engine modules into the process.
+    """Load the canonical engine modules into the process.
 
-    Returns {"operations", "plan", "journal", "lock", "fast_check", "codec",
-    "freshness"}. The canonical tools/ dir is placed on sys.path so the
-    package's own relative imports and the top-level `freshness` module both
-    resolve.
+    Exactly ONE canonical SAIPEN_HOME is supported per process.
+    Attempting to load a distinct home fails closed to prevent
+    sys.modules identity contamination (repair mission P0).
+
+    Returns {"operations", "plan", "journal", "log", "lock", "fast_check",
+    "codec", "freshness"}.
     """
     home = resolve_home(root)
-    key = str(home)
+    key = str(home).lower()
     cached = _ENGINE_CACHE.get(key)
     if cached is not None and "operations" in cached:
         return cached
+
+    if _ENGINE_CACHE:
+        # A different home was already loaded
+        existing = next(iter(_ENGINE_CACHE.keys()))
+        if existing.lower() != key.lower():
+            raise RuntimeError(
+                f"MULTI-HOME CONTAMINATION BLOCKED: Process already loaded saipen_engine "
+                f"from {existing}. Cannot concurrently load distinct home {key} "
+                f"because Python sys.modules global identity is module-name based."
+            )
+
     tools = str(home / "tools")
     if tools not in sys.path:
         sys.path.insert(0, tools)
@@ -226,13 +239,24 @@ def plan(
     metadata (ticket/event/...) surfaced by APPLY on success. Returns the
     canonical OperationPlan; nothing is written.
     """
-    ops = engine(root)["operations"]
     plan_builder = engine(root)["plan"]
-    identity = ops._identity(root)
+    journal = engine(root)["journal"]
+    import importlib
+    paths_mod = importlib.import_module("saipen_engine.paths")
+    identity = paths_mod.project_identity(root)
+    
     missing_paths = set(missing_paths or ())
     built = []
     for rel, role, new_text, doc in targets:
-        target = ops._target(doc, rel, role, new_text)
+        encoded_content = doc.encode(new_text)
+        after_hash = journal.hash_bytes(encoded_content)
+        target = plan_builder.TargetPlan(
+            path=rel,
+            role=role,
+            content=encoded_content,
+            before_hash=doc.raw_hash,
+            after_hash=after_hash
+        )
         if rel in missing_paths:
             # The canonical journal's sentinel for an ABSENT file is "" -- a
             # plan for a new file must carry that before-hash or recovery
