@@ -1,10 +1,10 @@
 ---
 schema_version: 3
-phase: DONE
-transition_from: SHIP
+phase: BLOCKED
+transition_from: DONE
 task: none
-next_action: "saipen continue"
-blocker: none
+next_action: "WAIT: blocked -- the EE (saitranslate) and QQ (saiwiki) packages must be prepared and collected (ee/qq) before converge stage M"
+blocker: "producer gate: EE/QQ packages are producer-owned work (T-195/T-529, blocked with owners, cleared by ee/qq); Core stages A-I complete and green (full suite 954 x2, CLEAN done, final hunt clean)"
 mode: full
 saipen_version: 7
 agent: snapshot
