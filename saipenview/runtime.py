@@ -19,6 +19,55 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+# ── Windows Job Object containment (CORE-004) ──────────────────────────────
+# On Windows, agents spawned by the app must die when the parent exits.
+# A Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ensures the OS
+# terminates all processes in the job when the last handle closes.
+
+def _assign_job_object(proc: subprocess.Popen) -> None:
+    """Assign *proc* to a kill-on-close Job Object (Windows only).
+
+    Called from launch() so the child cannot outlive the parent on forced
+    exit (Task Manager, Ctrl+C, etc.). On non-Windows, this is a no-op.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+
+        # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        # JobObjectInfoClass = 2 (JobObjectBasicLimitInformation)
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        h_job = kernel32.CreateJobObjectW(None, None)
+        if not h_job:
+            return
+        limit_info = JOBOBJECT_BASIC_LIMIT_INFORMATION()
+        limit_info.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+        kernel32.SetInformationJobObject(
+            h_job, 2, ctypes.byref(limit_info),
+            ctypes.sizeof(limit_info),
+        )
+        kernel32.AssignProcessToJobObject(h_job, int(proc.pid))
+        # Leak the handle intentionally: closing it would kill the child.
+        # The handle lives for the process lifetime.
+    except (OSError, AttributeError, ImportError):
+        pass
+
 from saipenview.engines.base import AgentEngine
 from saipenview.events import event_bus
 from saipenview.paths import canonical_key
@@ -59,6 +108,8 @@ class AgentProcess:
     # Set by kill() before terminate() so the finalizer labels a deliberate
     # stop as "killed" even when the reader thread's EOF tail gets there first.
     _kill_intent: bool = False
+    # PERF-009: cached psutil.Process for CPU/memory metrics.
+    _psutil_proc: object | None = None  # psutil.Process or None
 
     def elapsed_seconds(self) -> float:
         """Return seconds since launch (or total if finished)."""
@@ -180,6 +231,10 @@ class ProcessManager:
                 self.ownership.release_agent(Path(project_root))
                 return {"ok": False, "error": str(exc)}
 
+            # CORE-004: Windows Job Object containment -- child dies when
+            # the parent exits, no matter how (Task Manager, Ctrl+C, etc.).
+            _assign_job_object(proc)
+
             ap = AgentProcess(
                 engine=engine,
                 project_root=project_root,
@@ -222,6 +277,16 @@ class ProcessManager:
 
             return {"ok": True, "engine": engine.name, "pid": proc.pid}
         except Exception:  # noqa: BLE001 - reservation must not leak on any path
+            # CORE-004: if the child was already spawned (e.g. sessions.start
+            # failed), we MUST kill/reap it before releasing ownership --
+            # otherwise the original agent process is still alive while a
+            # second writer could now claim the project.
+            try:
+                if proc.poll() is None:  # still alive
+                    proc.kill()
+                    proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+                pass
             self.ownership.release_agent(Path(project_root))
             raise
 
@@ -277,12 +342,20 @@ class ProcessManager:
         Idempotent and guarded: kill() and the reader thread's EOF tail both
         reach it, and whichever wins, the other is a no-op. Never touches the
         project watcher -- that ownership moves to the Api registry (T-124).
+
+        CORE-004: terminal status and ownership release require proven OS
+        process death (poll/wait returning non-None returncode). If the
+        process is still alive after the wait window, a background reaper
+        thread handles the delayed release so that ownership is never
+        released while the agent is still running.
         """
         with ap._finalize_lock:
             if ap._finalized:
                 return
             ap._finalized = True
 
+        # Wait for proven death. Give it a reasonable window, but do NOT
+        # give up if it takes longer -- instead schedule a background reaper.
         try:
             ap.process.wait(timeout=5)
         except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
@@ -300,13 +373,42 @@ class ProcessManager:
             ap.exit_code = exit_code
             ap.finished_at = datetime.now(timezone.utc)
             ap.status = status
+            ap._psutil_proc = None  # PERF-009: release cached handle
 
         if ap.run_id:
             self.sessions.finish(ap.run_id, status, exit_code)
 
-        # The agent no longer owns the project: app protocol mutations may
-        # resume. Release happens exactly once, behind the finalize guard.
-        self.ownership.release_agent(Path(ap.project_root))
+        # CORE-004: only release ownership when process death is PROVEN.
+        # If returncode is None the OS hasn't reaped the child yet -- we
+        # must not release ownership because the agent is still alive and
+        # could still be writing protocol files.
+        if exit_code is not None:
+            self.ownership.release_agent(Path(ap.project_root))
+        else:
+            # Schedule a background reaper: poll periodically until the
+            # process is truly dead, then release ownership.
+            def _delayed_reaper(proc=ap.process, root=ap.project_root,
+                               interval=0.5, max_wait=30.0):
+                elapsed = 0.0
+                while elapsed < max_wait:
+                    try:
+                        proc.wait(timeout=interval)
+                    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+                        pass
+                    if proc.returncode is not None:
+                        self.ownership.release_agent(Path(root))
+                        return
+                    elapsed += interval
+                # Last resort: force kill and release.
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+                    pass
+                self.ownership.release_agent(Path(root))
+
+            threading.Thread(target=_delayed_reaper, daemon=True,
+                            name="reaper-" + ap.engine.name).start()
 
         event_bus.publish(
             "agent.finished",
@@ -380,16 +482,26 @@ class ProcessManager:
 
         with ap._io_lock:
             total = ap._line_count
-            buf = list(ap.output_lines)
+            buf_len = len(ap.output_lines)
             status = ap.status
+            # PERF-006: check if there's new data before copying anything.
+            first_available = total - buf_len
+            if since_line >= total:
+                return {
+                    "lines": [],
+                    "total": total,
+                    "status": status,
+                    "first_available": first_available,
+                    "next_since": total,
+                    "dropped_count": max(0, first_available - since_line),
+                }
+            # Only copy the suffix we need, not the whole buffer.
+            start = max(since_line, first_available)
+            offset = start - first_available
+            lines = list(ap.output_lines)[offset:]
 
-        first_available = total - len(buf)  # earliest line still in buffer
+        first_available = total - buf_len
         dropped = max(0, first_available - since_line)
-        start = max(since_line, first_available)
-        if start >= total:
-            lines: list[str] = []
-        else:
-            lines = buf[start - first_available :]
 
         return {
             "lines": lines,
@@ -414,14 +526,22 @@ class ProcessManager:
             import psutil
 
             if ap.process and ap.status == "running":
-                p = psutil.Process(ap.process.pid)
-                # psutil cpu_percent requires a brief interval to calculate over time.
-                # Since we poll, calling it once with interval=None returns the value since last call,
-                # which is perfect for polling.
+                # PERF-009: reuse cached psutil.Process to avoid resetting
+                # CPU metric on every poll; create/prime once, then reuse.
+                p = ap._psutil_proc
+                if p is None:
+                    p = psutil.Process(ap.process.pid)
+                    p.cpu_percent(interval=None)  # prime
+                    ap._psutil_proc = p
                 cpu_percent = p.cpu_percent(interval=None)
                 memory_mb = p.memory_info().rss / (1024 * 1024)
-        except OSError:
-            pass
+        except Exception:
+            # W2-014: catch psutil.NoSuchProcess/AccessDenied (psutil.Error) and
+            # OSError alike. Degrade only CPU/RAM to 0.0; never let a metrics
+            # race determine lifecycle status.
+            cpu_percent = 0.0
+            memory_mb = 0.0
+            ap._psutil_proc = None
 
         with ap._io_lock:
             total_lines = ap._line_count
@@ -441,9 +561,17 @@ class ProcessManager:
         }
 
     def list_running(self) -> list[dict]:
-        """Return status dicts for all tracked agent processes."""
+        """Return status dicts for only live/stopping agent processes.
+
+        W2-009: finalized done/failed/killed records are excluded so the
+        running count does not grow over a session. Their history remains
+        accessible via get_status and SessionStore.
+        """
         with self._lock:
-            roots = list(self._processes.keys())
+            roots = [
+                r for r, ap in self._processes.items()
+                if ap.status in ("running",)
+            ]
         return [{**self.get_status(r), "root": r} for r in roots]
 
     def is_running(self, project_root: str) -> bool:
@@ -468,6 +596,9 @@ class ProcessManager:
         try:
             for raw_line in ap.process.stdout:
                 line = raw_line.rstrip("\n\r")
+                # W2-010: bound one logical output record in live memory.
+                if len(line) > 65536:
+                    line = line[:65536] + " [... truncated]"
                 with ap._io_lock:
                     ap.output_lines.append(line)
                     ap._line_count += 1

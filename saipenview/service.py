@@ -77,7 +77,6 @@ ALLOWED_RPC_METHODS: frozenset[str] = frozenset(
         "get_agent_transcript",
         "get_last_agent_transcript",
         "list_running_agents",
-        "run_command",
         # diff / commit / revert
         "get_diff",
         "commit_agent_work",
@@ -99,6 +98,8 @@ ALLOWED_RPC_METHODS: frozenset[str] = frozenset(
         "get_wiki_pages",
         "get_wiki_page",
         "get_locales",
+        # W2-004: scan tuning is non-shell, must be reachable from HTTP mode
+        "set_scan_tuning",
     }
 )
 
@@ -123,6 +124,8 @@ _DESKTOP_ONLY_METHODS = frozenset(
         "open_folder",
         "open_terminal",
         "open_editor",
+        # W2-004: run_command opens native cmd.exe, not headless-safe
+        "run_command",
         "clipboard_copy",
     }
 )
@@ -161,6 +164,9 @@ class SaipenViewService:
         self._subscriber_lock = threading.Lock()
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
+        # CORE-018: explicit lifecycle state machine.
+        self._state = "stopped"  # stopped | starting | running | stopping
+        self._state_lock = threading.Lock()
 
     # ── public lifecycle ────────────────────────────────────────────────────
 
@@ -173,25 +179,68 @@ class SaipenViewService:
         return self._server.server_address[1] if self._server else -1
 
     def start(self) -> None:
-        """Create the Api, wire the event bridge, start the HTTP server."""
-        if self._api is None:
-            self._api = Api()
-            if not self._auto_scan:
-                self._api._auto_scan = False
-                self._api._config["auto_scan"] = False
-            event_bus.subscribe("saipen.file_changed", self._on_file_changed)
-            self._api.start()
+        """Create the Api, wire the event bridge, start the HTTP server.
 
-        server = ThreadingHTTPServer((self._host, self._port), self._make_handler())
-        server.handle_error = self._handle_server_error
-        self._server = server
-        self._thread = threading.Thread(
-            target=server.serve_forever, name="saipenview-service", daemon=True
-        )
-        self._thread.start()
+        CORE-018: double-start is a deterministic no-op. Bind/thread failure
+        after Api start unwinds successfully-started resources in reverse.
+        """
+        with self._state_lock:
+            if self._state != "stopped":
+                return  # double-start: deterministic no-op
+            self._state = "starting"
+
+        api_created = False
+        event_subscribed = False
+        try:
+            if self._api is None:
+                self._api = Api()
+                api_created = True
+                if not self._auto_scan:
+                    self._api._auto_scan = False
+                    self._api._config["auto_scan"] = False
+                event_bus.subscribe("saipen.file_changed", self._on_file_changed)
+                event_subscribed = True
+                self._api.start()
+
+            server = ThreadingHTTPServer((self._host, self._port), self._make_handler())
+            server.handle_error = self._handle_server_error
+            self._server = server
+            self._thread = threading.Thread(
+                target=server.serve_forever, name="saipenview-service", daemon=True
+            )
+            self._thread.start()
+            with self._state_lock:
+                self._state = "running"
+        except Exception:  # noqa: BLE001
+            # CORE-018: unwind successfully-started resources in reverse.
+            with self._state_lock:
+                self._state = "stopped"
+            if self._thread and self._thread.is_alive():
+                try:
+                    self._server.shutdown()
+                    self._server.server_close()
+                except OSError:
+                    pass
+                self._thread.join(timeout=2)
+                self._thread = None
+            self._server = None
+            if event_subscribed and self._api is not None:
+                event_bus.unsubscribe("saipen.file_changed", self._on_file_changed)
+            if api_created and self._api is not None:
+                self._api.stop()
+                self._api = None
+            raise
 
     def stop(self) -> None:
-        """Graceful shutdown: stop the HTTP server then the Api backend."""
+        """Graceful shutdown: stop the HTTP server then the Api backend.
+
+        CORE-018: idempotent. Resets the lifecycle state so a subsequent
+        start() can work.
+        """
+        with self._state_lock:
+            if self._state == "stopped":
+                return
+            self._state = "stopping"
         self._stopping.set()
         if self._server:
             try:
@@ -219,6 +268,8 @@ class SaipenViewService:
         ):
             self._thread.join(timeout=5)
         self._thread = None
+        with self._state_lock:
+            self._state = "stopped"
 
     def _handle_server_error(self, request, client_address) -> None:
         """A client aborting mid-request (shutdown, navigation, tab close) is
@@ -248,25 +299,66 @@ class SaipenViewService:
         while not self._stopping.is_set():
             time.sleep(0.25)
 
+    # W2-005: bounded per-subscriber event buffer.
+    _SSE_QUEUE_MAX = 200
+
     # ── event bridge (watcher -> SSE) ───────────────────────────────────────
 
     def _on_file_changed(self, data: dict) -> None:
-        """Fan the structured file-change event out to every SSE subscriber."""
-        payload = json.dumps(
-            {
-                "event": "file.changed",
-                "root": data.get("root", ""),
-                "file": data.get("file", ""),
-                "origin": data.get("origin", "external"),
-            }
-        )
+        """Fan the structured file-change event out to every SSE subscriber.
+
+        W2-005: coalesce events by (root, file) key within each subscriber's
+        buffer, preserving external origin if any coalesced event was external.
+        On capacity overflow emit one resync sentinel instead of growing memory.
+        """
+        root = data.get("root", "")
+        file_key = data.get("file", "")
+        origin = data.get("origin", "external")
         with self._subscriber_lock:
             subscribers = list(self._event_subscribers)
         for cond in subscribers:
             try:
-                queue = getattr(cond, "_sse_queue", None)
-                if queue is not None:
-                    queue.append(payload)
+                buf = getattr(cond, "_sse_queue", None)
+                if buf is None:
+                    continue
+                # Coalesce: update existing entry for same (root, file) or append new.
+                # buf is a dict[(root,file)] -> {origin, payload}
+                if (root, file_key) in buf:
+                    existing = buf[(root, file_key)]
+                    # Preserve external if any coalesced event was external.
+                    merged_origin = "external" if (
+                        existing["origin"] == "external" or origin == "external"
+                    ) else origin
+                    payload = json.dumps({
+                        "event": "file.changed",
+                        "root": root,
+                        "file": file_key,
+                        "origin": merged_origin,
+                    })
+                    buf[(root, file_key)] = {
+                        "origin": merged_origin,
+                        "payload": payload,
+                    }
+                elif len(buf) < self._SSE_QUEUE_MAX:
+                    payload = json.dumps({
+                        "event": "file.changed",
+                        "root": root,
+                        "file": file_key,
+                        "origin": origin,
+                    })
+                    buf[(root, file_key)] = {
+                        "origin": origin,
+                        "payload": payload,
+                    }
+                else:
+                    # W2-005: capacity overflow -- emit resync sentinel.
+                    buf.clear()
+                    resync = json.dumps({"event": "resync_required"})
+                    buf[('_resync', '')] = {
+                        "origin": "internal",
+                        "payload": resync,
+                    }
+                    break  # stop iterating subscribers after sentinel
                 with cond:
                     cond.notify_all()
             except RuntimeError:
@@ -288,6 +380,15 @@ class SaipenViewService:
         fn = getattr(self._api, method, None)
         if fn is None or not callable(fn) or method.startswith("_"):
             raise _ServiceError(f"RPC {method!r} is not callable", 404)
+        # W2-013: use inspect.signature().bind() to distinguish caller-side
+        # arity errors from backend-internal TypeErrors. Binding TypeError
+        # becomes 400 (client error); after binding, an internal TypeError
+        # flows as 500 (server error).
+        import inspect
+        try:
+            inspect.signature(fn).bind(*args)
+        except TypeError as exc:
+            raise _ServiceError(f"bad arguments: {exc}", 400) from exc
         result = fn(*args)
         # JSON-safe serialisation check; the pywebview bridge would also marshal
         # this, so failing here surfaces the same contract violations early.
@@ -452,8 +553,9 @@ class SaipenViewService:
             # -- SSE --
 
             def _stream_events(self) -> None:
+                # W2-005: buffer is a coalesced dict[(root,file)] -> {origin, payload}
                 cond = threading.Condition()
-                cond._sse_queue = []  # type: ignore[attr-defined]
+                cond._sse_queue: dict = {}  # type: ignore[attr-defined]
                 with service._subscriber_lock:
                     service._event_subscribers.add(cond)
                 try:
@@ -462,24 +564,24 @@ class SaipenViewService:
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Connection", "keep-alive")
                     self.end_headers()
-                    # Initial keep-alive comment so the client sees the stream open.
                     self.wfile.write(b": connected\n\n")
                     self.wfile.flush()
                     while not service._stopping.is_set():
                         with cond:
                             cond.wait(timeout=15)
                         queue = cond._sse_queue  # type: ignore[attr-defined]
-                        while queue:
-                            payload = queue.pop(0)
+                        # Drain: snapshot + clear, then write (O(1) swap).
+                        pending = list(queue.values())
+                        queue.clear()
+                        for entry in pending:
                             self.wfile.write(b"data: ")
-                            self.wfile.write(payload.encode("utf-8"))
+                            self.wfile.write(entry["payload"].encode("utf-8"))
                             self.wfile.write(b"\n\n")
                             self.wfile.flush()
-                        # Heartbeat every ~15s so a silent connection dies loudly.
                         self.wfile.write(b": ping\n\n")
                         self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError, OSError):
-                    pass  # client went away; subscriber removed below
+                    pass
                 finally:
                     with service._subscriber_lock:
                         service._event_subscribers.discard(cond)

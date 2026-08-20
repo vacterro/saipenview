@@ -42,12 +42,21 @@ def normalize_rel(rel_path: str) -> str:
     return "/".join(parts)
 
 
+_next_token = 0
+
+def _gen_token() -> int:
+    global _next_token
+    _next_token += 1
+    return _next_token
+
+
 @dataclass
 class PendingChange:
     root: str
     rel_path: str
     fingerprint: str
     observed_at: float
+    token: int  # W2-003: monotonic generation for conditional acknowledgement
     status: str = "unresolved"  # unresolved | acknowledged
 
     def to_dict(self) -> dict:
@@ -56,6 +65,7 @@ class PendingChange:
             "path": self.rel_path,
             "status": self.status,
             "observed_at": self.observed_at,
+            "token": self.token,
         }
 
 
@@ -66,24 +76,39 @@ class ExternalChangeRegistry:
         self._entries: dict[tuple[str, str], PendingChange] = {}
         self._lock = threading.Lock()
 
-    def record(self, root: str, rel_path: str, fingerprint: str) -> None:
+    def record(self, root: str, rel_path: str, fingerprint: str) -> int:
         """Record an external write under canonicalized keys. The watcher only
         calls this for origin=external (the app's own writes were attributed
-        self by SelfWriteRegistry and never reach here)."""
+        self by SelfWriteRegistry and never reach here).
+
+        W2-003: returns the monotonic token so callers can use it for
+        conditional acknowledgement."""
         key_root = canonical_key(root)
         key_rel = normalize_rel(rel_path)
         now = _time.monotonic()
+        token = _gen_token()
         with self._lock:
             self._entries[(key_root, key_rel)] = PendingChange(
-                key_root, key_rel, fingerprint, now
+                key_root, key_rel, fingerprint, now, token
             )
+        return token
 
-    def acknowledge(self, root: str, rel_path: str) -> bool:
-        """Explicit user acknowledge: clears one pending change."""
+    def acknowledge(self, root: str, rel_path: str, token: int | None = None) -> bool:
+        """Explicit user acknowledge: clears one pending change.
+
+        W2-003: when token is provided, the acknowledgement is conditional --
+        only succeeds if the entry's token matches (same change the user saw).
+        A newer write must remain pending."""
         key_root = canonical_key(root)
         key_rel = normalize_rel(rel_path)
         with self._lock:
-            return self._entries.pop((key_root, key_rel), None) is not None
+            entry = self._entries.get((key_root, key_rel))
+            if entry is None:
+                return False
+            if token is not None and entry.token != token:
+                return False  # stale acknowledgement -- newer write exists
+            self._entries.pop((key_root, key_rel), None)
+            return True
 
     def pending(self, root: str | None = None) -> list[PendingChange]:
         with self._lock:

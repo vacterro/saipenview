@@ -59,7 +59,8 @@ _AUTHORITY_STATE_KEYS = frozenset(
 
 def _strict_frontmatter(text: str) -> tuple[dict[str, str], list[str]]:
     """Parse the DELIMITED STATE frontmatter WITHOUT last-write-wins: a
-    duplicated authority-bearing key is a structural error (P1 #10). Scans
+    duplicated authority-bearing key is a structural error (P1 #10), and
+    an UNCLOSED frontmatter block is a structural error (P1 #9). Scans
     only the `---`-delimited head, never the Markdown body (a body line like
     `phase: example` inside prose must not trip the duplicate-key refusal).
     Returns (fields, errors)."""
@@ -67,12 +68,17 @@ def _strict_frontmatter(text: str) -> tuple[dict[str, str], list[str]]:
     if not lines or lines[0].strip() != "---":
         return {}, []
     body: list[str] = []
+    closed = False
     for line in lines[1:]:
         if line.strip() == "---":
+            closed = True
             break
         body.append(line)
     fields: dict[str, str] = {}
     errors: list[str] = []
+    if not closed:
+        errors.append("missing closing frontmatter delimiter")
+        return fields, errors
     seen: set[str] = set()
     for line in body:
         line = line.strip()
@@ -553,6 +559,12 @@ def _freshness_module(root: Path | None = None):
 
 
 def _load_freshness_from(home: Path):
+    """Load freshness from exactly one canonical home.
+
+    CORE-008: The cache lookup uses the normalized home identity. A second
+    distinct home is refused when a different home is already loaded in the
+    same process, to prevent sys.modules global identity contamination.
+    """
     import importlib as _il
 
     tools = str(home / "tools")
@@ -560,8 +572,19 @@ def _load_freshness_from(home: Path):
         sys.path.insert(0, tools)
     key = str(home)
     cached = _ENGINE_CACHE.get(key)
-    if cached is not None and "freshness" in cached:
-        return cached["freshness"]
+    if cached is not None and "_freshness_only" in cached:
+        return cached["_freshness_only"]
+    # CORE-008: refuse a second distinct home. Python's sys.modules is global
+    # by module name -- loading freshness from two different homes means the
+    # second load gets the FIRST home's cached module, not the second's code.
+    if _ENGINE_CACHE:
+        existing_key = next(iter(_ENGINE_CACHE.keys()))
+        if existing_key.lower() != key.lower():
+            raise SaioUnavailable(
+                f"MULTI-HOME CONTAMINATION BLOCKED: freshness already loaded from "
+                f"{existing_key}. Cannot load from distinct home {key} because "
+                f"Python sys.modules is global by name."
+            )
     # Load into a private slot, never a partial engine cache: engine() checks
     # for a COMPLETE module set, so a half-built cache can never leak out.
     mod = _il.import_module("freshness")

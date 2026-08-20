@@ -226,22 +226,23 @@ class TestAutoRoots:
 
 class TestScan:
     def test_empty_roots(self):
-        from saipenview.scanner import scan
+        from saipenview.scanner import ScanOutcome, scan
 
-        results = scan(scan_roots=[], max_depth=3, delay=0)
-        assert results == []
+        result = scan(scan_roots=[], max_depth=3, delay=0)
+        assert isinstance(result, ScanOutcome)
+        assert result.projects == []
+        assert result.complete is True
 
     def test_nonexistent_root(self):
-        from saipenview.scanner import scan
+        from saipenview.scanner import ScanOutcome, scan
 
-        results = scan(scan_roots=["Z:\\nonexistent"], max_depth=3, delay=0)
-        assert results == []
+        result = scan(scan_roots=["Z:\\nonexistent"], max_depth=3, delay=0)
+        assert isinstance(result, ScanOutcome)
+        assert result.projects == []
 
     def test_finds_projects(self, tmp_path, monkeypatch):
         from saipenview.scanner import scan
 
-        # tmp_path contains garbage markers (pytest-of-), so _is_garbage_root
-        # would filter it out. Bypass for this test.
         monkeypatch.setattr("saipenview.scanner._is_garbage_root", lambda root: False)
 
         proj = tmp_path / "real-project"
@@ -254,10 +255,10 @@ class TestScan:
         )
         (proj / ".saipen" / "LOG.md").write_text("# LOG\n\n", encoding="utf-8")
 
-        results = scan(scan_roots=[str(tmp_path)], max_depth=3, delay=0)
-        assert len(results) == 1
-        assert results[0].name == "real-project"
-        assert results[0].phase == "BUILD"
+        outcome = scan(scan_roots=[str(tmp_path)], max_depth=3, delay=0)
+        assert len(outcome.projects) == 1
+        assert outcome.projects[0].name == "real-project"
+        assert outcome.projects[0].phase == "BUILD"
 
     def test_case_and_slash_dupes_collapse(self, tmp_path, monkeypatch):
         """The same root typed as `c:\foo` and `C:/FOO/` scans once, not twice."""
@@ -270,14 +271,13 @@ class TestScan:
             "---\nphase: DONE\n---\n", encoding="utf-8"
         )
 
-        # Only on Windows are these two spellings the same path.
         path_str = str(tmp_path)
-        results = scan(
+        outcome = scan(
             scan_roots=[path_str, path_str.replace("\\", "/").upper()],
             max_depth=3,
             delay=0,
         )
-        assert len(results) == 1
+        assert len(outcome.projects) == 1
 
     def test_missing_root_is_quarantined_not_silently_dropped(self, tmp_path):
         """A scan root that doesn't exist produces a scan error entry."""
@@ -296,7 +296,7 @@ class TestBackgroundScanner:
 
         events = []
 
-        def on_result(projects):
+        def on_result(projects, **kw):
             events.append(("result", len(projects)))
 
         bs = BackgroundScanner(
@@ -315,7 +315,7 @@ class TestBackgroundScanner:
         from saipenview.scanner import BackgroundScanner, _is_gen_current, _next_gen
 
         gen = _next_gen()
-        bs = BackgroundScanner(on_result=lambda p: None, scan_roots=[])
+        bs = BackgroundScanner(on_result=lambda p, **kw: None, scan_roots=[])
         bs.start()
         bs.stop()
         assert not _is_gen_current(gen)
@@ -324,7 +324,7 @@ class TestBackgroundScanner:
         """Starting an already-running scanner is a no-op."""
         from saipenview.scanner import BackgroundScanner
 
-        bs = BackgroundScanner(on_result=lambda p: None, scan_roots=[])
+        bs = BackgroundScanner(on_result=lambda p, **kw: None, scan_roots=[])
         bs.start()
         bs.start()  # Should not error
         bs.stop()
@@ -336,7 +336,7 @@ class TestBackgroundScanner:
         from saipenview.scanner import BackgroundScanner
 
         bs = BackgroundScanner(
-            on_result=lambda p: None,
+            on_result=lambda p, **kw: None,
             scan_roots=[],
             interval_seconds=1,
         )

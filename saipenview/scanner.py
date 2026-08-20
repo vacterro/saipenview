@@ -8,10 +8,31 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from saipenview.parser import ProjectStatus, load_project
 from saipenview.paths import canonical, canonical_key
+
+# PERF-007: process-wide registry of roots with in-flight workers.
+# Prevents duplicate workers for the same root across scan cycles.
+_inflight_lock = threading.Lock()
+_inflight_roots: dict[str, str] = {}  # canonical_root -> status ("running")
+
+
+@dataclass(frozen=True)
+class ScanOutcome:
+    """The result of a scan, distinguishing complete success from partial/failure.
+
+    CORE-011: callers (especially the cache) must know whether an empty
+    result means 'no projects exist' (complete=True) or 'scan failed/was
+    interrupted' (complete=False), so the cache can decide whether to
+    replace or preserve existing rows.
+    PERF-003: worktrees collected during the same traversal as projects.
+    """
+    projects: list[ProjectStatus] = field(default_factory=list)
+    worktrees: list[dict] = field(default_factory=list)
+    complete: bool = True
 
 _scan_errors: collections.deque[dict] = collections.deque(maxlen=20)
 _scan_progress: dict = {"pct": 0, "root": "", "roots_done": 0, "roots_total": 0}
@@ -218,7 +239,16 @@ def _walk_with_depth_limit(
     max_depth: int,
     delay: float,
     extra_excludes: set[str] | None = None,
+    *,
+    collect_worktrees: bool = False,
 ):
+    """Walk a scan root, yielding discovered project Paths.
+
+    PERF-003: when *collect_worktrees* is True, also accumulates linked-worktree
+    records during the same traversal so callers never need a second walk.
+    Yields either a Path (project) or a dict (worktree record) depending on
+    *collect_worktrees*.
+    """
     combined = EXCLUDE_DIRS | (extra_excludes or set())
     dir_count = 0
     for dirpath, dirnames, _filenames in os.walk(
@@ -243,6 +273,23 @@ def _walk_with_depth_limit(
             candidate = Path(dirpath) / ".saipen" / "STATE.md"
             if candidate.is_file():
                 yield Path(dirpath)
+        # PERF-003: detect linked worktrees in the same pass.
+        if collect_worktrees:
+            git_path = Path(dirpath) / ".git"
+            saipen_path = Path(dirpath) / ".saipen"
+            if git_path.is_file() and not saipen_path.is_dir():
+                try:
+                    git_dir_content = git_path.read_text(encoding="utf-8").strip()
+                except (OSError, ValueError) as e:
+                    _push_error(f"linked worktree at {dirpath}: .git unreadable: {e}")
+                    git_dir_content = ""
+                yield {
+                    "root": str(Path(dirpath).resolve()),
+                    "name": Path(dirpath).name,
+                    "git_dir": git_dir_content,
+                }
+                # Don't recurse into a worktree's own subdirs
+                dirnames.clear()
                 # Deliberately NOT clearing dirnames here. The old code did,
                 # on the theory that anything below a project root is that
                 # project's own concern (test fixtures, sub-.saipen/ examples)
@@ -276,25 +323,38 @@ def _scan_one_root(
     max_depth: int = MAX_SCAN_DEPTH,
     delay: float = SCAN_INTER_DIR_DELAY,
     extra_excludes: set[str] | None = None,
-) -> list[ProjectStatus]:
-    projects = []
-    for project_root in find_saipen_roots(
-        [root], max_depth=max_depth, delay=delay, extra_excludes=extra_excludes
+    *,
+    collect_worktrees: bool = False,
+) -> tuple[list[ProjectStatus], list[dict]]:
+    """Walk one scan root.
+
+    PERF-003: returns (projects, worktrees) in a single traversal when
+    *collect_worktrees* is True.
+    """
+    projects: list[ProjectStatus] = []
+    worktrees: list[dict] = []
+    root_path = Path(root)
+    if not root_path.exists() or not root_path.is_dir():
+        return projects, worktrees
+    for item in _walk_with_depth_limit(
+        root_path, max_depth, delay, extra_excludes,
+        collect_worktrees=collect_worktrees,
     ):
+        if isinstance(item, dict):
+            worktrees.append(item)
+            continue
+        # item is a Path (project root)
         try:
-            status = load_project(project_root)
+            status = load_project(item)
         except (OSError, ValueError) as e:
-            # One malformed project (bad encoding, corrupt frontmatter, ...)
-            # MUST NOT take the rest of this root -- let alone every other
-            # root -- down with it. Skip it, surface it, keep walking.
-            _push_error(f"failed to load project at {project_root}: {e}")
+            _push_error(f"failed to load project at {item}: {e}")
             continue
         if status is not None:
-            if _is_garbage_root(project_root):
-                _push_error(f"skipped garbage path: {project_root}")
+            if _is_garbage_root(item):
+                _push_error(f"skipped garbage path: {item}")
                 continue
             projects.append(status)
-    return projects
+    return projects, worktrees
 
 
 def _auto_roots() -> list[str]:
@@ -304,14 +364,24 @@ def _auto_roots() -> list[str]:
 
 def _scan_worker(
     root: str, max_depth: int, delay: float, extra_excludes: set[str] | None
-) -> list[ProjectStatus]:
-    _set_scan_progress(root=root)
-    result = _scan_one_root(root, max_depth, delay, extra_excludes)
-    with _progress_lock:
-        _scan_progress["roots_done"] += 1
-        total = _scan_progress.get("roots_total", 1)
-        _scan_progress["pct"] = min(99, int(_scan_progress["roots_done"] * 100 / total))
-    return result
+) -> tuple[list[ProjectStatus], list[dict]]:
+    # PERF-007: register in-flight to prevent duplicate workers for same root.
+    ckey = canonical_key(root)
+    with _inflight_lock:
+        _inflight_roots[ckey] = "running"
+    try:
+        _set_scan_progress(root=root)
+        projects, worktrees = _scan_one_root(
+            root, max_depth, delay, extra_excludes, collect_worktrees=True
+        )
+        return projects, worktrees
+    finally:
+        with _inflight_lock:
+            _inflight_roots.pop(ckey, None)
+        with _progress_lock:
+            _scan_progress["roots_done"] += 1
+            total = _scan_progress.get("roots_total", 1)
+            _scan_progress["pct"] = min(99, int(_scan_progress["roots_done"] * 100 / total))
 
 
 def scan(
@@ -319,8 +389,16 @@ def scan(
     max_depth: int = MAX_SCAN_DEPTH,
     delay: float = SCAN_INTER_DIR_DELAY,
     extra_excludes: set[str] | None = None,
-) -> list[ProjectStatus]:
-    """Scans every root in parallel so one slow/hung drive can't starve the rest."""
+    cancel: threading.Event | None = None,
+) -> ScanOutcome:
+    """Scan every root in parallel so one slow/hung drive cannot starve the rest.
+
+    CORE-011: returns a ScanOutcome with complete/partial status.
+    CORE-010: when cancel is set, returns immediately with zero roots.
+    """
+    if cancel is not None and cancel.is_set():
+        _set_scan_progress(pct=0, root="", roots_done=0, roots_total=0)
+        return ScanOutcome(projects=[], complete=True)
     raw_roots = scan_roots if scan_roots is not None else _auto_roots()
     # Canonical forms: absolute, case-normalised, symlink-resolved, drive
     # roots carry a single trailing separator (T-138 layer 1).
@@ -340,12 +418,20 @@ def scan(
         if key not in seen_roots:
             seen_roots.add(key)
             unique_roots.append(r)
-    roots = unique_roots
+    # PERF-007: skip roots whose previous worker is still alive.
+    with _inflight_lock:
+        active = set(_inflight_roots.keys())
+    fresh_roots = [r for r in unique_roots if canonical_key(r) not in active]
+    skipped = len(unique_roots) - len(fresh_roots)
+    roots = fresh_roots
     if not roots:
-        return []
+        _set_scan_progress(pct=100, root="", roots_done=skipped, roots_total=skipped)
+        return ScanOutcome(projects=[], complete=True)
     _set_scan_progress(pct=0, root="", roots_done=0, roots_total=len(roots))
     projects: list[ProjectStatus] = []
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(roots))
+    all_worktrees: list[dict] = []
+    complete = True
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(roots), 32))
     futures = {
         pool.submit(_scan_worker, root, max_depth, delay, extra_excludes): root
         for root in roots
@@ -356,17 +442,23 @@ def scan(
         ):
             root = futures[future]
             try:
-                projects.extend(future.result(timeout=0))
+                root_projects, root_worktrees = future.result(timeout=0)
+                projects.extend(root_projects)
+                all_worktrees.extend(root_worktrees)
             except concurrent.futures.TimeoutError:
                 _push_error(
                     f"scan of {root} exceeded {PER_ROOT_TIMEOUT_SECONDS}s, skipped"
                 )
+                complete = False
             except OSError as e:
                 _push_error(f"scan of {root} failed: {e}")
+                complete = False
     except concurrent.futures.TimeoutError:
         _push_error("overall scan timeout reached, some roots skipped")
+        complete = False
     pending = [f for f in futures if not f.done()]
     if pending:
+        complete = False
         # A root that blew the overall timeout is abandoned, but its worker
         # thread is still alive (daemon). Give it a bounded grace window so a
         # mid-run git subprocess can't leave a dead _readerthread at process
@@ -385,7 +477,7 @@ def scan(
         if k not in seen:
             seen.add(k)
             deduped.append(p)
-    return deduped
+    return ScanOutcome(projects=deduped, worktrees=all_worktrees, complete=complete)
 
 
 DEFAULT_RESCAN_SECONDS = 300
@@ -408,7 +500,13 @@ def _is_gen_current(gen: int) -> bool:
 
 
 class BackgroundScanner:
-    """Runs `scan()` on a timer, delivering results to `on_result` off the main thread."""
+    """Runs `scan()` on a timer, delivering results to `on_result` off the main thread.
+
+    CORE-010: Each start/request acquires an explicit current epoch; stop
+    invalidates the previous one. Results are only published when the
+    generating epoch is still current, so a stale scan after stop/replacement
+    cannot deliver stale data.
+    """
 
     def __init__(
         self,
@@ -431,27 +529,30 @@ class BackgroundScanner:
         self._thread: threading.Thread | None = None
         self._gen = _next_gen()
 
+    def _do_scan(self) -> None:
+        """Run one scan cycle, publishing results only if the epoch is still current."""
+        result = scan(
+            self._scan_roots,
+            max_depth=self._max_depth,
+            delay=self._delay,
+            extra_excludes=self._extra_excludes,
+        )
+        # CORE-010: re-check stop + generation AFTER scan completes.
+        if self._stop_event.is_set() or not _is_gen_current(self._gen):
+            return
+        # Pass both projects list and complete flag for backward compat
+        # with callbacks that accept (projects, complete=False).
+        self._on_result(result.projects, complete=result.complete)
+
     def _loop(self) -> None:
-        my_gen = self._gen
         while not self._stop_event.is_set():
             try:
-                if not _is_gen_current(my_gen):
+                if not _is_gen_current(self._gen):
                     break
                 if self._on_scan_start:
                     self._on_scan_start()
-                self._on_result(
-                    scan(
-                        self._scan_roots,
-                        max_depth=self._max_depth,
-                        delay=self._delay,
-                        extra_excludes=self._extra_excludes,
-                    )
-                )
+                self._do_scan()
             except (OSError, ValueError) as e:
-                # An uncaught exception in scan() (e.g. all roots timeout
-                # and as_completed raises) would kill the daemon thread
-                # silently under pythonw.exe (no console). Log, push an
-                # error, and let the loop sleep normally before retrying.
                 _push_error(f"background scan failed: {e}")
                 print(
                     f"SAIPENVIEW: BackgroundScanner._loop error: {e}", file=sys.stderr
@@ -462,22 +563,19 @@ class BackgroundScanner:
         if self._thread is not None:
             return
         self._stop_event.clear()
+        # CORE-010: acquire a fresh epoch on start so a previously-stopped
+        # scanner's old generation can never match the current one.
+        self._gen = _next_gen()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
     def rescan_now(self) -> None:
+        """Manual rescan participates in the newest-request-wins generation model."""
         if not _is_gen_current(self._gen):
             return
         if self._on_scan_start:
             self._on_scan_start()
-        self._on_result(
-            scan(
-                self._scan_roots,
-                max_depth=self._max_depth,
-                delay=self._delay,
-                extra_excludes=self._extra_excludes,
-            )
-        )
+        self._do_scan()
 
     def stop(self) -> None:
         _next_gen()

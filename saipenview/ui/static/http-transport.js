@@ -114,12 +114,17 @@
       }
     });
     source.onerror = function () {
-      /* The service may restart (SAIWORK restarts it). Close the dead stream;
-       * SaiApi callers surface their own errors until the service is back. */
-      try {
-        source.close();
-      } catch (e) { /* ignore */ }
+      /* W2-005: do NOT close on transient errors -- allow EventSource native
+       * reconnect. Only close on explicit transport.close(). */
     };
+    source.addEventListener("resync_required", function () {
+      /* W2-005: server buffer overflowed -- fetch authoritative state. */
+      if (window.SaiApi && typeof window.SaiApi.refresh_known === "function") {
+        window.SaiApi.refresh_known().then(function (projects) {
+          if (projects) window.render(projects, true);
+        });
+      }
+    });
   };
 
   HttpTransport.prototype.name = function () {

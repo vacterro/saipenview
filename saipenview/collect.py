@@ -90,7 +90,42 @@ def compute_generic_role_revision(protocol_path) -> str:
 COLLECT_POLICIES = frozenset({"automatic", "core-review", "explicit"})
 
 
+# CORE-005: SubSaipen identifier validation. A sub name must be exactly one
+# non-empty path segment -- no separators, no traversal, no absolute/drive/UNC.
+_BAD_SUB_CHARS = frozenset('/\\')
+_BAD_SUB_NAMES = frozenset({'.', '..', ''})
+
+def validate_sub_id(name: str) -> str | None:
+    """Return None if *name* is a valid SubSaipen identifier, else an error
+    message. A valid name is one non-empty segment: no separators, no
+    traversal, no absolute/drive/UNC forms."""
+    if not name or not name.strip():
+        return "SubSaipen identifier is empty"
+    name = name.strip()
+    if name in _BAD_SUB_NAMES:
+        return f"SubSaipen identifier {name!r} is not a valid name"
+    # Reject path separators and traversal
+    if any(c in name for c in _BAD_SUB_CHARS):
+        return f"SubSaipen identifier {name!r} contains path separators"
+    if '..' in name:
+        return f"SubSaipen identifier {name!r} contains traversal"
+    # Reject absolute paths and drive letters (C:\, /foo, UNC \\server)
+    if len(name) >= 2 and name[1] == ':':
+        return f"SubSaipen identifier {name!r} looks like an absolute/drive path"
+    if name.startswith('\\\\'):
+        return f"SubSaipen identifier {name!r} looks like a UNC path"
+    return None
+
+
+def _require_valid_sub_id(name: str) -> None:
+    """Raise ValueError if *name* is not a valid SubSaipen identifier."""
+    err = validate_sub_id(name)
+    if err:
+        raise ValueError(err)
+
+
 def _charter_paths(root: Path, producer: str) -> list[Path]:
+    _require_valid_sub_id(producer)
     candidates = (
         root / ".saipen" / "extensions" / "subs" / f"{producer}.md",
         root / "extensions" / "subs" / f"{producer}.md",
@@ -127,6 +162,7 @@ def resolve_collect_policy(root: Path, sub_name: str) -> str | None:
     """The producer's consumption authority from its CURRENT effective
     charter metadata (PROTOCOL.md § 3.1). Never inferred from the sub name.
     None = the charter is missing a collect_policy or is unreadable."""
+    _require_valid_sub_id(sub_name)
     text = _charter_text(root, sub_name)
     if text is None:
         return None

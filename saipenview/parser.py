@@ -912,8 +912,18 @@ def _manifest_sub_names(subs_dir: Path) -> list[str] | None:
     for line in text.splitlines():
         match = _MANIFEST_ENTRY_RE.match(line.strip())
         if match:
-            names.append(match.group(1))
+            name = match.group(1)
+            # CORE-005: reject manifest entries that are not valid sub IDs
+            if _validate_manifest_sub_name(name):
+                names.append(name)
     return names
+
+
+def _validate_manifest_sub_name(name: str) -> bool:
+    """CORE-005: reject path traversal, separators, absolute/drive/UNC forms.
+    Returns True when the name is safe to use as a sub directory."""
+    from saipenview.collect import validate_sub_id
+    return validate_sub_id(name) is None
 
 
 def load_subs(root: Path) -> list[SubStatus]:
@@ -922,7 +932,9 @@ def load_subs(root: Path) -> list[SubStatus]:
         return []
     manifest_names = _manifest_sub_names(subs_dir)
     if manifest_names is not None:
-        candidates = [subs_dir / name for name in manifest_names]
+        # CORE-005: filter invalid sub names from manifest
+        safe_names = [n for n in manifest_names if _validate_manifest_sub_name(n)]
+        candidates = [subs_dir / name for name in safe_names]
     else:
         # No MANIFEST.md -- fall back to a directory scan, excluding the
         # non-instance entries every subs/ folder carries (TEMPLATE/ is a
@@ -1116,8 +1128,20 @@ def collect_outbox_entry(
     subs_dir = _find_subs_dir(root)
     if subs_dir is None:
         return _refuse_dict("VALIDATION_FAILED", "no subs/ directory found")
-    outbox_path = subs_dir / sub_name / "kitchen" / "OUTBOX.md"
-    if not outbox_path.is_file():
+    # CORE-017: resolve the effective OUTBOX identity ONCE at the start and
+    # carry it through the entire collect. The initial read can come from
+    # whichever layout _find_subs_dir found, but the canonical snapshot in
+    # op_fn must use the same resolved project-relative path.
+    # Prefer the canonical .saipen/ layout when it exists.
+    canonical_outbox = root / ".saipen" / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
+    legacy_outbox = root / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
+    if canonical_outbox.is_file():
+        outbox_path = canonical_outbox
+        outbox_rel = f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md"
+    elif legacy_outbox.is_file():
+        outbox_path = legacy_outbox
+        outbox_rel = f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md"
+    else:
         return _refuse_dict("TICKET_NOT_FOUND", f"{sub_name} has no OUTBOX.md")
 
     coord = get_coordinator()
@@ -1199,21 +1223,20 @@ def collect_outbox_entry(
             direct_apply = policy != "core-review"
 
             def op_fn(r: Path, attempt: int):
+                # CORE-017: use the resolved outbox_rel for the snapshot
                 docs = saio.snapshot(
                     r,
                     [
                         ".saipen/STATE.md",
                         ".saipen/BOARD.md",
                         ".saipen/LOG.md",
-                        f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md",
+                        outbox_rel,
                     ],
                 )
                 state_doc = docs[".saipen/STATE.md"]
                 board_doc = docs[".saipen/BOARD.md"]
                 log_doc = docs[".saipen/LOG.md"]
-                outbox_doc = docs[
-                    f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md"
-                ]
+                outbox_doc = docs[outbox_rel]
                 outbox_text = outbox_doc.text_norm
                 board_text = board_doc.text_norm
                 log_text = log_doc.text_norm
@@ -1347,7 +1370,7 @@ def collect_outbox_entry(
                     )
                 targets.append(
                     (
-                        f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md",
+                        outbox_rel,
                         "generic",
                         new_outbox,
                         outbox_doc,
@@ -1372,7 +1395,7 @@ def collect_outbox_entry(
                     ".saipen/STATE.md": state_doc.raw_hash,
                     ".saipen/BOARD.md": board_doc.raw_hash,
                     ".saipen/LOG.md": log_doc.raw_hash,
-                    f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md": outbox_doc.raw_hash,
+                    outbox_rel: outbox_doc.raw_hash,
                 }
                 operation_plan = saio.plan(
                     r,
@@ -1528,32 +1551,32 @@ def detect_quick_actions(root: Path) -> list[dict]:
 
 
 def get_git_status(root: Path) -> tuple[str, bool]:
+    """PERF-004: single git subprocess for branch + dirty status."""
     if not (root / ".git").exists():
         return "", False
     try:
         CREATE_NO_WINDOW = 0x08000000
-        bp = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=CREATE_NO_WINDOW,
-            timeout=10,
-        )
-        if bp.returncode != 0:
-            return "", False
-        # A dead reader thread (Bad file descriptor under load) leaves stdout
-        # None -- guard it so the scan thread never raises (T-179).
-        branch = (bp.stdout or "").strip()
         sp = subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain"],
+            ["git", "-C", str(root), "status", "--porcelain=v2", "--branch"],
             capture_output=True,
             text=True,
             check=False,
             creationflags=CREATE_NO_WINDOW,
             timeout=10,
         )
-        dirty = bool((sp.stdout or "").strip())
+        if sp.returncode != 0:
+            return "", False
+        # Parse branch from header line: # branch.head <name>
+        branch = ""
+        dirty = False
+        for line in (sp.stdout or "").splitlines():
+            if line.startswith("# branch.head "):
+                branch = line[14:].strip()
+            elif not line.startswith("# "):
+                # Any non-header line means there are changes.
+                dirty = True
+                if branch:  # Already found branch, no need to keep scanning.
+                    break
         return branch, dirty
     except (OSError, subprocess.SubprocessError):
         return "", False

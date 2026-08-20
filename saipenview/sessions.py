@@ -42,6 +42,11 @@ MAX_RUNS_PER_PROJECT = 50
 # transcript stops growing and says so, rather than filling the disk quietly.
 MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024
 
+# W2-010: one logical output record is capped at this many UTF-8 bytes.
+# A child emitting a no-newline megabyte record creates one unbounded
+# Python string/deque item; this truncates the record and emits a marker.
+MAX_OUTPUT_LINE_BYTES = 64 * 1024
+
 # Lines are buffered by the OS and flushed every this many, plus once at
 # finish. Flushing every line costs a syscall per line for output nobody is
 # reading yet; the exposure is the tail of a transcript if the process is
@@ -203,6 +208,12 @@ class SessionStore:
             entry = self._open.get(run_id)
         if entry is None or entry.handle is None:
             return
+        # W2-010: truncate one logical record to MAX_OUTPUT_LINE_BYTES.
+        raw_bytes = line.encode("utf-8", errors="replace")
+        if len(raw_bytes) > MAX_OUTPUT_LINE_BYTES:
+            # Write as much as fits, plus a truncation marker.
+            truncated = raw_bytes[:MAX_OUTPUT_LINE_BYTES].decode("utf-8", errors="ignore")
+            line = truncated + " [... truncated]"
         with entry.lock:
             if entry.bytes_written >= MAX_TRANSCRIPT_BYTES:
                 if not entry.record.truncated:

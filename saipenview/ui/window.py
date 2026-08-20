@@ -154,6 +154,12 @@ class MainWindow:
         self._last_geometry_save = 0.0
         self._geometry_stop = threading.Event()
         self._geometry_thread: threading.Thread | None = None
+        # W2-011: coalescing visibility worker -- at most one evaluate_js
+        # in flight, latest-desired-state slot.
+        self._vis_lock = threading.Lock()
+        self._vis_desired: bool | None = None
+        self._vis_in_flight = False
+        self._vis_gen = 0
 
     def _on_moved_or_resized(self) -> None:
         now = time.monotonic()
@@ -404,42 +410,43 @@ class MainWindow:
     def _notify_visibility(self, visible: bool) -> None:
         """Tell the page whether anyone can actually see it.
 
-        SAIPENVIEW is a tray app: it spends most of its life hidden, and until
-        this existed the page kept polling on its 5s timer the whole time --
-        re-reading every known project's `.saipen/` files and rebuilding the
-        detail pane's innerHTML for nobody. `document.hidden` does NOT cover
-        this: a pywebview `hide()` is a native window hide, and the Page
-        Visibility API never fires for it, so the page has no way to find out
-        on its own.
-
-        Best-effort by design. A failed notify must never break show/hide --
-        the worst case is the page keeps polling, which is exactly the old
-        behaviour.
-
-        Dispatched on a throwaway daemon thread, and THAT IS LOAD-BEARING.
-        `evaluate_js` is synchronous: it marshals onto the WebView2 UI thread
-        and waits for a result. Called inline it put a blocking call on the
-        hotkey thread and, worse, inside SingleInstanceGuard's accept loop
-        (which runs on_show_request -> show() inline). A just-hidden window
-        could stall that call indefinitely, wedging the listener; with its
-        listen(1) backlog then full, every later launch had its connection
-        refused, could not bind either, and exited 0 in silence -- the app
-        stopped starting at all. Never block a caller for a notification that
-        is only ever an optimization.
+        W2-011: coalescing worker -- at most one evaluate_js in flight and
+        one latest-desired-state slot. After completion, if desired changed
+        since the request was sent, another push is scheduled automatically.
         """
-
-        def _push() -> None:
+        def _push(gen: int, desired: bool) -> None:
             try:
                 self._window.evaluate_js(
-                    f"window.__saipenSetVisible && window.__saipenSetVisible({str(visible).lower()})"
+                    f"window.__saipenSetVisible && window.__saipenSetVisible({str(desired).lower()})"
                 )
             except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
                 print(
-                    f"SAIPENVIEW: visibility notify({visible}) failed: {e}",
+                    f"SAIPENVIEW: visibility notify({desired}) failed: {e}",
                     file=sys.stderr,
                 )
+            # After completion, check if desired changed while in flight.
+            with self._vis_lock:
+                if self._vis_gen == gen and self._vis_desired != desired:
+                    # Desired changed -- schedule another push.
+                    new_gen = self._vis_gen + 1
+                    self._vis_gen = new_gen
+                    new_desired = self._vis_desired
+                    self._vis_in_flight = True
+                    threading.Thread(
+                        target=_push, args=(new_gen, new_desired), daemon=True
+                    ).start()
+                else:
+                    self._vis_in_flight = False
 
-        threading.Thread(target=_push, daemon=True).start()
+        with self._vis_lock:
+            self._vis_desired = visible
+            if not self._vis_in_flight:
+                self._vis_gen += 1
+                gen = self._vis_gen
+                self._vis_in_flight = True
+                threading.Thread(
+                    target=_push, args=(gen, visible), daemon=True
+                ).start()
 
     def show(self) -> None:
         self._window.show()
@@ -488,9 +495,13 @@ class MainWindow:
             )
 
     def destroy(self) -> None:
+        # W2-011: permanently terminate worker publication.
         self._geometry_stop.set()
         self._geometry_thread = None
         self._save_geometry()
+        with self._vis_lock:
+            self._vis_in_flight = False  # no more visibility pushes
+            self._vis_desired = None
         self._allow_close = True
         self._window.destroy()
 

@@ -22,6 +22,18 @@ let availableEnginesCache = [];
 let defaultEngine = "claude-code";
 let agentStatusCache = {};
 let currentAgentPanelRoot = null;
+// W2-006: per-surface request generation to prevent stale async overwrites.
+let _detailGen = 0;
+let _deepSearchGen = 0;
+let _wikiGen = 0;
+let _fileReadGen = 0;
+// PERF-010: coalesced persistence timers for high-frequency settings.
+let _searchPersistTimer = null;
+let _zoomPersistTimer = null;
+// PERF-011: frameless drag — accumulate deltas and allow at most one bridge call per paint.
+let _dragAccumDx = 0;
+let _dragAccumDy = 0;
+let _dragRafPending = false;
 // detail pane via innerHTML, which destroyed the open edit form (and anything
 // typed into it) within seconds -- that was T-066's "Edit does nothing" AND
 // "form collapses itself". Live refresh pauses for this pane while it's true.
@@ -34,9 +46,23 @@ function reportRenderError(stage, message) {
   try {
     const region = document.getElementById("renderErrorRegion");
     if (region) {
-      region.textContent = "[" + stage + "] " + (message || "unknown error")
+      // Build content: error text + close button.
+      region.textContent = "";
+      const text = document.createElement("span");
+      text.style.flex = "1";
+      text.textContent = "[" + stage + "] " + (message || "unknown error")
         + (currentDetailRoot ? " @ " + currentDetailRoot : "");
-      region.style.display = "block";
+      region.appendChild(text);
+      const closeBtn = document.createElement("span");
+      closeBtn.textContent = "✕";
+      closeBtn.style.cssText = "cursor:pointer;margin-left:8px;font-size:12px;opacity:0.7;flex-shrink:0;";
+      closeBtn.title = "Dismiss";
+      closeBtn.addEventListener("click", function() {
+        region.style.display = "none";
+      });
+      region.appendChild(closeBtn);
+      region.style.display = "flex";
+      region.style.alignItems = "center";
     }
   } catch (_e) { /* the region itself must never re-throw */ }
   try {
@@ -218,6 +244,7 @@ function showToast(message, type, duration) {
 // --- DOM-based confirm dialog (replaces native confirm()) ---
 let _confirmResolve = null;
 
+let _activeConfirmCleanup = null;
 function showConfirm(message, onOk, onCancel) {
   const overlay = document.getElementById('confirmOverlay');
   const msgEl = document.getElementById('confirmMessage');
@@ -229,10 +256,21 @@ function showConfirm(message, onOk, onCancel) {
     else if (onCancel) onCancel();
     return;
   }
+  // Cancel any previous confirmation dialog before opening a new one.
+  // Without this, dialog B's OK could invoke dialog A's stale callback
+  // if A was still technically open underneath.
+  if (_activeConfirmCleanup) {
+    _activeConfirmCleanup();
+    _activeConfirmCleanup = null;
+  }
   msgEl.textContent = message;
   overlay.style.display = 'flex';
 
+  let cleaned = false;
   function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+    _activeConfirmCleanup = null;
     overlay.style.display = 'none';
     okBtn.removeEventListener('click', onOkHandler);
     cancelBtn.removeEventListener('click', onCancelHandler);
@@ -247,18 +285,19 @@ function showConfirm(message, onOk, onCancel) {
     cleanup();
     if (onCancel) onCancel();
   }
+  function clickOutside(e) {
+    if (e.target === overlay) {
+      cleanup();
+      if (onCancel) onCancel();
+    }
+  }
 
+  _activeConfirmCleanup = cleanup;
   okBtn.addEventListener('click', onOkHandler);
   cancelBtn.addEventListener('click', onCancelHandler);
 
   // Click outside closes (on overlay itself)
-  overlay.addEventListener('mousedown', function clickOutside(e) {
-    if (e.target === overlay) {
-      cleanup();
-      overlay.removeEventListener('mousedown', clickOutside);
-      if (onCancel) onCancel();
-    }
-  });
+  overlay.addEventListener('mousedown', clickOutside);
 }
 
 // --- Right-click context menu ---
@@ -1345,17 +1384,18 @@ function renderDetailPane(detail) {
     const taskV = document.getElementById("editTask").value;
     const updates = { "next_action": nextA, "task": taskV };
     btn.textContent = "Saving...";
-    window.SaiApi.update_project_state(detail.root, updates).then((updatedDetail) => {
+    window.SaiApi.update_project_state(detail.root, updates).then((res) => {
       // Clear the freeze only once the write actually came back, otherwise the
       // next poll could repaint over the editor before the save landed.
       stateEditActive = false;
-      if (updatedDetail) {
-        renderDetailPane(updatedDetail);
+      if (res && res.ok && res.updated_detail) {
+        renderDetailPane(res.updated_detail);
         window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
         if (typeof showToast === "function") showToast("State saved", "info", 1500);
       } else {
         btn.textContent = "Save failed -- retry?";
         stateEditActive = true;   // keep the editor open so nothing typed is lost
+        if (res && res.message) showToast(res.message, "error");
       }
     }).catch((err) => {
       btn.textContent = "Save failed -- retry?";
@@ -1450,12 +1490,12 @@ function renderDetailPane(detail) {
   // T-174: real-time ticket checkboxes. Clicking a checkbox advances the
   // ticket's status (start/done/reopen/unblock); Block prompts for a reason.
   function toggleTicket(tid, action, reason) {
-    window.SaiApi.toggle_ticket_status(detail.root, tid, action, reason || null).then((updatedDetail) => {
-      if (updatedDetail) {
-        renderDetailPane(updatedDetail);
+    window.SaiApi.toggle_ticket_status(detail.root, tid, action, reason || null).then((res) => {
+      if (res && res.ok && res.updated_detail) {
+        renderDetailPane(res.updated_detail);
         window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
       } else {
-        showToast("Toggle failed", "error");
+        showToast((res && res.message) || "Toggle failed", "error");
       }
     }).catch(() => showToast("Toggle failed", "error"));
   }
@@ -1539,10 +1579,12 @@ function renderDetailPane(detail) {
       const targetTid = row.getAttribute('data-tid');
       if (!dragState || !list || list.getAttribute('data-section') !== dragState.section) return;
       if (dragState.tid === targetTid) return;
-      window.SaiApi.reorder_ticket(detail.root, dragState.tid, dragState.section, targetTid).then((updatedDetail) => {
-        if (updatedDetail) {
-          renderDetailPane(updatedDetail);
+      window.SaiApi.reorder_ticket(detail.root, dragState.tid, dragState.section, targetTid).then((res) => {
+        if (res && res.ok && res.updated_detail) {
+          renderDetailPane(res.updated_detail);
           window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
+        } else if (res && !res.ok) {
+          showToast(res.message || "Reorder failed", "error");
         }
       });
     });
@@ -1555,10 +1597,12 @@ function renderDetailPane(detail) {
     list.addEventListener('drop', (e) => {
       e.preventDefault();
       if (!dragState || list.getAttribute('data-section') !== dragState.section) return;
-      window.SaiApi.reorder_ticket(detail.root, dragState.tid, dragState.section, null).then((updatedDetail) => {
-        if (updatedDetail) {
-          renderDetailPane(updatedDetail);
+      window.SaiApi.reorder_ticket(detail.root, dragState.tid, dragState.section, null).then((res) => {
+        if (res && res.ok && res.updated_detail) {
+          renderDetailPane(res.updated_detail);
           window.SaiApi.get_projects().then((proj) => render(proj, isScanned));
+        } else if (res && !res.ok) {
+          showToast(res.message || "Reorder failed", "error");
         }
       });
     });
@@ -1627,7 +1671,13 @@ function loadDetail(rootStr) {
     renderDetailPane(null);
     return;
   }
+  // W2-006: capture generation and target before async call.
+  const gen = ++_detailGen;
+  const target = rootStr;
   window.SaiApi.get_project_detail(rootStr).then((detail) => {
+    // Only render if this is still the newest request for this surface.
+    if (_detailGen !== gen) return;
+    if (selectedRoot !== target) return;
     renderDetailPane(detail);
   });
 }
@@ -1733,6 +1783,14 @@ function updateFlashSnapshot(projects) {
   for (const k of Object.keys(flashState)) {
     if (!currentRoots.has(k)) delete flashState[k];
   }
+  // PERF-012: register row refs for any new flash entries and ensure the timer.
+  for (const root in flashState) {
+    if (!_flashRowRefs[root]) {
+      const row = document.querySelector(`.project-row[data-root="${CSS.escape(root)}"]`);
+      if (row) _flashRowRefs[root] = row;
+    }
+  }
+  if (Object.keys(flashState).length) _ensureFlashTimer();
 }
 
 function render(projects, scanned) {
@@ -2123,19 +2181,25 @@ window.onSaipenFileChanged = function(root, fileName, origin) {
 };
 
 function poll() {
-  // Hidden means nobody can see the result, and the work is not free:
-  // refresh_known() re-reads every known project's .saipen/ files and render()
-  // rebuilds the detail pane's innerHTML. On a machine with a large scan that
-  // was hundreds of ms of disk I/O every 5s, forever, for an invisible window.
   if (!windowVisible) return;
-  // refresh_known() re-reads only the .saipen/ files of projects we already
-  // know (no drive walk, git skipped -> ~1.7ms/project), so edits show up in
-  // seconds instead of waiting out rescan_interval, and the sidebar can no
-  // longer disagree with the detail pane's live read (T-071 + T-072).
   Promise.all([window.SaiApi.get_status(), window.SaiApi.refresh_known()])
     .then(([status, projects]) => {
-      render(projects, status.scanned);
-      renderLinkedWorktrees();
+      // PERF-002: only rebuild sidebar/detail if something actually changed.
+      const changedRoots = window.SaiApi.get_changed_roots ? window.SaiApi.get_changed_roots() : null;
+      const hasChanges = changedRoots && changedRoots.length > 0;
+      if (hasChanges || rawProjects.length !== projects.length) {
+        render(projects, status.scanned);
+        renderLinkedWorktrees();
+      } else if (projects) {
+        // Update the data without rebuilding DOM.
+        rawProjects = projects;
+        isScanned = status.scanned;
+        updateFlashSnapshot(rawProjects);
+        // Only reload detail if the selected root changed.
+        if (selectedRoot && changedRoots && changedRoots.includes(selectedRoot)) {
+          loadDetail(selectedRoot);
+        }
+      }
       updateScanIndicator(status.scanning);
       pollAgentOutput();
     })
@@ -2381,16 +2445,26 @@ const searchInput = document.getElementById("searchInput");
 if (searchInput) {
   searchInput.addEventListener("input", () => {
     searchQuery = searchInput.value;
+    // PERF-010: debounce search query persistence — apply locally immediately,
+    // persist only after 300ms of quiet typing.
     if (window.SaiApi.ready && window.SaiApi.save_view_config) {
-      window.SaiApi.save_view_config({ search_query: searchQuery });
+      clearTimeout(_searchPersistTimer);
+      _searchPersistTimer = setTimeout(function() {
+        window.SaiApi.save_view_config({ search_query: searchQuery });
+      }, 300);
     }
     if (searchQuery.trim() && deepSearchMode && window.SaiApi.ready) {
       // Deep search: debounced, query backend for ticket + project matches
       clearTimeout(deepSearchTimer);
       deepSearchTimer = setTimeout(function() {
-        window.SaiApi.quick_search(searchQuery.trim()).then(function(results) {
-          renderSearchResults(searchQuery.trim(), results);
+        // W2-006: capture query and generation before async call.
+        const gen = ++_deepSearchGen;
+        const q = searchQuery.trim();
+        window.SaiApi.quick_search(q).then(function(results) {
+          if (_deepSearchGen !== gen) return;  // stale response
+          renderSearchResults(q, results);
         }).catch(function() {
+          if (_deepSearchGen !== gen) return;
           render(rawProjects, isScanned);
         });
       }, 300);
@@ -2624,7 +2698,11 @@ function navigateToWikiPage(pageId) {
   document.querySelectorAll(".wiki-toc-item").forEach((el) => {
     el.classList.toggle("active", el.getAttribute("data-wiki-id") === pageId);
   });
+  // W2-006: capture generation and pageId before async call.
+  const gen = ++_wikiGen;
+  const targetPage = pageId;
   api.get_wiki_page(pageId).then((page) => {
+    if (_wikiGen !== gen) return;  // stale response
     document.getElementById("wikiLoading").style.display = "none";
     if (!page || !page.content) {
       document.getElementById("wikiMarkdown").innerHTML = "<p style='color:var(--textMuted)'>Page not found.</p>";
@@ -2633,6 +2711,7 @@ function navigateToWikiPage(pageId) {
     document.getElementById("wikiMarkdown").innerHTML = renderWikiMarkdown(page.content);
     document.getElementById("wikiTitle").textContent = page.title || "Wiki";
   }).catch((e) => {
+    if (_wikiGen !== gen) return;  // stale response
     console.error("navigateToWikiPage failed:", e);
     document.getElementById("wikiLoading").style.display = "none";
     document.getElementById("wikiMarkdown").innerHTML = "<p style='color:var(--danger)'>Failed to load page.</p>";
@@ -2911,6 +2990,9 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
 
   const saveBtn = document.getElementById("saveSettingsBtn");
   const api = window.SaiApi;
+  // W2-007: allow exactly one Settings save operation in flight.
+  if (api._settingsSaveInFlight) return;
+  api._settingsSaveInFlight = true;
   // T-178: parse the engine_overrides JSON up front -- invalid JSON or a
   // wrong shape aborts the save with a visible error, so a bad override can
   // never reach the disk.
@@ -2944,30 +3026,46 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
   ackPromise.then(() => {
     if (saveTimedOut) return;
     if (resetHint) collapseHintAcknowledged = false;
-    return Promise.all([
-      api.set_zoom_level(zoomLevel),
-      hotkeys.length ? api.set_hotkeys(hotkeys) : Promise.resolve(),
-      snapHotkey.length ? api.set_snap_hotkey(snapHotkey) : Promise.resolve(),
-      api.set_scan_tuning(scanDepth, scanDelay, rescanMinutes * 60),
-      api.set_autostart_enabled(autostart),
-      api.set_always_on_top(alwaysOnTop),
-      api.set_frameless(frameless),
-      api.set_locale(localeVal),
-      api.save_view_config({ show_on_launch: showOnLaunch, flash_changes: flashChanges, custom_commands: customCommands, file_viewer_default: fvd, locale: locale, theme: themeSlug }),
-      engineOverrides !== null ? api.set_engine_overrides(engineOverrides) : Promise.resolve(),
-    ]);
-  }).then((results) => {
-    if (saveTimedOut) return;
-    // T-178: set_engine_overrides resolves with {ok:false, error} -- the
-    // backend refused an invalid override, so the save must not silently
-    // succeed with the old value still in place.
-    const ovResult = engineOverrides !== null && results ? results[results.length - 1] : null;
-    if (ovResult && !ovResult.ok) {
+    // W2-007: apply setters sequentially with explicit success checks.
+    const applied = [];
+    const failed = [];
+    function runSeq(fns, i) {
+      if (saveTimedOut) { api._settingsSaveInFlight = false; return Promise.resolve(); }
+      if (i >= fns.length) return Promise.resolve();
+      const fn = fns[i];
+      return fn().then((res) => {
+        applied.push(i);
+        return runSeq(fns, i + 1);
+      }).catch((e) => {
+        failed.push(i);
+        console.error("settings setter " + i + " failed:", e);
+        return runSeq(fns, i + 1);
+      });
+    }
+    const setters = [
+      () => api.set_zoom_level(zoomLevel),
+      ...(hotkeys.length ? [() => api.set_hotkeys(hotkeys)] : []),
+      ...(snapHotkey.length ? [() => api.set_snap_hotkey(snapHotkey)] : []),
+      () => api.set_scan_tuning(scanDepth, scanDelay, rescanMinutes * 60),
+      () => api.set_autostart_enabled(autostart),
+      () => api.set_always_on_top(alwaysOnTop),
+      () => api.set_frameless(frameless),
+      () => api.set_locale(localeVal),
+      () => api.save_view_config({ show_on_launch: showOnLaunch, flash_changes: flashChanges, custom_commands: customCommands, file_viewer_default: fvd, locale: locale, theme: themeSlug }),
+      ...(engineOverrides !== null ? [() => api.set_engine_overrides(engineOverrides)] : []),
+    ];
+    return runSeq(setters, 0).then(() => ({ applied, failed }));
+  }).then((result) => {
+    if (saveTimedOut) { api._settingsSaveInFlight = false; return; }
+    const { applied, failed } = result || { applied: [], failed: [] };
+    // W2-007: if any setter failed, report partial outcome.
+    if (failed.length > 0) {
       clearTimeout(saveTimeout);
-      const ovErr = document.getElementById("engineOverridesError");
-      if (ovErr) { ovErr.textContent = ovResult.error || "invalid engine_overrides"; ovErr.style.display = "block"; }
-      saveBtn.textContent = "Save failed -- retry?";
+      saveBtn.textContent = "Partial save -- " + failed.length + " of " + (applied.length + failed.length) + " failed";
       saveBtn.disabled = false;
+      api._settingsSaveInFlight = false;
+      // Reload controls from backend truth.
+      if (typeof loadSettingsUI === "function") loadSettingsUI();
       return;
     }
     clearTimeout(saveTimeout);
@@ -2976,11 +3074,13 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
     flashChangesEnabled = flashChanges;
     fileViewerDefault = fvd;
     themeBeforeSettings = themeSlug;
+    api._settingsSaveInFlight = false;
     closeSettings();
   }).catch((err) => {
     clearTimeout(saveTimeout);
     saveBtn.textContent = "Save failed -- retry?";
     saveBtn.disabled = false;
+    api._settingsSaveInFlight = false;
     console.error("settings save failed:", err);
   });
 });
@@ -3029,10 +3129,22 @@ if (resizeHandle && projectListEl) {
     resizeHandle.classList.add("dragging");
     e.preventDefault();
   });
+  // PERF-011: throttle sidebar resize — store latest pointer X, apply at most once per paint.
+  let _resizeRafPending = false;
+  let _resizeLatestX = 0;
   document.addEventListener("mousemove", (e) => {
     if (!resizing) return;
-    const containerRect = document.querySelector(".main-container").getBoundingClientRect();
-    applySidebarWidth(e.clientX - containerRect.left);
+    _resizeLatestX = e.clientX;
+    if (!_resizeRafPending) {
+      _resizeRafPending = true;
+      requestAnimationFrame(function() {
+        _resizeRafPending = false;
+        const container = document.querySelector(".main-container");
+        if (container) {
+          applySidebarWidth(_resizeLatestX - container.getBoundingClientRect().left);
+        }
+      });
+    }
   });
   document.addEventListener("mouseup", () => {
     if (!resizing) return;
@@ -3416,8 +3528,13 @@ function adjustZoomLevel(delta) {
   if (newSize !== currentZoomLevel) {
     currentZoomLevel = newSize;
     document.body.style.zoom = currentZoomLevel;
+    // PERF-010: debounce zoom persistence — apply visually immediately,
+    // persist only after 300ms of quiet wheel activity.
     if (window.SaiApi.ready) {
-      window.SaiApi.set_zoom_level(currentZoomLevel);
+      clearTimeout(_zoomPersistTimer);
+      _zoomPersistTimer = setTimeout(function() {
+        window.SaiApi.set_zoom_level(currentZoomLevel);
+      }, 300);
     }
     const setZoomLevelInput = document.getElementById("setZoomLevel");
     if (setZoomLevelInput) setZoomLevelInput.value = currentZoomLevel;
@@ -3443,40 +3560,73 @@ setInterval(() => {
   document.querySelectorAll('.now-clock').forEach(el => { el.textContent = `(now: ${nowStr()})`; });
 }, 1000);
 
-// Flash recompute: hexBlend background colors every 30ms for smooth decay
+// PERF-012: Flash recompute — on-demand timer instead of permanent 30ms interval.
+// Timer is created only when flashState is non-empty and destroyed when empty.
 let _flashSurfColor = null;
-setInterval(() => {
-  if (!flashChangesEnabled || !Object.keys(flashState).length) return;
+let _flashTimer = null;
+// Direct DOM references for active flashed rows, keyed by root.
+let _flashRowRefs = {};
+
+function _flashTick() {
+  if (!flashChangesEnabled || !Object.keys(flashState).length) {
+    _stopFlashTimer();
+    return;
+  }
 
   if (!_flashSurfColor) {
     _flashSurfColor = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#4a341b";
   }
 
   const now = Date.now();
-  let anyActive = false;
+  const decayMs = FLASH_DECAY_SECONDS * 1000;
 
-  document.querySelectorAll(".project-row").forEach(row => {
-    const root = row.getAttribute("data-root");
-    if (!root) return;
-
+  for (const root in _flashRowRefs) {
     const ft = flashState[root];
-    if (ft) {
-      const ageMs = now - ft;
-      if (ageMs >= FLASH_DECAY_SECONDS * 1000) {
-        delete flashState[root];
-        if (row.style.backgroundColor) row.style.backgroundColor = "";
-      } else {
-        const t = ageMs / (FLASH_DECAY_SECONDS * 1000);
-        row.style.backgroundColor = hexBlend(FLASH_HOT, _flashSurfColor, t);
-        anyActive = true;
-      }
+    const row = _flashRowRefs[root];
+    if (!ft || !row || !row.isConnected) {
+      if (row && row.isConnected) row.style.backgroundColor = "";
+      delete _flashRowRefs[root];
+      delete flashState[root];
+      continue;
     }
-  });
-
-  if (!anyActive) {
-    // Flash completed -- interval short-circuits next tick
+    const ageMs = now - ft;
+    if (ageMs >= decayMs) {
+      if (row.style.backgroundColor) row.style.backgroundColor = "";
+      delete flashState[root];
+      delete _flashRowRefs[root];
+    } else {
+      row.style.backgroundColor = hexBlend(FLASH_HOT, _flashSurfColor, ageMs / decayMs);
+    }
   }
-}, 30);
+
+  // Stop if nothing remains active.
+  if (!Object.keys(flashState).length) {
+    _stopFlashTimer();
+  }
+}
+
+function _stopFlashTimer() {
+  if (_flashTimer) { clearInterval(_flashTimer); _flashTimer = null; }
+  _flashRowRefs = {};
+}
+
+function _ensureFlashTimer() {
+  if (_flashTimer || !flashChangesEnabled) return;
+  _flashTimer = setInterval(_flashTick, 30);
+}
+
+// Hook into existing flash trigger: register row refs and ensure timer.
+const _origFlash = window.flashProject;
+if (typeof _origFlash === 'function') {
+  window.flashProject = function(root) {
+    _origFlash(root);
+    if (flashChangesEnabled && flashState[root]) {
+      const row = document.querySelector(`.project-row[data-root="${CSS.escape(root)}"]`);
+      if (row) _flashRowRefs[root] = row;
+      _ensureFlashTimer();
+    }
+  };
+}
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
@@ -4035,11 +4185,24 @@ document.body.addEventListener("mousemove", (e) => {
   const dx = e.screenX - _dragState.sx;
   const dy = e.screenY - _dragState.sy;
   if (dx === 0 && dy === 0) return;
-  if (window.SaiApi.ready) {
-    window.SaiApi.move_by(dx, dy);
-  }
   _dragState.sx = e.screenX;
   _dragState.sy = e.screenY;
+  // PERF-011: accumulate deltas and allow at most one bridge call per paint.
+  _dragAccumDx += dx;
+  _dragAccumDy += dy;
+  if (!_dragRafPending && window.SaiApi.ready) {
+    _dragRafPending = true;
+    requestAnimationFrame(function() {
+      _dragRafPending = false;
+      const ddx = _dragAccumDx;
+      const ddy = _dragAccumDy;
+      _dragAccumDx = 0;
+      _dragAccumDy = 0;
+      if (ddx !== 0 || ddy !== 0) {
+        window.SaiApi.move_by(ddx, ddy);
+      }
+    });
+  }
 });
 
 document.body.addEventListener("mouseup", () => {

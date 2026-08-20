@@ -338,6 +338,7 @@ class WriteCoordinator:
         *,
         verification_policy: str = "core_fast",
         stale_retry: bool = True,
+        expected_raw_hash: str | None = None,
     ) -> dict:
         """Single-file canonical mutation (text transform -> exact bytes).
 
@@ -347,6 +348,11 @@ class WriteCoordinator:
         `verification_policy`: core_fast (default) for structural ops;
         `none` for a raw hand-edit (file editor), which byte-verifies only so
         the user can repair a non-conformant project through the editor.
+
+        CORE-001: `expected_raw_hash` is the edit_version returned by
+        read_file_text. When provided, the file's current raw_hash must
+        match it before the plan is constructed -- if the file changed
+        since the user read it, the write is refused as STALE_STATE.
 
         A `.saipen/` file must be a codec-preserving read; non-protocol files
         are written directly (outside the canonical journal).
@@ -360,6 +366,22 @@ class WriteCoordinator:
             docs = saio.snapshot(r, [rel])
             doc = docs[rel]
             
+            # CORE-001: if the caller provided an expected version, verify
+            # the file hasn't changed since the user read it. This prevents
+            # a stale editor from overwriting a newer revision.
+            if expected_raw_hash is not None and doc.raw_hash != expected_raw_hash:
+                return {
+                    "ok": False,
+                    "code": "STALE_STATE",
+                    "message": (
+                        f"file changed since read (expected {expected_raw_hash}, "
+                        f"got {doc.raw_hash}) -- re-read and retry"
+                    ),
+                    "changed_files": [],
+                    "retryable": True,
+                    "recovery_required": False,
+                    "op_id": None,
+                }
             new_text = transform(doc.text_norm)
             if new_text is None or new_text == doc.text_norm:
                 return {

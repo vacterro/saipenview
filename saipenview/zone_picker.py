@@ -27,6 +27,9 @@ ZONE_PAD = 4
 _request_q: queue.Queue = queue.Queue()
 _tk_thread: threading.Thread | None = None
 _tk_thread_lock = threading.Lock()
+# W2-012: exactly one active picker and at most one coalesced pending intent.
+_active_toplevel: tk.Toplevel | None = None
+_pending_main_window = None
 
 
 class RECT(ctypes.Structure):
@@ -125,12 +128,19 @@ def _draw_zones(canvas, pw, ph, toplevel, main_window, zones):
 
 
 def _on_pick(idx, toplevel, main_window, zones):
+    global _active_toplevel, _pending_main_window
     _, zx, zy, zw, zh = zones[idx]
     _snap(main_window, zx, zy, zw, zh)
     try:
         toplevel.destroy()
     except Exception as e:
         print(f"SAIPENVIEW: zone picker window destroy failed: {e}", file=sys.stderr)
+    _active_toplevel = None
+    # W2-012: open pending replacement if one was queued while picker was active.
+    if _pending_main_window is not None:
+        pending = _pending_main_window
+        _pending_main_window = None
+        _open_picker(toplevel.master, pending)
 
 
 def _open_picker(root, main_window):
@@ -165,22 +175,49 @@ def _open_picker(root, main_window):
 
     _draw_zones(canvas, pw, ph, toplevel, main_window, zones)
 
-    toplevel.bind("<Escape>", lambda e: toplevel.destroy())
+    def _on_escape(e):
+        global _active_toplevel, _pending_main_window
+        try:
+            toplevel.destroy()
+        except Exception:
+            pass
+        _active_toplevel = None
+        if _pending_main_window is not None:
+            pending = _pending_main_window
+            _pending_main_window = None
+            _open_picker(root, pending)
+    toplevel.bind("<Escape>", _on_escape)
     toplevel.bind("<Key-1>", lambda e: _on_pick(0, toplevel, main_window, zones))
     toplevel.bind("<Key-2>", lambda e: _on_pick(1, toplevel, main_window, zones))
     toplevel.bind("<Key-3>", lambda e: _on_pick(2, toplevel, main_window, zones))
     toplevel.bind("<Key-4>", lambda e: _on_pick(3, toplevel, main_window, zones))
 
+    _active_toplevel = toplevel
     toplevel.focus_force()
     toplevel.grab_set()
 
 
 def _poll_queue(root):
-    """Runs on the Tk thread via root.after -- drains requests from other threads."""
+    """Runs on the Tk thread via root.after -- drains requests from other threads.
+
+    W2-012: at most one active picker and one coalesced pending intent.
+    If picker is already active, focus/raise it rather than open another.
+    """
+    global _active_toplevel, _pending_main_window
     try:
         while True:
             main_window = _request_q.get_nowait()
-            _open_picker(root, main_window)
+            if _active_toplevel is not None and _active_toplevel.winfo_exists():
+                # Picker already active -- focus it, store pending.
+                try:
+                    _active_toplevel.lift()
+                    _active_toplevel.focus_force()
+                except Exception:
+                    pass
+                _pending_main_window = main_window
+            else:
+                _pending_main_window = None
+                _open_picker(root, main_window)
     except queue.Empty:
         pass
     root.after(50, _poll_queue, root)

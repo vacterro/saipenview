@@ -370,7 +370,7 @@ def make_conformant_project(
         f"phase: {phase}\ntransition_from: SHIP\ntask: {task}\n"
         f'next_action: "{next_action}"\nblocker: none\n'
         f"agent: {agent}\nsaipen_version: 7\n"
-        f"saipen_home: '{home}'\n"
+        f"saipen_home: {home}\n"
         "mode: full\nexecution_intent: normal\n"
         "updated: 2026-08-11T00:00:00Z\n"
         f"last_event: {log_tail}\n"

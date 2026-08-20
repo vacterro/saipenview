@@ -117,7 +117,7 @@ def status_scope(root: str) -> dict:
     return {"ok": True, "scope": scope, "status_raw": r.stdout}
 
 
-def _tree_fingerprint(root: str, scope: dict, status_raw: str) -> str:
+def _tree_fingerprint(root: str, scope: dict, status_raw: str) -> tuple[str, list[str]]:
     """Hash the working tree's real mutation evidence.
 
     Porcelain status alone is insufficient: a tracked file that was already
@@ -126,6 +126,9 @@ def _tree_fingerprint(root: str, scope: dict, status_raw: str) -> str:
     The hash therefore covers status output, both diffs (staged + unstaged)
     and the bytes of every untracked file -- any of them moving invalidates
     the fingerprint (T-162 required test 8).
+
+    Returns (fingerprint, unreadable_files). When unreadable_files is
+    non-empty the caller MUST refuse the preview (CORE-003 fail-closed).
     """
     h = hashlib.sha256()
     h.update(status_raw.encode("utf-8", "replace"))
@@ -135,23 +138,37 @@ def _tree_fingerprint(root: str, scope: dict, status_raw: str) -> str:
             h.update(r.stdout.encode("utf-8", "replace"))
         except (OSError, subprocess.SubprocessError):
             pass
+    unreadable: list[str] = []
     for path in sorted(scope["untracked"]):
         try:
             data = Path(root, path).read_bytes()
         except OSError:
+            unreadable.append(path)
             continue
         h.update(path.encode("utf-8", "replace"))
         h.update(b"\x00")
         h.update(data)
-    return h.hexdigest()
+    return h.hexdigest(), unreadable
 
 
 def _current_state(root: str) -> dict:
-    """scope + fingerprint in one call (the honest preview state)."""
+    """scope + fingerprint in one call (the honest preview state).
+
+    When untracked files are unreadable, returns a failure so the preview
+    refuses instead of silently omitting evidence (CORE-003)."""
     scope_res = status_scope(root)
     if not scope_res.get("ok"):
         return scope_res
-    fingerprint = _tree_fingerprint(root, scope_res["scope"], scope_res["status_raw"])
+    fingerprint, unreadable = _tree_fingerprint(root, scope_res["scope"], scope_res["status_raw"])
+    if unreadable:
+        return {
+            "ok": False,
+            "error": (
+                f"Cannot preview: {len(unreadable)} untracked file(s) unreadable "
+                f"({', '.join(unreadable[:5])}); refusing to mutate with "
+                "incomplete evidence"
+            ),
+        }
     return {"ok": True, "scope": scope_res["scope"], "fingerprint": fingerprint}
 
 
@@ -196,6 +213,25 @@ def _mutation_paths(scope: dict) -> list[str]:
     return paths
 
 
+def _require_fingerprint(fingerprint: str | None) -> dict | None:
+    """Return an error dict when the fingerprint is missing/empty.
+
+    Every public Commit/Revert/Delete MUST carry a non-empty preview
+    fingerprint (CORE-003). Without it the caller never showed the user
+    the exact mutation scope, so proceeding is an authorization gap.
+    """
+    if not fingerprint:
+        return {
+            "ok": False,
+            "code": "PREVIEW_REQUIRED",
+            "error": (
+                "No preview fingerprint provided. Run get_working_diff() first "
+                "and review the scope before mutating."
+            ),
+        }
+    return None
+
+
 def _verify_fingerprint(root: str, expected: str | None) -> dict | None:
     """Re-read status and compare fingerprints.
 
@@ -204,7 +240,7 @@ def _verify_fingerprint(root: str, expected: str | None) -> dict | None:
     mutation must not proceed (T-162 required test 8).
     """
     if not expected:
-        return None
+        return _require_fingerprint(expected)
     current = _current_state(root)
     if not current.get("ok"):
         return current
@@ -313,9 +349,15 @@ def commit_agent_work(root: str, message: str, fingerprint: str | None = None) -
 
     Never runs ``git add .`` -- only the paths that were shown in the preview
     are staged, so a file that appeared after the preview cannot slip in
-    unnoticed (the fingerprint guard rejects it outright)."""
+    unnoticed (the fingerprint guard rejects it outright).
+
+    Requires a non-empty fingerprint: the caller must have shown the user
+    the exact scope via get_working_diff() (CORE-003)."""
     if not message or not message.strip():
         return {"ok": False, "error": "Commit message is empty"}
+    req = _require_fingerprint(fingerprint)
+    if req:
+        return req
     mismatch = _verify_fingerprint(root, fingerprint)
     if mismatch:
         return mismatch
@@ -344,7 +386,12 @@ def revert_agent_work(root: str, fingerprint: str | None = None) -> dict:
 
     ``git reset --hard`` re-stages-and-restores tracked modified/deleted/
     staged work. Untracked files are deliberately NOT removed -- deleting
-    them is the separate ``delete_untracked_files`` operation (T-162)."""
+    them is the separate ``delete_untracked_files`` operation (T-162).
+
+    Requires a non-empty fingerprint (CORE-003)."""
+    req = _require_fingerprint(fingerprint)
+    if req:
+        return req
     mismatch = _verify_fingerprint(root, fingerprint)
     if mismatch:
         return mismatch
@@ -362,7 +409,12 @@ def delete_untracked_files(root: str, fingerprint: str | None = None) -> dict:
 
     This is the destructive operation that ordinary Revert must NOT do. It
     requires its own explicit authorisation, and it never touches ignored
-    files (``git clean -fd`` excludes them)."""
+    files (``git clean -fd`` excludes them).
+
+    Requires a non-empty fingerprint (CORE-003)."""
+    req = _require_fingerprint(fingerprint)
+    if req:
+        return req
     mismatch = _verify_fingerprint(root, fingerprint)
     if mismatch:
         return mismatch

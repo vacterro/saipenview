@@ -224,7 +224,7 @@ class TestGateAgreementWithCanonicalValidator:
         outbox = make_ready_outbox(root, "saihunt", "HUNT-001", "doc fix")
         outbox.write_text(
             outbox.read_text(encoding="utf-8").replace(
-                "- **verified:** gate fixture\n", ""
+                "- **verified:** PASS -- gate fixture\n", ""
             ),
             encoding="utf-8",
         )

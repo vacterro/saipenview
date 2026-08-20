@@ -16,7 +16,7 @@
   --borderDark:#100E08; --borderHighlight:#F0D060; --borderMuted:#5A5040;
   --textPrimary:#D4C89A; --textSecondary:#9C9371; --textMuted:#6E674E;
   --accentTeal:#008080; --accentTealDeep:#004C4C;
-  --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020;
+  --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020; --dangerText:#D66464;
   --selection:#3D372A; --compareBack:#14120C;
   --goldStar:#FFC107;
   /* Red for TEXT. --danger stays what it is -- a fill/border colour, fine
@@ -30,7 +30,7 @@
      different values. Every shipped theme now carries its own `dangerText`;
      the default theme pins THIS value rather than the Wintage palette's
      #D66464, which measures below AA on --surface. */
-  --dangerText:#E08A8A;
+  --dangerText:#D66464;
   --phase-init:#7A6A4A;  --phase-plan:#4A7A8A;  --phase-scout:#6A8A4A;
   --phase-hunt:#8A4A4A;  --phase-add:#4A8A5A;   --phase-clean:#8A5A4A;
   --phase-translate:#5A4A8A; --phase-validate:#4A8A8A;

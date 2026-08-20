@@ -188,30 +188,59 @@ class HotkeyListener:
         self._last_fire = now
         self._on_toggle()
 
-    def start(self) -> None:
-        """Register every combo, and keep going when one of them won't take.
-
-        Previously a single bad combo aborted the loop: `keyboard.add_hotkey`
-        raises ValueError on an unparseable name, so one stale or mistyped
-        entry left every LATER binding unregistered and propagated the error
-        into whatever called start() -- including set_hotkeys() from the
-        Settings save path, where it took out the working bindings the user
-        already had. Now each combo stands alone: the good ones register, the
-        bad one is reported, and the app keeps a usable toggle.
+    def start(self, strict: bool = False) -> None:
+        """Register every combo.  CORE-014: when ``strict=True`` (used by
+        set_hotkeys), the entire set is atomic -- if ANY binding fails,
+        old handles are restored and the method raises ValueError.  When
+        ``strict=False`` (cold start), failures are tolerated per-combo.
         """
-        self.stop()
+        old_removers = list(self._registered)
+        temp_removers: list[Callable[[], None]] = []
+        first_error: Exception | None = None
         for combo in self._hotkeys:
             try:
                 remover = keyboard.add_hotkey(
                     to_layout_independent(combo), self._debounced_toggle
                 )
             except (ValueError, ImportError) as e:
+                first_error = first_error or e
                 print(
                     f"SAIPENVIEW: hotkey {combo!r} not registered: {e}",
                     file=sys.stderr,
                 )
+                if strict:
+                    # Rollback all temp registrations
+                    for r in temp_removers:
+                        try:
+                            keyboard.remove_hotkey(r)
+                        except KeyError:
+                            pass
+                    # Restore old handles
+                    for r in old_removers:
+                        try:
+                            remover2 = keyboard.add_hotkey(
+                                to_layout_independent(
+                                    self._hotkeys[old_removers.index(r)]
+                                    if old_removers.index(r) < len(self._hotkeys)
+                                    else self._hotkeys[0]
+                                ),
+                                self._debounced_toggle,
+                            )
+                            self._registered.append(remover2)
+                        except (ValueError, ImportError):
+                            pass
+                    raise first_error
                 continue
-            self._registered.append(remover)
+            temp_removers.append(remover)
+        # All succeeded (or we're in non-strict mode): swap
+        if strict or temp_removers:
+            # Remove old bindings
+            for r in old_removers:
+                try:
+                    keyboard.remove_hotkey(r)
+                except KeyError:
+                    pass
+            self._registered = temp_removers
 
     def stop(self) -> None:
         for remover in self._registered:
@@ -223,4 +252,4 @@ class HotkeyListener:
 
     def set_hotkeys(self, hotkeys: Iterable[str]) -> None:
         self._hotkeys = list(hotkeys)
-        self.start()
+        self.start(strict=True)

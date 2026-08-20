@@ -292,18 +292,35 @@ class Api:
         if self._cache_file.exists():
             try:
                 with open(self._cache_file, encoding="utf-8") as f:
-                    self._projects = json.load(f)
-                self._projects = [
-                    p for p in self._projects if not _is_garbage_root(Path(p["root"]))
-                ]
+                    candidate = json.load(f)
+                # Structural validation (CORE-013): require a list of dicts
+                # each carrying a string "root" key. Anything else is
+                # poisoned -- the comprehension below would crash on a
+                # non-list, a non-dict row, or a missing/non-string root.
+                if not isinstance(candidate, list):
+                    raise ValueError("cache is not a list")
+                valid_rows = []
+                for p in candidate:
+                    if (
+                        isinstance(p, dict)
+                        and isinstance(p.get("root"), str)
+                        and not _is_garbage_root(Path(p["root"]))
+                    ):
+                        valid_rows.append(p)
+                self._projects = valid_rows
                 self._has_scanned = True
             except Exception as e:
                 print(
                     f"SAIPENVIEW: cache at {self._cache_file} unreadable ({e}), starting fresh",
                     file=sys.stderr,
                 )
+                self._projects = []
+                self._has_scanned = False
 
         self._linked_worktrees: list[dict] = []
+        self._refresh_changed_roots: list[str] = []  # PERF-002
+        # PERF-008: in-memory ticket search index, keyed by root.
+        self._ticket_index: dict[str, list[dict]] = {}
         from saipenview.protocol_write import get_coordinator
 
         self._process_manager = ProcessManager(
@@ -326,71 +343,87 @@ class Api:
         # launch/finish has nothing to do with it.
         self._watcher = SaipenWatcher()
 
+    # PERF-005: per-root refresh coalescing. A single protocol transaction
+    # touching STATE.md, BOARD.md and LOG.md fires three watcher events;
+    # we schedule exactly one _refresh_one_project(root) for the root.
+    _root_refresh_timers: dict[str, threading.Timer] = {}
+    _root_refresh_lock = threading.Lock()
+
     def _on_file_changed(self, data: dict) -> None:
         root = data["root"]
-        file = data["file"]
-        # One event -> one targeted refresh: re-read only the changed project
-        # and update only its cache row (T-124). No refresh_known() for every
-        # project, no second poll for the same data version.
+        # PERF-005: debounce per-root refresh to coalesce burst events.
+        # Origin attribution and UI push are deferred to _do_root_refresh.
+        with self._root_refresh_lock:
+            existing = self._root_refresh_timers.get(root)
+            if existing:
+                existing.cancel()
+            timer = threading.Timer(0.1, self._do_root_refresh, args=(root,))
+            timer.daemon = True
+            self._root_refresh_timers[root] = timer
+            timer.start()
+
+    def _do_root_refresh(self, root: str) -> None:
+        """PERF-005: single refresh per root, called from coalesced timer."""
+        with self._root_refresh_lock:
+            self._root_refresh_timers.pop(root, None)
         self._refresh_one_project(root)
-        # Origin attribution (T-190): did WE write this exact content, or did
-        # someone outside the app? The registry records our post-write
-        # fingerprints; a matching current fingerprint is a self-write, a
-        # mismatch or an unregistered change is external. The frontend raises
-        # the "unrecorded external change" prompt only for origin=external.
+        # Trigger per-file origin attribution for each file in the burst.
+        # Since we coalesced, attribute all tracked files for this root.
         from saipenview.external_changes import get_registry
         from saipenview.protocol_write import get_coordinator
-
         coord = get_coordinator()
-        changed_path = Path(root) / ".saipen" / file
-        fp = coord.fingerprint(changed_path)
-        origin = "self" if coord.self_writes.consume(root, file, fp) else "external"
-        if origin == "external":
-            # Backend-persistent external-change tracking (repair mission P0):
-            # recorded regardless of which project is on screen, keyed by
-            # (root, relative path). A collect boundary check refuses while
-            # any unresolved entry exists; only an explicit record/acknowledge
-            # or a self-write consuming the EXACT fingerprint clears it.
-            get_registry().record(root, file, fp)
-        # Structured push for non-window consumers (headless service mode): the
-        # same origin decision reaches SSE subscribers without depending on the
-        # evaluate_js bridge. The window push below remains the pywebview path.
-        event_bus.publish(
-            "saipen.file_changed",
-            {"root": root, "file": file, "origin": origin},
-        )
-        if self._window:
+        for fname in ("STATE.md", "BOARD.md", "LOG.md"):
+            changed_path = Path(root) / ".saipen" / fname
             try:
-                # JSON-serialised values, never f-string interpolation: a root
-                # with backslashes, an apostrophe or Unicode must reach the
-                # page byte-exact (T-124).
-                self._window.evaluate_js(
-                    "if (window.onSaipenFileChanged) window.onSaipenFileChanged("
-                    + json.dumps(root)
-                    + ", "
-                    + json.dumps(file)
-                    + ", "
-                    + json.dumps(origin)
-                    + ")"
-                )
-            except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
-                print(f"SAIPENVIEW: js push failed: {e}", file=sys.stderr)
+                fp = coord.fingerprint(changed_path)
+            except OSError:
+                continue
+            origin = "self" if coord.self_writes.consume(root, fname, fp) else "external"
+            if origin == "external":
+                get_registry().record(root, fname, fp)
+            event_bus.publish(
+                "saipen.file_changed",
+                {"root": root, "file": fname, "origin": origin},
+            )
+            # Push to pywebview window if active.
+            if self._window:
+                try:
+                    self._window.evaluate_js(
+                        "if (window.onSaipenFileChanged) window.onSaipenFileChanged("
+                        + json.dumps(root)
+                        + ", "
+                        + json.dumps(fname)
+                        + ", "
+                        + json.dumps(origin)
+                        + ")"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    print(f"SAIPENVIEW: js push failed: {e}", file=sys.stderr)
 
     def _refresh_one_project(self, root: str) -> None:
-        """Re-parse one project and update only its cache row."""
+        """Re-parse one project and update only its cache row.
+
+        CORE-011: when load_project returns None (project vanished --
+        STATE.md deleted), the row is removed from the cache.
+        """
         pinned_set = set(self._config.get("pinned_roots") or [])
         try:
             proj = load_project(Path(root), with_git=False)
         except (OSError, subprocess.SubprocessError) as e:
             print(f"SAIPENVIEW: targeted refresh({root}) failed: {e}", file=sys.stderr)
             return
-        if proj is None:
-            return
-        row = _project_to_dict(proj, pinned_set)
         with self._lock:
             prev = next((p for p in self._projects if p["root"] == root), None)
             if prev is None:
                 return
+            if proj is None:
+                # CORE-011: project vanished -- remove its row, index, and watcher.
+                self._projects = [p for p in self._projects if p["root"] != root]
+                self._ticket_index.pop(root, None)
+                self._write_cache()
+                self._sync_watcher()
+                return
+            row = _project_to_dict(proj, pinned_set)
             row["git_branch"] = prev.get("git_branch", "")
             row["git_dirty"] = prev.get("git_dirty", False)
             for i, p in enumerate(self._projects):
@@ -398,6 +431,8 @@ class Api:
                     self._projects[i] = row
                     break
             self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+        # PERF-008: rebuild the ticket index for this root.
+        self._build_ticket_index(root)
         self._write_cache()
 
     def _sync_watcher(self) -> None:
@@ -410,31 +445,89 @@ class Api:
         with self._lock:
             self._scanning = val
 
+    # W2-008: centralized scanner configuration helpers. Every root/depth/
+    # delay/exclude reconfiguration uses the same effective options.
+
+    def _scan_kwargs(self) -> dict:
+        """Effective scan kwargs from current config."""
+        return {
+            "scan_roots": self._config["scan_roots"],
+            "max_depth": self._config.get("scan_depth", 6),
+            "delay": self._config.get("scan_delay_ms", 10) / 1000.0,
+            "extra_excludes": set(self._config.get("exclude_dirs", [])),
+        }
+
+    def _replace_background_scanner(self) -> None:
+        """Stop old scanner, create a new one with current config.
+
+        Starts the replacement only if auto_scan is enabled. Preserves
+        the intentional immediate-rescan behavior of root/exclude changes.
+        """
+        self.background_scanner.stop()
+        self.background_scanner = BackgroundScanner(
+            on_result=self._set_cache,
+            **self._scan_kwargs(),
+            interval_seconds=self._config["rescan_interval"],
+            on_scan_start=lambda: self._set_scanning(True),
+        )
+        if self._auto_scan:
+            self.background_scanner.start()
+
     def _sort_order(self) -> str:
         return self._config.get("sort_order", "smart")
 
-    def _set_cache(self, projects: list[ProjectStatus], force: bool = False) -> None:
+    def _set_cache(self, projects, force: bool = False, complete: bool = True) -> None:
+        """Update the project cache from a scan result.
+
+        CORE-011: accepts either a ScanOutcome or a plain list of
+        ProjectStatus. A complete empty result replaces the cache; an
+        incomplete/failed result preserves existing rows.
+        PERF-003: uses worktrees from ScanOutcome to skip a second walk.
+        """
+        from saipenview.scanner import ScanOutcome
+        worktrees = None
+        if isinstance(projects, ScanOutcome):
+            complete = projects.complete
+            project_list = projects.projects
+            worktrees = projects.worktrees
+        else:
+            project_list = projects
         pinned_set = set(self._config.get("pinned_roots") or [])
         hidden_set = set(self._config.get("hidden_roots") or [])
+        items = [
+            _project_to_dict(p, pinned_set)
+            for p in project_list
+            if str(p.root) not in hidden_set and not _is_garbage_root(p.root)
+        ]
+        items.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
         with self._lock:
-            if not force and not projects and self._has_scanned and self._projects:
+            # CORE-011: preserve old cache only for incomplete/failed scans.
+            # A complete empty scan replaces cache with empty (vanished
+            # projects must be removed).
+            if not force and not complete and self._has_scanned and self._projects:
                 self._scanning = False
                 return
-            items = [
-                _project_to_dict(p, pinned_set)
-                for p in projects
-                if str(p.root) not in hidden_set and not _is_garbage_root(p.root)
-            ]
-            items.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+            if not force and not project_list and complete and self._has_scanned and self._projects:
+                # Complete scan returned zero projects: all previous ones vanished.
+                pass  # fall through to set empty
             self._projects = items
             self._has_scanned = True
             self._scanning = False
-        # Refresh linked worktrees after every scan result — catches all
-        # three paths: manual rescan, BackgroundScanner._loop, and browse.
-        self._scan_linked_worktrees()
+        # PERF-003: if the scan already collected worktrees, use them directly.
+        # Fall back to a standalone walk only for non-scan callers.
+        if worktrees is not None:
+            with self._lock:
+                self._linked_worktrees = worktrees
+        else:
+            self._scan_linked_worktrees()
         # Atomic write (temp + replace) via the shared helper -- a crash mid
         # plain write left truncated JSON that __init__'s json.load choked on.
         self._write_cache()
+        # PERF-008: rebuild ticket index for all current roots.
+        with self._lock:
+            roots = [p["root"] for p in self._projects]
+        for r in roots:
+            self._build_ticket_index(r)
         # Watch exactly what we know about (T-124).
         self._sync_watcher()
 
@@ -446,38 +539,25 @@ class Api:
     def refresh_known(self) -> list[dict]:
         """Re-read the .saipen/ files of roots we ALREADY know about.
 
-        This is the cheap half of scanning: no directory walk, no drive sweep,
-        just a re-parse of each known project's own small files. The expensive
-        discovery sweep stays on its slow timer (rescan_interval) and is what
-        finds NEW projects; this runs on the UI poll so an edit to a STATE.md
-        shows up within seconds instead of up to rescan_interval later.
-
-        Fixes both T-071 (list wasn't live) and T-072 (the sidebar served this
-        stale cache while the detail pane did a live read, so the same project
-        could show two different `updated` values at once).
+        PERF-002: tracks which roots actually changed so the frontend can
+        skip sidebar rebuild and detail reload when nothing changed.
         """
         with self._lock:
-            roots = [p["root"] for p in self._projects]
-        if not roots:
+            prev_by_root = {p["root"]: p for p in self._projects}
+        if not prev_by_root:
             return self.get_projects()
 
         pinned_set = set(self._config.get("pinned_roots") or [])
         hidden_set = set(self._config.get("hidden_roots") or [])
         fresh: list[dict] = []
-        for root in roots:
+        changed_roots: list[str] = []
+        for root in list(prev_by_root.keys()):
             if root in hidden_set:
                 continue
-            with self._lock:
-                prev = next((p for p in self._projects if p["root"] == root), None)
+            prev = prev_by_root.get(root)
             try:
-                # with_git=False: the git lookup is ~97% of load_project's cost
-                # (two subprocesses). Git state can't change from a STATE.md
-                # edit, so carry the previous values and let the slow full scan
-                # refresh them.
                 proj = load_project(Path(root), with_git=False)
             except (OSError, subprocess.SubprocessError) as e:
-                # One unreadable project must not stop the refresh (same rule
-                # _scan_one_root follows). Keep the last-known row instead.
                 print(f"SAIPENVIEW: refresh_known({root}) failed: {e}", file=sys.stderr)
                 proj = None
             if proj is None:
@@ -489,19 +569,19 @@ class Api:
                 row["git_branch"] = prev.get("git_branch", "")
                 row["git_dirty"] = prev.get("git_dirty", False)
             fresh.append(row)
+            # PERF-002: detect which roots actually changed.
+            if prev is None or row.get("updated") != prev.get("updated"):
+                changed_roots.append(root)
 
         fresh.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
         with self._lock:
             changed = fresh != self._projects
             self._projects = fresh
-        # Persist so the next cold start doesn't fast-boot into stale rows.
-        # _set_cache writes cache.json but only the slow full scan calls it, so
-        # without this an edit made between scans was visible live yet lost on
-        # restart. Written only when something ACTUALLY changed -- this runs on
-        # the 5s poll and must not turn into a disk write every 5 seconds.
         if changed:
             self._write_cache()
         self._sync_watcher()
+        # PERF-002: expose changed_roots for the frontend to skip rebuild.
+        self._refresh_changed_roots = changed_roots
         return self.get_projects()
 
     def _write_cache(self) -> None:
@@ -556,6 +636,14 @@ class Api:
 
     def get_scan_progress(self) -> dict:
         return get_scan_progress()
+
+    def get_changed_roots(self) -> list[str]:
+        """PERF-002: return roots that changed since last refresh_known(),
+        then clear the list. The frontend uses this to skip sidebar rebuild
+        and detail reload when nothing changed."""
+        changed = list(self._refresh_changed_roots)
+        self._refresh_changed_roots = []
+        return changed
 
     def get_linked_worktrees(self) -> list[dict]:
         """Returns cached list of linked worktrees found during the last scan.
@@ -892,7 +980,15 @@ class Api:
                 print(f"SAIPENVIEW: open_editor({root}) failed: {e}", file=sys.stderr)
         return False
 
-    def read_file_text(self, file_path: str) -> str | None:
+    def read_file_text(self, file_path: str) -> dict | str | None:
+        """Read a file's text content.
+
+        CORE-001: For protocol files (.saipen/), returns a dict
+        `{text, edit_version}` where edit_version is the canonical raw_hash
+        of the file at read time. The frontend MUST pass this edit_version
+        back on save to prevent stale-editor overwrites.
+        Non-protocol files return a plain string (backward compat).
+        """
         ok, reason = validate_file_path(file_path, self._known_roots())
         if not ok:
             print(
@@ -900,19 +996,32 @@ class Api:
                 file=sys.stderr,
             )
             return None
+        path = Path(file_path)
         try:
-            if os.path.exists(file_path):
-                # read_doc, not open(encoding="utf-8"): the file viewer opened
-                # a UTF-16 STATE.md as an error toast and a BOM-carrying one
-                # with a stray glyph on line 1.
-                return read_doc(file_path)
+            if path.exists():
+                text = read_doc(path)
+                # CORE-001: for protocol files, return the canonical version
+                # so the caller can prove they're saving against the same
+                # revision they read.
+                from saipenview.protocol_write import get_coordinator
+                if get_coordinator().is_protocol_file(path):
+                    edit_version = get_coordinator().fingerprint(path)
+                    return {"text": text, "edit_version": edit_version}
+                return text
         except OSError as e:
             print(
                 f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr
             )
         return None
 
-    def write_file_text(self, file_path: str, content: str) -> bool:
+    def write_file_text(self, file_path: str, content: str, edit_version: str | None = None) -> bool:
+        """Write content to a file.
+
+        CORE-001: For protocol files, edit_version must be the edit_version
+        returned by read_file_text. A mismatch means the file changed since
+        the user read it, and the write is refused (STALE_STATE) to prevent
+        a stale editor from overwriting a newer revision.
+        """
         ok, reason = validate_file_path(file_path, self._known_roots())
         if not ok:
             print(
@@ -921,9 +1030,6 @@ class Api:
             )
             return False
         path = Path(file_path)
-        # A write to a `.saipen/` protocol file is a protocol mutation: it
-        # goes through the write coordinator and refuses while a Core agent
-        # owns the project (T-183).
         from saipenview.ownership import AgentOwnershipError
         from saipenview.protocol_write import get_coordinator
 
@@ -935,14 +1041,28 @@ class Api:
                 return False
             try:
                 content = content.replace("\r\n", "\n").replace("\r", "\n")
-                # A raw hand-edit is journaled (lock + recovery) but
-                # byte-verifies only -- the user may be repairing a
-                # non-conformant project, and core_fast would block exactly
-                # the repair.
+                # CORE-001: if an edit_version was provided, the coordinator
+                # must verify the file hasn't changed since the read. A raw
+                # hand-edit uses stale_retry=False and the coordinator returns
+                # STALE_STATE on version mismatch.
+                def _write_transform(_text, c=content):
+                    return c
                 result = get_coordinator().mutate_doc(
-                    path, lambda _t, c=content: c, verification_policy="none", stale_retry=False
+                    path, _write_transform,
+                    verification_policy="none",
+                    stale_retry=False,
+                    expected_raw_hash=edit_version,
                 )
-                return bool(result.get("ok"))
+                if not result.get("ok"):
+                    code = result.get("code", "")
+                    if code == "STALE_STATE":
+                        print(
+                            f"SAIPENVIEW: write_file_text({file_path}) STALE -- "
+                            "file changed since it was read",
+                            file=sys.stderr,
+                        )
+                    return False
+                return True
             except (OSError, AgentOwnershipError) as e:
                 print(
                     f"SAIPENVIEW: write_file_text({file_path}) failed: {e}",
@@ -950,14 +1070,8 @@ class Api:
                 )
                 return False
         try:
-            # Normalise line endings so write_doc re-applies exactly one
-            # convention: a CRLF file whose editor content already carries
-            # \r\n would otherwise get doubled \r\r\n.
             content = content.replace("\r\n", "\n").replace("\r", "\n")
             if path.is_file():
-                # Preserve the original encoding and newline so saving one
-                # field never re-encodes a UTF-16/BOM/CRLF file (T-164). New
-                # files default to UTF-8 LF.
                 _, enc, newline = read_doc_meta(path)
                 write_doc(path, content, enc, newline)
             else:
@@ -1065,17 +1179,21 @@ class Api:
             return None
         guard = self._guard_protocol_write(root)
         if guard:
-            return {"ok": False, "error": guard}
+            return {"ok": False, "code": "WRITER_BUSY", "message": guard,
+                    "updated_detail": None}
         p = Path(root)
         result = update_state(p, updates)
         if result.get("ok"):
-            # force cache update
-            self.rescan()
-            return self.get_project_detail(root)
+            # PERF-001: targeted refresh instead of full rescan.
+            self._refresh_one_project(root)
+            return {"ok": True, "code": result.get("code", "COMMITTED"),
+                    "message": result.get("message", ""),
+                    "updated_detail": self.get_project_detail(root)}
         return {
             "ok": False,
             "code": result.get("code", "VALIDATION_FAILED"),
             "message": result.get("message", "state update refused"),
+            "updated_detail": None,
         }
 
     def set_hotkey_callback(self, callback) -> None:
@@ -1152,26 +1270,12 @@ class Api:
     def set_scan_tuning(
         self, scan_depth: int, scan_delay_ms: int, rescan_interval: int
     ) -> dict:
-        """Rebuilds the background scanner with new tuning; does NOT force an immediate
-        full scan -- unlike set_scan_roots, these are background-timing knobs, not a
-        visible change the user expects reflected instantly. Applies from the next
-        scheduled rescan or manual 'Rescan now'."""
+        """Rebuilds the background scanner with new tuning."""
         self._config["scan_depth"] = max(1, min(8, int(scan_depth)))
         self._config["scan_delay_ms"] = max(0, int(scan_delay_ms))
         self._config["rescan_interval"] = max(10, int(rescan_interval))
         save_config(self._config)
-        self.background_scanner.stop()
-        self.background_scanner = BackgroundScanner(
-            on_result=self._set_cache,
-            scan_roots=self._config["scan_roots"],
-            interval_seconds=self._config["rescan_interval"],
-            max_depth=self._config["scan_depth"],
-            delay=self._config["scan_delay_ms"] / 1000.0,
-            extra_excludes=set(self._config.get("exclude_dirs", [])),
-            on_scan_start=lambda: self._set_scanning(True),
-        )
-        if self._auto_scan:
-            self.background_scanner.start()
+        self._replace_background_scanner()
         return self.get_config()
 
     def set_scan_roots(self, roots: list[str] | None) -> list[dict]:
@@ -1179,18 +1283,9 @@ class Api:
         save_config(self._config)
         self.background_scanner.stop()
         self._set_scanning(True)
-        projects = scan(roots)
+        projects = scan(**self._scan_kwargs())
         self._set_cache(projects, force=True)
-        self.background_scanner = BackgroundScanner(
-            on_result=self._set_cache,
-            scan_roots=roots,
-            interval_seconds=self._config["rescan_interval"],
-            max_depth=self._config.get("scan_depth", 6),
-            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
-            extra_excludes=set(self._config.get("exclude_dirs", [])),
-            on_scan_start=lambda: self._set_scanning(True),
-        )
-        self.background_scanner.start()
+        self._replace_background_scanner()
         return self.get_projects()
 
     def set_exclude_dirs(self, dirs: list[str]) -> list[dict]:
@@ -1254,27 +1349,9 @@ class Api:
         save_config(self._config)
 
         self._set_scanning(True)
-        projects = scan(
-            existing,
-            max_depth=self._config.get("scan_depth", 6),
-            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
-            extra_excludes=set(self._config.get("exclude_dirs", [])),
-        )
-        # _set_cache owns the linked-worktree scan (T-165); the explicit call
-        # removed here used to run the same walk a second time per browse.
+        projects = scan(**self._scan_kwargs())
         self._set_cache(projects, force=True)
-
-        self.background_scanner.stop()
-        self.background_scanner = BackgroundScanner(
-            on_result=self._set_cache,
-            scan_roots=existing,
-            interval_seconds=self._config["rescan_interval"],
-            max_depth=self._config.get("scan_depth", 6),
-            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
-            extra_excludes=set(self._config.get("exclude_dirs", [])),
-            on_scan_start=lambda: self._set_scanning(True),
-        )
-        self.background_scanner.start()
+        self._replace_background_scanner()
 
         return self.get_projects()
 
@@ -1289,6 +1366,14 @@ class Api:
         self._process_manager.stop_all()
         self.background_scanner.stop()
         self._watcher.stop()
+        # PERF-005: cancel all pending root-refresh timers.
+        with self._root_refresh_lock:
+            for t in self._root_refresh_timers.values():
+                t.cancel()
+            self._root_refresh_timers.clear()
+        # PERF-008: clear the ticket search index.
+        with self._lock:
+            self._ticket_index.clear()
         # Unsubscribe the watcher handler: a stopped Api must not keep firing
         # _on_file_changed on later project_changed events. In production the
         # Api lives for the app lifetime, but tests construct many Apis, and a
@@ -1361,8 +1446,8 @@ class Api:
         # collect authorization for `explicit`-policy producers.
         result = collect_outbox_entry(p, sub_name, entry_id, explicit=True)
         if result.get("ok"):
-            # Refresh cache so the UI shows updated state
-            self.rescan()
+            # PERF-001: targeted refresh instead of full rescan.
+            self._refresh_one_project(root)
             result["updated_detail"] = self.get_project_detail(root)
         return result
 
@@ -1449,6 +1534,39 @@ class Api:
         except OSError:
             return []
 
+    def _build_ticket_index(self, root: str) -> None:
+        """PERF-008: build in-memory ticket search index for one root.
+
+        Called after project load/refresh; avoids re-reading BOARD files on
+        every search query.
+        """
+        tickets: list[dict] = []
+        try:
+            board_path = Path(root) / ".saipen" / "BOARD.md"
+            tickets.extend(self._search_board_for_tickets(board_path, ""))
+            # Also index sub-agent and translate boards.
+            proj = next((p for p in self._projects if p["root"] == root), None)
+            if proj:
+                for sub in proj.get("subs") or []:
+                    sub_path = sub.get("path", "")
+                    if sub_path:
+                        for t in self._search_board_for_tickets(
+                            Path(sub_path) / "BOARD.md", ""
+                        ):
+                            t["sub_name"] = sub.get("name", "?")
+                            tickets.append(t)
+                translate = proj.get("translate")
+                if translate and translate.get("path"):
+                    for t in self._search_board_for_tickets(
+                        Path(translate["path"]) / "BOARD.md", ""
+                    ):
+                        t["sub_name"] = translate.get("name", "saitranslate")
+                        tickets.append(t)
+        except OSError:
+            pass
+        with self._lock:
+            self._ticket_index[root] = tickets
+
     def quick_search(self, query: str) -> list[dict]:
         """Search all cached projects by name AND read their BOARD.md
         (and sub-agent BOARD.md files) to find matching tickets.
@@ -1474,28 +1592,23 @@ class Api:
             if name.lower().find(q) != -1:
                 matched_field = "name"
 
-            # Search main BOARD.md for matching tickets
-            board_path = Path(root) / ".saipen" / "BOARD.md"
-            matched_tickets = self._search_board_for_tickets(board_path, q)
-
-            # Search each sub-agent's BOARD.md
-            for sub in p.get("subs") or []:
-                sub_path = sub.get("path", "")
-                if sub_path:
-                    sub_board = Path(sub_path) / "BOARD.md"
-                    sub_matches = self._search_board_for_tickets(sub_board, q)
-                    for mt in sub_matches:
-                        mt["sub_name"] = sub.get("name", "?")
-                        sub_matched_tickets.append(mt)
-
-            # Also search translate sub if present
-            translate = p.get("translate")
-            if translate and translate.get("path"):
-                t_board = Path(translate["path"]) / "BOARD.md"
-                t_matches = self._search_board_for_tickets(t_board, q)
-                for mt in t_matches:
-                    mt["sub_name"] = translate.get("name", "saitranslate")
-                    sub_matched_tickets.append(mt)
+            # PERF-008: search the in-memory index instead of reading BOARD files.
+            with self._lock:
+                indexed = list(self._ticket_index.get(root, []))
+            matched_tickets = []
+            sub_matched_tickets = []
+            for t in indexed:
+                if q in t.get("id", "").lower() or q in t.get("desc", "").lower():
+                    entry = {
+                        "id": t["id"],
+                        "desc": t["desc"],
+                        "section": t["section"],
+                    }
+                    if "sub_name" in t:
+                        entry["sub_name"] = t["sub_name"]
+                        sub_matched_tickets.append(entry)
+                    else:
+                        matched_tickets.append(entry)
 
             if matched_field or matched_tickets or sub_matched_tickets:
                 results.append(
@@ -1517,8 +1630,8 @@ class Api:
         section: str,
         before_ticket_id: str | None = None,
     ) -> dict | None:
-        """Reorder a ticket within its section (drag-drop, T-175). Returns the
-        updated project detail or None on failure."""
+        """Reorder a ticket within its section (drag-drop, T-175). Returns
+        {ok, code, message, updated_detail} or None on unknown root."""
         from saipenview.parser import reorder_ticket
 
         root = self._resolve_root(root_str)
@@ -1526,17 +1639,19 @@ class Api:
             return None
         guard = self._guard_protocol_write(root)
         if guard:
-            return {"ok": False, "error": guard}
+            return {"ok": False, "code": "WRITER_BUSY", "message": guard,
+                    "updated_detail": None}
         p = Path(root)
         result = reorder_ticket(p, ticket_id, section, before_ticket_id)
         if result.get("ok"):
-            # No full rescan: the watcher (T-124) picks up the BOARD.md change
-            # and targeted-refreshes the cache row; the detail is fresh here.
-            return self.get_project_detail(root)
+            return {"ok": True, "code": result.get("code", "COMMITTED"),
+                    "message": result.get("message", ""),
+                    "updated_detail": self.get_project_detail(root)}
         return {
             "ok": False,
             "code": result.get("code", "VALIDATION_FAILED"),
             "message": result.get("message", "reorder refused"),
+            "updated_detail": None,
         }
 
     def record_manual_work(
@@ -1587,7 +1702,7 @@ class Api:
         """Move a ticket between sections on BOARD.md: start (TODO->DOING),
         done (DOING->DONE), reopen (DONE->TODO), block (->BLOCKED, with the
         reason appended as `| blocker:`), unblock (BLOCKED->TODO). Returns
-        updated project detail or None on failure."""
+        {ok, code, message, updated_detail} or None on unknown root."""
         from saipenview.parser import move_ticket
 
         root = self._resolve_root(root_str)
@@ -1595,16 +1710,21 @@ class Api:
             return None
         guard = self._guard_protocol_write(root)
         if guard:
-            return {"ok": False, "error": guard}
+            return {"ok": False, "code": "WRITER_BUSY", "message": guard,
+                    "updated_detail": None}
         p = Path(root)
         result = move_ticket(p, ticket_id, action, blocker_reason=blocker_reason)
         if result.get("ok"):
-            self.rescan()
-            return self.get_project_detail(root)
+            # PERF-001: targeted refresh instead of full rescan.
+            self._refresh_one_project(root)
+            return {"ok": True, "code": result.get("code", "COMMITTED"),
+                    "message": result.get("message", ""),
+                    "updated_detail": self.get_project_detail(root)}
         return {
             "ok": False,
             "code": result.get("code", "VALIDATION_FAILED"),
             "message": result.get("message", "ticket move refused"),
+            "updated_detail": None,
         }
 
     def minimize_window(self) -> None:
