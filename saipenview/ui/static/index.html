@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="renderErrorRegion" style="display:none; position:fixed; top:0; left:0; right:0; z-index:9999; background:#2a1510; color:#e08a8a; font-size:10px; font-family:monospace; padding:2px 6px; border-bottom:1px solid #7a2020; align-items:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" data-testid="renderErrorRegion"></div>
+<div id="renderErrorRegion" class="top-banner-region" style="display:none;" data-testid="renderErrorRegion"></div>
 <div class="toolbar">
   <div class="toolbar-left">
     <button id="togglePanelBtn" class="toggle-btn" data-i18n-title="collapseHint.text" title="Alt+D to uncollapse">▲</button>
@@ -119,6 +119,17 @@
       <label style="flex-direction:row; align-items:center; gap:4px; cursor:pointer;">
         <input type="checkbox" id="setNativeTitlebar" style="width:10px;height:10px;margin:0;">
         <span data-i18n="settings.nativeTitlebar.label">Native Windows titlebar (the toolbar already has _ □ × Exit)</span>
+      </label>
+      <label style="flex-direction:row; align-items:center; gap:4px; cursor:pointer;">
+        <input type="checkbox" id="setShowAgentPanel" style="width:10px;height:10px;margin:0;">
+        <span data-i18n="settings.showAgentPanel.label">Show Agent Control panel in detail pane (hidden by default)</span>
+      </label>
+      <label style="flex-direction:row; align-items:center; gap:4px; cursor:pointer;">
+        <input type="checkbox" id="setProjectsCollapsedByDefault" style="width:10px;height:10px;margin:0;" checked>
+        <span data-i18n="settings.projectsCollapsedByDefault.label">Collapse all projects by default (last N stay unfolded)</span>
+      </label>
+      <label data-i18n="settings.projectsUnfoldedTail.label">Projects unfolded by default (last N)
+        <input type="number" id="setProjectsUnfoldedTail" min="0" max="50" value="5">
       </label>
       <label style="flex-direction:row; align-items:center; gap:4px; cursor:pointer;">
         <input type="checkbox" id="setFlashChanges" style="width:10px;height:10px;margin:0;">

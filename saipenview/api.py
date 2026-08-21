@@ -301,12 +301,15 @@ class Api:
                     raise ValueError("cache is not a list")
                 valid_rows = []
                 for p in candidate:
-                    if (
-                        isinstance(p, dict)
-                        and isinstance(p.get("root"), str)
-                        and not _is_garbage_root(Path(p["root"]))
-                    ):
+                    if isinstance(p, dict) and isinstance(p.get("root"), str):
                         valid_rows.append(p)
+                    else:
+                        # Any poisoned entry poisons the whole cache -- fail
+                        # closed and start fresh rather than silently dropping
+                        # rows (CORE-013 hardening). A row with a non-dict type,
+                        # a missing root, or a non-string root would crash the
+                        # row consumers downstream.
+                        raise ValueError("cache contains an invalid project entry")
                 self._projects = valid_rows
                 self._has_scanned = True
             except Exception as e:
@@ -343,36 +346,51 @@ class Api:
         # launch/finish has nothing to do with it.
         self._watcher = SaipenWatcher()
 
-    # PERF-005: per-root refresh coalescing. A single protocol transaction
-    # touching STATE.md, BOARD.md and LOG.md fires three watcher events;
-    # we schedule exactly one _refresh_one_project(root) for the root.
-    _root_refresh_timers: dict[str, threading.Timer] = {}
-    _root_refresh_lock = threading.Lock()
+        # CORE-004: debounce state must be INSTANCE-owned. As class attributes it
+        # was shared by every Api instance, so two instances cancelled each
+        # other's pending refreshes and corrupted each other's file sets.
+        self._root_refresh_timers: dict[str, threading.Timer] = {}
+        self._root_refresh_lock = threading.Lock()
+        # CORE-004: exact files observed to change per root, accumulated across
+        # coalesced events so attribution is precise (not a blanket STATE/BOARD/
+        # LOG sweep that fabricates external-change records).
+        self._root_refresh_files: dict[str, set[str]] = {}
 
     def _on_file_changed(self, data: dict) -> None:
         root = data["root"]
-        # PERF-005: debounce per-root refresh to coalesce burst events.
-        # Origin attribution and UI push are deferred to _do_root_refresh.
+        changed_file = data.get("file")
+        # CORE-004: debounce per-root refresh to coalesce burst events, but
+        # retain the EXACT set of files the watcher reported as changed
+        # ({"root", "file"} per event). Attribution is deferred to
+        # _do_root_refresh and runs only for the observed files.
         with self._root_refresh_lock:
             existing = self._root_refresh_timers.get(root)
             if existing:
                 existing.cancel()
+            if changed_file:
+                self._root_refresh_files.setdefault(root, set()).add(changed_file)
             timer = threading.Timer(0.1, self._do_root_refresh, args=(root,))
             timer.daemon = True
             self._root_refresh_timers[root] = timer
             timer.start()
 
     def _do_root_refresh(self, root: str) -> None:
-        """PERF-005: single refresh per root, called from coalesced timer."""
+        """CORE-004: single refresh per root from the coalesced timer.
+
+        Attribution runs only for the files actually observed to change (in
+        deterministic order), so a lone STATE.md write never manufactures
+        spurious external-change records for BOARD/LOG.
+        """
         with self._root_refresh_lock:
             self._root_refresh_timers.pop(root, None)
+            changed = self._root_refresh_files.pop(root, set())
         self._refresh_one_project(root)
-        # Trigger per-file origin attribution for each file in the burst.
-        # Since we coalesced, attribute all tracked files for this root.
+        if not changed:
+            return
         from saipenview.external_changes import get_registry
         from saipenview.protocol_write import get_coordinator
         coord = get_coordinator()
-        for fname in ("STATE.md", "BOARD.md", "LOG.md"):
+        for fname in sorted(changed):
             changed_path = Path(root) / ".saipen" / fname
             try:
                 fp = coord.fingerprint(changed_path)
@@ -405,6 +423,11 @@ class Api:
 
         CORE-011: when load_project returns None (project vanished --
         STATE.md deleted), the row is removed from the cache.
+
+        CORE-012: the vanished-project branch must NOT call _write_cache() or
+        _sync_watcher() while holding self._lock -- both re-acquire that same
+        non-reentrant lock and would self-deadlock the Api thread, freezing all
+        later project/cache/watcher operations.
         """
         pinned_set = set(self._config.get("pinned_roots") or [])
         try:
@@ -412,25 +435,34 @@ class Api:
         except (OSError, subprocess.SubprocessError) as e:
             print(f"SAIPENVIEW: targeted refresh({root}) failed: {e}", file=sys.stderr)
             return
+
+        # Phase 1: decide + mutate in-memory state under the lock.
+        vanished = False
         with self._lock:
             prev = next((p for p in self._projects if p["root"] == root), None)
             if prev is None:
                 return
             if proj is None:
-                # CORE-011: project vanished -- remove its row, index, and watcher.
+                # CORE-011/012: project vanished -- drop its row + index under
+                # the lock, but defer cache/watcher writes until after release.
                 self._projects = [p for p in self._projects if p["root"] != root]
                 self._ticket_index.pop(root, None)
-                self._write_cache()
-                self._sync_watcher()
-                return
-            row = _project_to_dict(proj, pinned_set)
-            row["git_branch"] = prev.get("git_branch", "")
-            row["git_dirty"] = prev.get("git_dirty", False)
-            for i, p in enumerate(self._projects):
-                if p["root"] == root:
-                    self._projects[i] = row
-                    break
-            self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+                vanished = True
+            else:
+                row = _project_to_dict(proj, pinned_set)
+                row["git_branch"] = prev.get("git_branch", "")
+                row["git_dirty"] = prev.get("git_dirty", False)
+                for i, p in enumerate(self._projects):
+                    if p["root"] == root:
+                        self._projects[i] = row
+                        break
+                self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+
+        # Phase 2: heavy/recursive work OUTSIDE the lock.
+        if vanished:
+            self._write_cache()
+            self._sync_watcher()
+            return
         # PERF-008: rebuild the ticket index for this root.
         self._build_ticket_index(root)
         self._write_cache()
@@ -493,11 +525,14 @@ class Api:
         else:
             project_list = projects
         pinned_set = set(self._config.get("pinned_roots") or [])
-        hidden_set = set(self._config.get("hidden_roots") or [])
+        # CORE-006: keep EVERY verified known project in the internal registry
+        # regardless of visibility. Hidden roots are filtered only at the
+        # presentation boundary (get_projects), never deleted here, so hiding
+        # can no longer erase a project from the registry/watcher.
         items = [
             _project_to_dict(p, pinned_set)
             for p in project_list
-            if str(p.root) not in hidden_set and not _is_garbage_root(p.root)
+            if not _is_garbage_root(p.root)
         ]
         items.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
         with self._lock:
@@ -548,12 +583,12 @@ class Api:
             return self.get_projects()
 
         pinned_set = set(self._config.get("pinned_roots") or [])
-        hidden_set = set(self._config.get("hidden_roots") or [])
+        # CORE-006: refresh hidden projects too -- they remain in the registry,
+        # so their rows stay current and pending external changes keep getting
+        # tracked. Visibility is applied only in get_projects().
         fresh: list[dict] = []
         changed_roots: list[str] = []
         for root in list(prev_by_root.keys()):
-            if root in hidden_set:
-                continue
             prev = prev_by_root.get(root)
             try:
                 proj = load_project(Path(root), with_git=False)
@@ -569,14 +604,22 @@ class Api:
                 row["git_branch"] = prev.get("git_branch", "")
                 row["git_dirty"] = prev.get("git_dirty", False)
             fresh.append(row)
-            # PERF-002: detect which roots actually changed.
-            if prev is None or row.get("updated") != prev.get("updated"):
+            # CORE-007: detect change by full-row diff, not just the parent
+            # STATE 'updated'. A SubSaipen-only change (e.g. a sub BOARD ticket)
+            # must still be flagged so the sidebar refreshes and the ticket index
+            # rebuilds -- otherwise it stays invisible in UI/search.
+            if prev is None or row != prev:
                 changed_roots.append(root)
 
         fresh.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
         with self._lock:
             changed = fresh != self._projects
             self._projects = fresh
+        # CORE-007: rebuild the ticket-search index for changed roots so a
+        # SubSaipen-only change is reflected in search/UI immediately instead of
+        # staying invisible until an unrelated parent change occurs.
+        for root in changed_roots:
+            self._build_ticket_index(root)
         if changed:
             self._write_cache()
         self._sync_watcher()
@@ -841,6 +884,10 @@ class Api:
             "layout_swap",
             "default_engine",
             "theme",
+            "show_agent_panel",
+            "projects_collapsed_by_default",
+            "projects_unfolded_tail",
+            "collapsed_projects",
         ):
             if k in settings:
                 self._config[k] = settings[k]
@@ -885,9 +932,10 @@ class Api:
             hidden.append(root_str)
         self._config["hidden_roots"] = hidden
         save_config(self._config)
-        with self._lock:
-            self._projects = [p for p in self._projects if p["root"] != root_str]
-            return list(self._projects)
+        # CORE-006: hiding is a visibility toggle only. The project stays in the
+        # internal registry and under the watcher; get_projects() filters it from
+        # the UI. No row is deleted, so unhide needs no rescan.
+        return self.get_projects()
 
     def unhide_project(self, root_str: str) -> list[dict]:
         hidden = list(self._config.get("hidden_roots") or [])
@@ -1034,6 +1082,16 @@ class Api:
         from saipenview.protocol_write import get_coordinator
 
         if get_coordinator().is_protocol_file(path):
+            # CORE-001: protocol files are CAS-protected. A save without the
+            # edit_version read token is a fail-open hole (tokenless editor
+            # saves bypass the stale-read check), so refuse it closed.
+            if not edit_version:
+                print(
+                    f"SAIPENVIEW: write_file_text refused {file_path!r}: "
+                    "protocol file requires edit_version (read it first)",
+                    file=sys.stderr,
+                )
+                return False
             root = get_coordinator().root_for(path)
             guard = self._guard_protocol_write(str(root))
             if guard:

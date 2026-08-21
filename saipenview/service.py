@@ -188,6 +188,10 @@ class SaipenViewService:
             if self._state != "stopped":
                 return  # double-start: deterministic no-op
             self._state = "starting"
+            # CORE-008: a prior stop() set this event; clear it atomically during
+            # the stopped->starting transition so wait()/SSE don't terminate
+            # immediately after a documented restart.
+            self._stopping.clear()
 
         api_created = False
         event_subscribed = False
@@ -310,6 +314,10 @@ class SaipenViewService:
         W2-005: coalesce events by (root, file) key within each subscriber's
         buffer, preserving external origin if any coalesced event was external.
         On capacity overflow emit one resync sentinel instead of growing memory.
+
+        CORE-009: each subscriber's queue is guarded by that subscriber's own
+        Condition. Mutate + notify while holding it, so a wake/drain in the
+        consumer cannot race a producer insert and drop an event.
         """
         root = data.get("root", "")
         file_key = data.get("file", "")
@@ -321,45 +329,43 @@ class SaipenViewService:
                 buf = getattr(cond, "_sse_queue", None)
                 if buf is None:
                     continue
-                # Coalesce: update existing entry for same (root, file) or append new.
-                # buf is a dict[(root,file)] -> {origin, payload}
-                if (root, file_key) in buf:
-                    existing = buf[(root, file_key)]
-                    # Preserve external if any coalesced event was external.
-                    merged_origin = "external" if (
-                        existing["origin"] == "external" or origin == "external"
-                    ) else origin
-                    payload = json.dumps({
-                        "event": "file.changed",
-                        "root": root,
-                        "file": file_key,
-                        "origin": merged_origin,
-                    })
-                    buf[(root, file_key)] = {
-                        "origin": merged_origin,
-                        "payload": payload,
-                    }
-                elif len(buf) < self._SSE_QUEUE_MAX:
-                    payload = json.dumps({
-                        "event": "file.changed",
-                        "root": root,
-                        "file": file_key,
-                        "origin": origin,
-                    })
-                    buf[(root, file_key)] = {
-                        "origin": origin,
-                        "payload": payload,
-                    }
-                else:
-                    # W2-005: capacity overflow -- emit resync sentinel.
-                    buf.clear()
-                    resync = json.dumps({"event": "resync_required"})
-                    buf[('_resync', '')] = {
-                        "origin": "internal",
-                        "payload": resync,
-                    }
-                    break  # stop iterating subscribers after sentinel
                 with cond:
+                    # Coalesce: update existing entry for same (root, file) or append new.
+                    if (root, file_key) in buf:
+                        existing = buf[(root, file_key)]
+                        # Preserve external if any coalesced event was external.
+                        merged_origin = "external" if (
+                            existing["origin"] == "external" or origin == "external"
+                        ) else origin
+                        buf[(root, file_key)] = {
+                            "origin": merged_origin,
+                            "payload": json.dumps({
+                                "event": "file.changed",
+                                "root": root,
+                                "file": file_key,
+                                "origin": merged_origin,
+                            }),
+                        }
+                    elif len(buf) < self._SSE_QUEUE_MAX:
+                        buf[(root, file_key)] = {
+                            "origin": origin,
+                            "payload": json.dumps({
+                                "event": "file.changed",
+                                "root": root,
+                                "file": file_key,
+                                "origin": origin,
+                            }),
+                        }
+                    else:
+                        # CORE-010: per-subscriber overflow -- collapse to exactly
+                        # one resync marker. NEVER break the global fanout: other
+                        # subscribers keep receiving their own events.
+                        buf.clear()
+                        buf[("_resync", "")] = {
+                            "origin": "internal",
+                            "event": "resync_required",
+                            "payload": json.dumps({"event": "resync_required"}),
+                        }
                     cond.notify_all()
             except RuntimeError:
                 pass
@@ -410,10 +416,19 @@ class SaipenViewService:
             protocol_version = "HTTP/1.1"
 
             def log_message(self, fmt, *args) -> None:
-                # Route request logs to stderr (the handshake owns stdout).
+                import re
+                import sys
+
+                try:
+                    msg = fmt % args if args else fmt
+                except TypeError:
+                    msg = fmt
+                # W2-002: redact the SSE mutation token -- it rides the URL query
+                # and must never reach stderr/access logs.
+                msg = re.sub(r"token=[^&\s\"'<>]+", "token=***REDACTED***", msg)
                 print(
-                    f"SAIPENVIEW service: {self.address_string()} {fmt % args}",
-                    file=__import__("sys").stderr,
+                    f"SAIPENVIEW service: {self.address_string()} {msg}",
+                    file=sys.stderr,
                 )
 
             # -- shared helpers --
@@ -430,13 +445,17 @@ class SaipenViewService:
                 self._send_json(status, {"ok": False, "error": message})
 
             def _auth_from_query(self) -> str | None:
+                # W2-002: decode the query with the standard library so tokens
+                # containing +, space, %, & (URL-sensitive chars from
+                # encodeURIComponent) authenticate exactly as sent via RPC.
+                from urllib.parse import parse_qs
+
                 q = self.path.split("?", 1)
                 if len(q) < 2:
                     return None
-                for part in q[1].split("&"):
-                    if part.startswith("token="):
-                        return part[len("token=") :]
-                return None
+                params = parse_qs(q[1], keep_blank_values=True)
+                vals = params.get("token")
+                return vals[0] if vals else None
 
             # -- routes --
 
@@ -569,11 +588,19 @@ class SaipenViewService:
                     while not service._stopping.is_set():
                         with cond:
                             cond.wait(timeout=15)
-                        queue = cond._sse_queue  # type: ignore[attr-defined]
-                        # Drain: snapshot + clear, then write (O(1) swap).
-                        pending = list(queue.values())
-                        queue.clear()
+                            # CORE-009: snapshot + clear under the subscriber's own
+                            # Condition lock so a producer insert between wake and
+                            # drain cannot be dropped. Socket writes happen after
+                            # release to avoid holding the lock during I/O.
+                            queue = cond._sse_queue  # type: ignore[attr-defined]
+                            pending = list(queue.values())
+                            queue.clear()
                         for entry in pending:
+                            ev = entry.get("event")
+                            if ev:
+                                self.wfile.write(b"event: ")
+                                self.wfile.write(ev.encode("utf-8"))
+                                self.wfile.write(b"\n")
                             self.wfile.write(b"data: ")
                             self.wfile.write(entry["payload"].encode("utf-8"))
                             self.wfile.write(b"\n\n")

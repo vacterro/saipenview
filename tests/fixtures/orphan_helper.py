@@ -7,9 +7,12 @@ from pathlib import Path
 from saipenview.runtime import _assign_job_object
 
 heartbeat = sys.argv[1]
-marker = sys.argv[2]
+hb_file = sys.argv[2]
+marker = sys.argv[3]
 
-child = subprocess.Popen([sys.executable, heartbeat], cwd=str(Path(heartbeat).parent))
+child = subprocess.Popen(
+    [sys.executable, heartbeat, str(hb_file)], cwd=str(Path(heartbeat).parent)
+)
 _assign_job_object(child)
 Path(marker).write_text(str(child.pid), encoding="utf-8")
 

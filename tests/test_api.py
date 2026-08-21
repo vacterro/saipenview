@@ -331,16 +331,22 @@ class TestRefreshKnown:
             assert alpha["phase"] == "BUILD"
 
     def test_skips_hidden_roots(self, api_with_projects, tmp_path):
-        """Hidden roots are excluded from refresh_known results."""
+        """Hidden roots are excluded from refresh_known *results* (visibility is
+        applied in get_projects), but CORE-006 still refreshes them so their
+        registry rows stay current and pending external changes keep getting
+        tracked."""
         api_with_projects._config["hidden_roots"] = [str(tmp_path / "alpha")]
 
         with patch("saipenview.api.load_project") as mock_load:
             mock_load.return_value = None
             result = api_with_projects.refresh_known()
-            # alpha is hidden → skipped entirely → only beta and gamma returned
+            # alpha hidden → excluded from the returned list (beta + gamma only)
             assert len(result) == 2
+            returned_names = {p["name"] for p in result}
+            assert returned_names == {"beta", "gamma"}
+            # CORE-006: hidden roots are still loaded/refreshed even though hidden.
             roots_called = [call.args[0].name for call in mock_load.call_args_list]
-            assert "alpha" not in roots_called
+            assert "alpha" in roots_called
 
     def test_carries_git_state_forward(
         self, api_with_projects, tmp_path, mock_project_status
@@ -441,17 +447,17 @@ class TestQuickSearch:
         assert "matched_tickets" in r
         assert "sub_matched_tickets" in r
 
-    def test_ticket_search_via_mock(self, api_with_projects):
-        """Ticket search path via _search_board_for_tickets can be verified with a mock."""
+    def test_ticket_search_via_mock(self, api_with_projects, tmp_path):
+        """quick_search reads the in-memory ticket index (PERF-008); injecting a
+        match there exercises the real search path end-to-end."""
         matched = [{"id": "T-001", "desc": "fix parser", "section": "DOING"}]
-        with patch.object(
-            api_with_projects, "_search_board_for_tickets", return_value=matched
-        ):
-            result = api_with_projects.quick_search("fix")
-            assert len(result) >= 1
-            r = result[0]
-            assert len(r["matched_tickets"]) >= 1
-            assert r["matched_tickets"][0]["id"] == "T-001"
+        beta_root = str(tmp_path / "beta")
+        api_with_projects._ticket_index = {beta_root: matched}
+        result = api_with_projects.quick_search("fix")
+        assert len(result) >= 1
+        r = result[0]
+        assert len(r["matched_tickets"]) >= 1
+        assert r["matched_tickets"][0]["id"] == "T-001"
 
 
 # ── get_status ──
@@ -873,7 +879,7 @@ class TestToggleTicketStatus:
         ):
             result = api.toggle_ticket_status(str(d), "T-001", "start")
             assert result is not None
-            assert result["name"] == "proj"
+            assert result["updated_detail"]["name"] == "proj"
 
     def test_returns_refusal_on_failure(self, api, tmp_path):
         d = _seed_verified_root(api, tmp_path / "proj")

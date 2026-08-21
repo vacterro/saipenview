@@ -219,7 +219,7 @@ def test_forced_parent_exit_kills_child(tmp_path):
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     proc = subprocess.Popen(
-        [sys.executable, str(helper), str(hb_script), str(marker)], env=env
+        [sys.executable, str(helper), str(hb_script), str(heartbeat), str(marker)], env=env
     )
     for _ in range(50):
         if marker.exists():

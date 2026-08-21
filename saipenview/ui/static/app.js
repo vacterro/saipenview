@@ -863,14 +863,21 @@ function projectRowHtml(project) {
   const blockerHtml = project.phase === "BLOCKED" && project.blocker !== "none"
     ? `<span class="blocker">${escapeHtml(project.blocker)}</span>` : "";
   const isSelected = selectedRoot && selectedRoot.toLowerCase() === project.root.toLowerCase();
+  // T-179: default-collapse with last-N unfolded. `collapsed` here is the
+  // FINAL decision for this render -- a user override wins, then the selected
+  // project is always unfolded so the detail pane is never pinned to a hidden
+  // row, then the configured default + tail rule decides the rest.
+  const collapsed = isProjectCollapsed(project, isSelected);
+  const chevronChar = collapsed ? "\u25B6" : "\u25BC"; // ▶ / ▼
   const starSymbol = project.is_pinned ? "★" : "☆";
   const starClass = project.is_pinned ? "pin-btn pinned" : "pin-btn";
   const gitHtml = project.git_branch ? `<span class="git-badge ${project.git_dirty ? 'dirty' : ''}">⎇ ${escapeHtml(project.git_branch)}${project.git_dirty ? '*' : ''}</span>` : "";
 
   const flashStyle = flashColorFor(project.root);
-  return `<div class="project-row ${isSelected ? "selected" : ""}" data-root="${escapeHtml(project.root)}" data-phase="${escapeHtml(project.phase)}" style="${flashStyle}">
+  return `<div class="project-row ${isSelected ? "selected" : ""} ${collapsed ? "collapsed" : ""}" data-root="${escapeHtml(project.root)}" data-phase="${escapeHtml(project.phase)}" style="${flashStyle}">
     <span class="phase-indicator phase-${escapeHtml(project.phase)}" title="${escapeHtml(project.phase)}"></span>
     <div class="head">
+      <button class="row-chevron" data-toggle-root="${escapeHtml(project.root)}" title="Expand / collapse sub-rows" aria-label="toggle collapse">${chevronChar}</button>
       <button class="${starClass}" data-pin-root="${escapeHtml(project.root)}" title="Toggle Pin">${starSymbol}</button>
       <span class="name" title="${escapeHtml(project.root)}">${escapeHtml(project.name)}</span>
       ${gitHtml}
@@ -883,6 +890,30 @@ function projectRowHtml(project) {
     ${blockerHtml}
     ${subs.map(subRowHtml).join("")}
   </div>`;
+}
+
+// Per-project collapse decision (T-179). Returns true when the row should be
+// rendered collapsed. User toggles win, the selected row always wins open,
+// then the last-N-unfolded rule keeps the bottom of the list usable, then the
+// configured default + tail rule decides the rest. Caller passes the visible
+// index + total so tail-N-out-of-N stays consistent across the render.
+let _visibleProjIndex = -1;
+let _visibleProjTotal = 0;
+function isProjectCollapsed(project, isSelected) {
+  if (isSelected) return false;
+  const root = project && project.root;
+  if (root && typeof collapsedProjectsConfig[root] === "boolean") {
+    return collapsedProjectsConfig[root];
+  }
+  if (!projectsCollapsedByDefault) return false;
+  // Last-N entries in the visible list stay unfolded so a long list does not
+  // force the user to click every project open just to glance at the most
+  // recently active rows.
+  const tail = projectsUnfoldedTail;
+  if (tail > 0 && _visibleProjTotal > 0 && _visibleProjIndex >= 0) {
+    if (_visibleProjIndex >= _visibleProjTotal - tail) return false;
+  }
+  return true;
 }
 
 function filterProjects(projects) {
@@ -921,7 +952,8 @@ function renderDetailPane(detail) {
     // .detail-content, not an inline style: the layout has to be able to
     // change with the pane's width (style.css responsive bands, T-155), and an
     // inline declaration outranks every rule that would do that.
-    pane.innerHTML = '<div id="detailPaneContent" class="detail-content"></div><div id="agentPanelContainer"></div>';
+    pane.innerHTML = '<div id="detailPaneContent" class="detail-content"></div>'
+      + (showAgentPanel ? '<div id="agentPanelContainer"></div>' : '');
     contentDiv = document.getElementById("detailPaneContent");
   }
 
@@ -1859,7 +1891,13 @@ function render(projects, scanned) {
   if (!filtered.length) {
     list.innerHTML = `<div class="empty">${rawProjects.length ? "no matching projects" : "no .saipen projects found"}</div>`;
   } else {
-    list.innerHTML = filtered.map(projectRowHtml).join("");
+    // T-179: pass current visible index + total into isProjectCollapsed so the
+    // last-N-unfolded rule is consistent for every row in this render pass.
+    _visibleProjTotal = filtered.length;
+    list.innerHTML = filtered.map((p, i) => {
+      _visibleProjIndex = i;
+      return projectRowHtml(p);
+    }).join("");
   }
   status.textContent = `${filtered.length}/${rawProjects.length} project(s)`;
 
@@ -1867,6 +1905,19 @@ function render(projects, scanned) {
   list.querySelectorAll(".project-row").forEach((row) => {
     const root = row.getAttribute("data-root");
     row.addEventListener("click", (e) => {
+      if (e.target.classList.contains("row-chevron")) {
+        e.stopPropagation();
+        const tr = e.target.getAttribute("data-toggle-root");
+        if (!tr) return;
+        // Flip the visible state, persist immediately, re-render so the
+        // chevron icon and the hidden sub-rows match the new truth.
+        collapsedProjectsConfig[tr] = !row.classList.contains("collapsed");
+        if (window.SaiApi.ready && window.SaiApi.save_view_config) {
+          window.SaiApi.save_view_config({ collapsed_projects: collapsedProjectsConfig });
+        }
+        render(rawProjects, isScanned);
+        return;
+      }
       if (e.target.classList.contains("pin-btn")) {
         e.stopPropagation();
         const pinRoot = e.target.getAttribute("data-pin-root");
@@ -2843,6 +2894,12 @@ function openSettings() {
     document.getElementById("setFlashChanges").checked = cfg.flash_changes !== false;
     document.getElementById("setFileViewerDefault").value = cfg.file_viewer_default || "source";
     document.getElementById("setLocale").value = cfg.locale || "en";
+    const showAgentPanelInput = document.getElementById("setShowAgentPanel");
+    if (showAgentPanelInput) showAgentPanelInput.checked = !!cfg.show_agent_panel;
+    const collapsedDefaultInput = document.getElementById("setProjectsCollapsedByDefault");
+    if (collapsedDefaultInput) collapsedDefaultInput.checked = cfg.projects_collapsed_by_default !== false;
+    const unfoldedTailInput = document.getElementById("setProjectsUnfoldedTail");
+    if (unfoldedTailInput) unfoldedTailInput.value = (cfg.projects_unfolded_tail != null) ? cfg.projects_unfolded_tail : 5;
     // Remember what is on screen so closing without saving puts it back --
     // the picker previews live, and a preview that survives Cancel is not a
     // preview, it is an unannounced save.
@@ -2977,6 +3034,9 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
   const locale = document.getElementById("setLocale").value;
   const fvd = document.getElementById("setFileViewerDefault").value;
   const themeSlug = document.getElementById("setTheme")?.value || currentTheme;
+  const showAgentPanel = document.getElementById("setShowAgentPanel")?.checked || false;
+  const projectsCollapsedByDefault = document.getElementById("setProjectsCollapsedByDefault")?.checked !== false;
+  const projectsUnfoldedTail = Math.max(0, Math.min(50, parseInt(document.getElementById("setProjectsUnfoldedTail")?.value, 10) || 5));
 
   // Read custom commands from UI
   const customCommands = [];
@@ -3051,7 +3111,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
       () => api.set_always_on_top(alwaysOnTop),
       () => api.set_frameless(frameless),
       () => api.set_locale(localeVal),
-      () => api.save_view_config({ show_on_launch: showOnLaunch, flash_changes: flashChanges, custom_commands: customCommands, file_viewer_default: fvd, locale: locale, theme: themeSlug }),
+      () => api.save_view_config({ show_on_launch: showOnLaunch, flash_changes: flashChanges, custom_commands: customCommands, file_viewer_default: fvd, locale: locale, theme: themeSlug, show_agent_panel: showAgentPanel, projects_collapsed_by_default: projectsCollapsedByDefault, projects_unfolded_tail: projectsUnfoldedTail }),
       ...(engineOverrides !== null ? [() => api.set_engine_overrides(engineOverrides)] : []),
     ];
     return runSeq(setters, 0).then(() => ({ applied, failed }));
@@ -3075,6 +3135,15 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
     fileViewerDefault = fvd;
     themeBeforeSettings = themeSlug;
     api._settingsSaveInFlight = false;
+    // T-179: agent-panel + project-collapse toggles take effect immediately.
+    // Live state is authoritative; previous config had two sources of truth
+    // (live `showAgentPanel`, persisted `cfg.show_agent_panel`) which is
+    // exactly the bug CORE-015 called out for view config.
+    showAgentPanel = !!showAgentPanel;
+    projectsCollapsedByDefault = !!projectsCollapsedByDefault;
+    projectsUnfoldedTail = Math.max(0, Math.min(50, projectsUnfoldedTail));
+    if (selectedRoot) loadDetail(selectedRoot);
+    render(rawProjects, isScanned);
     closeSettings();
   }).catch((err) => {
     clearTimeout(saveTimeout);
@@ -3336,6 +3405,22 @@ window.addEventListener("saiapiready", () => {
       if (cfg.collapsed_sections) {
         collapsedConfig = cfg.collapsed_sections;
       }
+      // T-179: per-project collapse overrides survive across sessions.
+      if (cfg.collapsed_projects && typeof cfg.collapsed_projects === "object") {
+        collapsedProjectsConfig = cfg.collapsed_projects;
+      }
+      // T-179: apply the agent-panel toggle + project-collapse defaults
+      // from config so the very first render already knows which to show.
+      if (typeof cfg.show_agent_panel === "boolean") {
+        showAgentPanel = cfg.show_agent_panel;
+      }
+      if (typeof cfg.projects_collapsed_by_default === "boolean") {
+        projectsCollapsedByDefault = cfg.projects_collapsed_by_default;
+      }
+      if (cfg.projects_unfolded_tail != null) {
+        const n = parseInt(cfg.projects_unfolded_tail, 10);
+        if (Number.isFinite(n)) projectsUnfoldedTail = Math.max(0, Math.min(50, n));
+      }
       if (cfg.layout_swap) {
         document.body.classList.add("swapped");
       }
@@ -3357,9 +3442,22 @@ window.addEventListener("saiapiready", () => {
 // File Viewer Modal
 const fileViewerModal = document.getElementById("fileViewerModal");
 let currentFilePath = null;
+let currentFileEditVersion = null; // CORE-001: CAS token for protocol-file saves
 let fileViewerMode = "source"; // "source" | "reader"
 let fileViewerDefault = "source"; // default mode on open, from config
 let currentFilename = "";
+
+// Agent Control dock visibility (T-179 ALEKS UI pass). Hidden by default;
+// toggleable from Settings. Wiping the container when it goes off keeps
+// polling / buttons from working on a stale DOM the user can't even see.
+let showAgentPanel = false;
+// Project row collapse defaults (T-179). All projects collapse by default;
+// the last N (config.projects_unfolded_tail) are always unfolded so a wide
+// sidebar does not dead-end the user into clicking every project.
+let projectsCollapsedByDefault = true;
+let projectsUnfoldedTail = 5;
+// Per-project user overrides from earlier sessions.
+let collapsedProjectsConfig = {}; // {root: boolean true=collapsed}
 
 function renderStateAsHtml(text) {
   // Parse frontmatter --- ... ---
@@ -3456,10 +3554,21 @@ function applyFileViewerMode() {
 
 function openFileViewer(filename, filepath, content) {
   currentFilename = filename;
+  // CORE-001: read_file_text now returns {text, edit_version} for protocol
+  // files. Unpack it; never stuff the raw object into the textarea (that
+  // rendered as [object Object] and could be written back into canonical
+  // state). Non-protocol reads still return a plain string.
+  let text = content;
+  let editVersion = null;
+  if (content && typeof content === "object" && "text" in content) {
+    text = content.text;
+    editVersion = content.edit_version || null;
+  }
   document.getElementById("fileViewerFilename").textContent = escapeHtml(filename);
   document.getElementById("fileViewerStatus").textContent = escapeHtml(filepath);
-  document.getElementById("fileViewerContent").value = content;
+  document.getElementById("fileViewerContent").value = text;
   currentFilePath = filepath;
+  currentFileEditVersion = editVersion;
   fileViewerMode = fileViewerDefault || "source";
   applyFileViewerMode();
   fileViewerModal.style.display = "flex";
@@ -3468,6 +3577,7 @@ function openFileViewer(filename, filepath, content) {
 function closeFileViewer() {
   fileViewerModal.style.display = "none";
   currentFilePath = null;
+  currentFileEditVersion = null;
 }
 
 document.getElementById("closeFileViewerBtn")?.addEventListener("click", closeFileViewer);
@@ -3485,10 +3595,24 @@ document.getElementById("saveFileViewerBtn")?.addEventListener("click", () => {
   const content = document.getElementById("fileViewerContent").value;
   const btn = document.getElementById("saveFileViewerBtn");
   btn.textContent = "Saving...";
-  window.SaiApi.write_file_text(currentFilePath, content).then((ok) => {
+  // CORE-001: protocol files must carry the edit_version CAS token read in
+  // openFileViewer; ordinary files keep the legacy two-argument contract.
+  const isProtocol = currentFilePath.indexOf(".saipen/") !== -1;
+  const args = isProtocol
+    ? [currentFilePath, content, currentFileEditVersion]
+    : [currentFilePath, content];
+  window.SaiApi.write_file_text(...args).then((ok) => {
     if (ok) {
       btn.textContent = "Saved";
       setTimeout(() => { btn.textContent = "Save"; }, 2000);
+      if (isProtocol && currentFilePath) {
+        // Refresh the token after a successful save so the next save stays
+        // CAS-safe against further external changes.
+        window.SaiApi.read_file_text(currentFilePath).then((r) => {
+          currentFileEditVersion =
+            (r && typeof r === "object" && "edit_version" in r) ? r.edit_version : null;
+        });
+      }
       if (selectedRoot) loadDetail(selectedRoot);
     } else {
       btn.textContent = "Err";
@@ -3683,7 +3807,11 @@ document.body.addEventListener("mousedown", (e) => {
   e.preventDefault();
 });
 
+// renderAgentPanel a no-op when the panel is hidden AND must not run polling
+// side-effects for the chosen root, otherwise the live "running" badge would
+// outlive the dock the user just hid.
 function renderAgentPanel(root, container) {
+  if (!showAgentPanel) return;
   if (!container) return;
   const status = agentStatusCache[root];
   const isRunning = status && status.status === "running";
@@ -4121,6 +4249,8 @@ function loadAgentRun(root, runId) {
 }
 
 function pollAgentOutput() {
+  // T-179: always update the running-agents badge (cheap, separate concern);
+  // but the per-project panel below is only meaningful when the dock is on.
   window.SaiApi.list_running_agents().then(agents => {
     const badge = document.getElementById("runningAgentsBadge");
     if (badge) {
@@ -4133,6 +4263,7 @@ function pollAgentOutput() {
     }
   });
 
+  if (!showAgentPanel) return;
   if (!currentDetailRoot) return;
   const root = currentDetailRoot;
   

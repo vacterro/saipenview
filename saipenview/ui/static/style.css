@@ -147,6 +147,19 @@ body { display: flex; flex-direction: column;
 
 .main-container { flex: 1 1 auto; display: flex; min-height: 0; overflow: hidden; }
 body.swapped .main-container { flex-direction: row-reverse; }
+/* Top-banner region lives IN the document flow, not as a fixed overlay.
+   Old behaviour: position:fixed top:0 z-index:9999 painted the warning OVER
+   the toolbar, hiding the first row of buttons. New behaviour: when this
+   region shows it occupies its own line and pushes the toolbar / main layout
+   down -- nothing sits on top of anything else, every button stays clickable.
+   max-height + overflow:hidden trim runaway content (T-179, ALEKS UI pass). */
+.top-banner-region { display: flex; align-items: center; gap: 6px;
+  background: #2a1510; color: #e08a8a; font-size: 10px; font-family: monospace;
+  padding: 2px 6px; border-bottom: 1px solid #7a2020;
+  flex: 0 0 auto; max-height: 60px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.top-banner-region[hidden] { display: none !important; }
+
 body.collapsed .toolbar { display: none !important; }
 body.collapsed .toggle-btn { position:fixed !important; top:2px !important; right:2px !important; display:block !important; z-index:300; }
 
@@ -168,6 +181,17 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .resize-handle:hover, .resize-handle.dragging { background: var(--borderHighlight); }
 
 .project-row { position: relative; border-bottom: 1px solid var(--borderMuted); padding: 3px 6px 3px 9px; cursor: pointer; user-select: none; }
+.project-row.collapsed .task,
+.project-row.collapsed .blocker,
+.project-row.collapsed .sub-row,
+.project-row.collapsed .sub-section { display: none !important; }
+.project-row .row-chevron {
+  display: inline-block; width: 10px; padding: 0; margin-right: 2px;
+  background: transparent; border: none; color: var(--textMuted);
+  font-size: 9px; line-height: 12px; cursor: pointer; flex: 0 0 auto;
+  text-align: center; user-select: none;
+}
+.project-row .row-chevron:hover { color: var(--borderHighlight); }
 
 /* Phase indicator stripe on the left of each project row */
 .phase-indicator { position: absolute; left: 0; top: 1px; bottom: 1px; width: 3px; flex: 0 0 auto; pointer-events: none; }

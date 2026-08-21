@@ -146,6 +146,10 @@ class ProcessManager:
 
             ownership = get_coordinator().ownership
         self.ownership = ownership
+        # CORE-002: roots whose agent process could not be reaped. The
+        # reservation is deliberately retained (never released while liveness is
+        # unresolved) so a second writer cannot claim a possibly-live project.
+        self._stuck_agents: set[str] = set()
 
     def _key(self, project_root: str) -> str:
         return canonical_key(project_root)
@@ -193,14 +197,17 @@ class ProcessManager:
                 ),
             }
 
+        proc = None
         try:
             try:
                 cmd = engine.build_command(project_root, instruction)
-            except ValueError as exc:
-                # T-168: an engine rejects an empty/invalid command with a
-                # clear error instead of launching garbage.
+            except Exception as exc:
+                # CORE-003: build_command (or any pre-spawn prep) may raise any
+                # exception, not just ValueError. A pre-spawn failure must
+                # release the reservation and return the structured error -- it
+                # must never leak ownership or mask the original cause.
                 self.ownership.release_agent(Path(project_root))
-                return {"ok": False, "error": str(exc)}
+                return {"ok": False, "error": f"engine build failed: {exc}"}
 
             env = None
             if engine.default_env:
@@ -277,18 +284,25 @@ class ProcessManager:
 
             return {"ok": True, "engine": engine.name, "pid": proc.pid}
         except Exception:  # noqa: BLE001 - reservation must not leak on any path
-            # CORE-004: if the child was already spawned (e.g. sessions.start
-            # failed), we MUST kill/reap it before releasing ownership --
-            # otherwise the original agent process is still alive while a
-            # second writer could now claim the project.
+            # CORE-003: a post-spawn setup failure (e.g. sessions.start) left a
+            # live child. Reap it BEFORE releasing ownership. If reaping fails
+            # (death unproven, CORE-002), RETAIN the reservation -- a possibly
+            # live agent must not lose exclusive ownership to a second writer.
             try:
-                if proc.poll() is None:  # still alive
+                if proc is not None and proc.poll() is None:  # still alive
                     proc.kill()
                     proc.wait(timeout=5)
             except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
-                pass
+                raise
             self.ownership.release_agent(Path(project_root))
             raise
+
+    def is_stuck(self, project_root: str) -> bool:
+        """CORE-002: True when a launched agent could not be reaped and its
+        reservation is being retained (rather than released) to avoid handing a
+        possibly-live project to a second writer."""
+        with self._lock:
+            return self._key(project_root) in self._stuck_agents
 
     def kill(self, project_root: str) -> dict:
         """Kill a running agent process."""
@@ -385,10 +399,15 @@ class ProcessManager:
         if exit_code is not None:
             self.ownership.release_agent(Path(ap.project_root))
         else:
-            # Schedule a background reaper: poll periodically until the
-            # process is truly dead, then release ownership.
-            def _delayed_reaper(proc=ap.process, root=ap.project_root,
-                               interval=0.5, max_wait=30.0):
+            # CORE-002: the process is still alive (returncode None). Spin a
+            # background reaper that proves death BEFORE releasing ownership.
+            # It must never release while liveness is unresolved: if the kill
+            # fails, ownership is retained and the root flagged stuck so a
+            # later launch/write for it is refused until it truly dies.
+            reaper_key = self._key(ap.project_root)
+
+            def _delayed_reaper(proc=ap.process, root=ap.project_root, rkey=reaper_key,
+                               interval=0.5, max_wait=120.0):
                 elapsed = 0.0
                 while elapsed < max_wait:
                     try:
@@ -396,16 +415,23 @@ class ProcessManager:
                     except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
                         pass
                     if proc.returncode is not None:
+                        with self._lock:
+                            self._stuck_agents.discard(rkey)
                         self.ownership.release_agent(Path(root))
                         return
+                    # Still alive: best-effort force kill, then re-verify death.
+                    try:
+                        proc.kill()
+                    except (OSError, subprocess.SubprocessError):
+                        # Kill failed -- cannot prove death. Keep ownership and
+                        # mark stuck; keep polling on the next iteration.
+                        with self._lock:
+                            self._stuck_agents.add(rkey)
                     elapsed += interval
-                # Last resort: force kill and release.
-                try:
-                    proc.kill()
-                    proc.wait(timeout=5)
-                except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
-                    pass
-                self.ownership.release_agent(Path(root))
+                # Exceeded max_wait without proven death: keep the reservation
+                # and leave the stuck flag set rather than releasing a live agent.
+                with self._lock:
+                    self._stuck_agents.add(rkey)
 
             threading.Thread(target=_delayed_reaper, daemon=True,
                             name="reaper-" + ap.engine.name).start()

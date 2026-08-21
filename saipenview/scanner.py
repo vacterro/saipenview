@@ -365,10 +365,11 @@ def _auto_roots() -> list[str]:
 def _scan_worker(
     root: str, max_depth: int, delay: float, extra_excludes: set[str] | None
 ) -> tuple[list[ProjectStatus], list[dict]]:
-    # PERF-007: register in-flight to prevent duplicate workers for same root.
+    # CORE-005: the in-flight reservation is now taken atomically in scan()
+    # (before worker submission), so the worker only RELEASES it. This avoids
+    # two concurrent scans both enqueuing a worker for the same root and makes
+    # "owned by another scan" the only skip reason.
     ckey = canonical_key(root)
-    with _inflight_lock:
-        _inflight_roots[ckey] = "running"
     try:
         _set_scan_progress(root=root)
         projects, worktrees = _scan_one_root(
@@ -418,15 +419,24 @@ def scan(
         if key not in seen_roots:
             seen_roots.add(key)
             unique_roots.append(r)
-    # PERF-007: skip roots whose previous worker is still alive.
+    # CORE-005: reserve canonical roots atomically BEFORE submitting workers so
+    # two concurrent scans cannot both enqueue a worker for the same root, and a
+    # root already owned by another scan is skipped (not duplicated). Only the
+    # owner releases the reservation (in _scan_worker's finally).
     with _inflight_lock:
-        active = set(_inflight_roots.keys())
-    fresh_roots = [r for r in unique_roots if canonical_key(r) not in active]
+        fresh_roots = [
+            r for r in unique_roots if canonical_key(r) not in _inflight_roots
+        ]
+        for r in fresh_roots:
+            _inflight_roots[canonical_key(r)] = "running"
     skipped = len(unique_roots) - len(fresh_roots)
     roots = fresh_roots
     if not roots:
+        # Every requested root is owned by an in-flight scan: this scan is NOT
+        # authoritative. Return incomplete so callers preserve the existing
+        # cache instead of wiping it with a complete-empty result (CORE-005).
         _set_scan_progress(pct=100, root="", roots_done=skipped, roots_total=skipped)
-        return ScanOutcome(projects=[], complete=True)
+        return ScanOutcome(projects=[], complete=(skipped == 0))
     _set_scan_progress(pct=0, root="", roots_done=0, roots_total=len(roots))
     projects: list[ProjectStatus] = []
     all_worktrees: list[dict] = []

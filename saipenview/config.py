@@ -73,10 +73,31 @@ DEFAULTS = {
     "default_engine": "claude-code",  # preferred engine name
     "engine_overrides": {},  # per-engine config: {"claude-code": {"path": "..."}}
     "agent_output_buffer_size": 5000,  # max lines in rolling output deque
+    # Agent Control dock in the detail pane. Hidden by default (ALEKS does
+    # not use it; toggleable from Settings).
+    "show_agent_panel": False,
+    # Default collapse state for project rows (sub-rows / task / blocker all
+    # hidden). Last `projects_unfolded_tail` projects are always unfolded so a
+    # wide sidebar does not dead-end the user.
+    "projects_collapsed_by_default": True,
+    "projects_unfolded_tail": 5,
+    # Per-project user overrides {root: true if collapsed}. Absent root = use
+    # the default rule.
+    "collapsed_projects": {},
 }
 
 
+# Test/embedding override hook. When set, config_path() returns it instead of
+# the default on-disk location. Consulted at CALL time, so it is robust to
+# modules that import config_path lazily or during object construction (a plain
+# monkeypatch of the bound name leaks across tests because those modules capture
+# the patched value at import time and are never re-patched).
+_CONFIG_PATH_OVERRIDE: Path | None = None
+
+
 def config_path() -> Path:
+    if _CONFIG_PATH_OVERRIDE is not None:
+        return _CONFIG_PATH_OVERRIDE
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).parent
     else:
@@ -92,9 +113,6 @@ def normalize_config(raw: dict) -> dict:
     if not isinstance(raw, dict):
         return dict(DEFAULTS)
     cfg = {}
-    # Copy every key the app doesn't recognise (extensibility), but only
-    # after we've validated the known keys below.
-    unknown = {k: v for k, v in raw.items() if k not in DEFAULTS}
     # --- Integer / range-validated keys ---
     _int_keys = {
         "rescan_interval": (10, 9999, 300),
@@ -109,8 +127,13 @@ def normalize_config(raw: dict) -> dict:
         v = raw.get(key)
         try:
             v = int(v)
-            if v < lo or v > hi:
+            if v < lo:
                 v = default
+            elif v > hi:
+                # Canonical cap on the high side (e.g. scan_depth max 8).
+                # A value that is simply too large is clamped; a value that is
+                # negative / nonsensical is reset to the default instead.
+                v = hi
         except (TypeError, ValueError):
             v = default
         cfg[key] = v
@@ -156,6 +179,7 @@ def normalize_config(raw: dict) -> dict:
         "auto_scan", "compact_mode", "show_hidden", "always_on_top",
         "frameless", "flash_changes", "show_on_launch",
         "collapse_hint_acknowledged", "layout_swap", "top_panel_collapsed",
+        "show_agent_panel", "projects_collapsed_by_default",
     ):
         v = raw.get(key)
         if isinstance(v, bool):
@@ -166,6 +190,15 @@ def normalize_config(raw: dict) -> dict:
             cfg[key] = bool(v)
         else:
             cfg[key] = DEFAULTS[key]
+    # --- tail-count for default-unfolded ---
+    v = raw.get("projects_unfolded_tail")
+    try:
+        v = int(v)
+        if v < 0: v = 0
+        elif v > 50: v = 50
+    except (TypeError, ValueError):
+        v = DEFAULTS["projects_unfolded_tail"]
+    cfg["projects_unfolded_tail"] = v
     # --- scan_roots (None or list) ---
     v = raw.get("scan_roots")
     if v is None:
@@ -188,6 +221,15 @@ def normalize_config(raw: dict) -> dict:
     cfg["collapsed_sections"] = v if isinstance(v, dict) else {}
     v = raw.get("engine_overrides")
     cfg["engine_overrides"] = v if isinstance(v, dict) else {}
+    # T-179: {root: bool} map. Untrusted roots are dropped silently to keep a
+    # renamed/removed project from haunting every future render.
+    v = raw.get("collapsed_projects")
+    if isinstance(v, dict):
+        cfg["collapsed_projects"] = {
+            str(k): bool(val) for k, val in v.items() if isinstance(k, str)
+        }
+    else:
+        cfg["collapsed_projects"] = {}
     # custom_commands: list of {label, command} dicts
     v = raw.get("custom_commands")
     if isinstance(v, list) and all(
@@ -197,9 +239,9 @@ def normalize_config(raw: dict) -> dict:
         cfg["custom_commands"] = v
     else:
         cfg["custom_commands"] = []
-    # Preserve unknown keys at runtime for extensibility, but they will
-    # be stripped on disk save (save_config filters to DEFAULTS keys).
-    cfg.update(unknown)
+    # Canonical normalizer: unknown keys are NOT preserved. load_config and
+    # save_config already strip to known keys on disk; normalizing inline keeps
+    # the in-memory config free of stray keys that could mask typos.
     return cfg
 
 

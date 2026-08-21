@@ -27,16 +27,24 @@ def _no_leaked_event_bus_subscribers():
 
 
 @pytest.fixture
-def tmp_config_path(tmp_path: Path) -> Path:
-    """Point config_path to a tmp dir so tests never touch real config."""
+def tmp_config_path(tmp_path: Path, monkeypatch) -> Path:
+    """Point config_path to a tmp dir so tests never touch real config.
+
+    Uses the ``_CONFIG_PATH_OVERRIDE`` hook in ``saipenview.config``: config_path()
+    consults it at *call* time, so every caller -- including modules imported
+    lazily during Api() construction (scanner, protocol_write, ProcessManager,
+    ...) -- picks up the override. A plain ``monkeypatch.setattr`` of the bound
+    ``config_path`` name leaks across tests because those late-imported modules
+    capture the patched value at import time and are never re-patched.
+    """
     from saipenview import config as cfg_mod
 
     fake_dir = tmp_path / "_data"
     fake_dir.mkdir(parents=True, exist_ok=True)
-    orig = cfg_mod.config_path
-    cfg_mod.config_path = lambda: fake_dir / "config.json"
-    yield fake_dir / "config.json"
-    cfg_mod.config_path = orig
+    resolved = fake_dir / "config.json"
+    monkeypatch.setattr(cfg_mod, "_CONFIG_PATH_OVERRIDE", resolved)
+    yield resolved
+
 
 
 # ── Project structure helpers ──
