@@ -9,6 +9,7 @@ events to the event bus for real-time UI updates.
 
 from __future__ import annotations
 
+import itertools
 import subprocess
 import sys
 import threading
@@ -29,6 +30,14 @@ def _assign_job_object(proc: subprocess.Popen) -> None:
 
     Called from launch() so the child cannot outlive the parent on forced
     exit (Task Manager, Ctrl+C, etc.). On non-Windows, this is a no-op.
+
+    CORE-002: ``AssignProcessToJobObject`` takes a process *HANDLE*, not a
+    process *ID*. The previous code passed ``int(proc.pid)``, which is
+    silently wrong on 64-bit Windows (the low bits of a HANDLE rarely equal
+    a PID, so the API failed and the crash-containment never engaged). We
+    now declare the real kernel32 signatures, pass the child's actual
+    HANDLE (``Popen._handle``), verify every call, and keep the Job handle
+    alive on the process object for the parent's lifetime.
     """
     if sys.platform != "win32":
         return
@@ -37,6 +46,23 @@ def _assign_job_object(proc: subprocess.Popen) -> None:
         from ctypes import wintypes
 
         kernel32 = ctypes.windll.kernel32
+
+        # Declare real signatures so pointer-sized arguments are marshalled
+        # correctly on 64-bit Windows (untyped calls default every arg/retval
+        # to a 32-bit int, which silently corrupts HANDLE values).
+        HANDLE = wintypes.HANDLE
+        BOOL = wintypes.BOOL
+        DWORD = wintypes.DWORD
+        LPVOID = wintypes.LPVOID
+        kernel32.CreateJobObjectW.restype = HANDLE
+        kernel32.CreateJobObjectW.argtypes = [LPVOID, wintypes.LPCWSTR]
+        kernel32.SetInformationJobObject.restype = BOOL
+        kernel32.SetInformationJobObject.argtypes = [HANDLE, DWORD, LPVOID, DWORD]
+        kernel32.AssignProcessToJobObject.restype = BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [HANDLE, HANDLE]
+        kernel32.CloseHandle.restype = BOOL
+        kernel32.CloseHandle.argtypes = [HANDLE]
+        kernel32.GetLastError.restype = DWORD
 
         # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
         # JobObjectInfoClass = 2 (JobObjectBasicLimitInformation)
@@ -48,24 +74,62 @@ def _assign_job_object(proc: subprocess.Popen) -> None:
                 ("MinimumWorkingSetSize", ctypes.c_size_t),
                 ("MaximumWorkingSetSize", ctypes.c_size_t),
                 ("ActiveProcessLimit", wintypes.DWORD),
-                ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                ("Affinity", ctypes.c_size_t),
                 ("PriorityClass", wintypes.DWORD),
                 ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            # IO_COUNTERS is six ULONGLONGs; BasicLimitInformation carries
+            # LimitFlags. KILL_ON_JOB_CLOSE lives in LimitFlags.
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", ctypes.c_int64 * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
             ]
 
         h_job = kernel32.CreateJobObjectW(None, None)
         if not h_job:
             return
-        limit_info = JOBOBJECT_BASIC_LIMIT_INFORMATION()
-        limit_info.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
-        kernel32.SetInformationJobObject(
-            h_job, 2, ctypes.byref(limit_info),
-            ctypes.sizeof(limit_info),
-        )
-        kernel32.AssignProcessToJobObject(h_job, int(proc.pid))
-        # Leak the handle intentionally: closing it would kill the child.
-        # The handle lives for the process lifetime.
-    except (OSError, AttributeError, ImportError):
+        # Use JobObjectExtendedLimitInformation (class 9): on current Windows
+        # the basic-limit class (2) is rejected with ERROR_INVALID_PARAMETER,
+        # which silently dropped KILL_ON_JOB_CLOSE and left children orphaned
+        # after a forced parent exit (T-562, CORE-004).
+        limit_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limit_info.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            h_job, 9, ctypes.byref(limit_info), ctypes.sizeof(limit_info)
+        ):
+            # Setup failed -- close the Job handle rather than leaking a
+            # half-configured object.
+            kernel32.CloseHandle(h_job)
+            return
+        # Pass the child's REAL process HANDLE, not its PID. Popen keeps the
+        # raw Win32 handle in ``_handle``; fall back to an OpenProcess handle
+        # only if that attribute is somehow unavailable.
+        handle_attr = getattr(proc, "_handle", None)
+        if handle_attr is None:
+            kernel32.OpenProcess.restype = HANDLE
+            kernel32.OpenProcess.argtypes = [DWORD, BOOL, wintypes.DWORD]
+            proc_handle = kernel32.OpenProcess(0x1F0FFF, False, int(proc.pid))
+        else:
+            proc_handle = HANDLE(int(handle_attr))
+        if not kernel32.AssignProcessToJobObject(h_job, proc_handle):
+            kernel32.CloseHandle(h_job)
+            return
+        # Keep the Job handle alive for the parent's lifetime: closing it would
+        # kill the child. Stash it on the process object so a future explicit
+        # teardown can release it deliberately.
+        try:
+            proc._saipen_job_handle = h_job  # type: ignore[attr-defined]
+        except Exception:
+            # If assignment is impossible, the handle simply lives until the
+            # process exits (KILL_ON_JOB_CLOSE still engaged).
+            pass
+    except (OSError, AttributeError, ImportError, ValueError):
         pass
 
 from saipenview.engines.base import AgentEngine
@@ -273,6 +337,19 @@ class ProcessManager:
             ap._reader_thread = reader
             reader.start()
 
+            # CORE-004: a dedicated process-exit monitor owns process-lifecycle
+            # finalization. It waits for the REAL OS exit (not output EOF), so a
+            # child that closes its output handles but keeps running is never
+            # marked finished or force-killed. kill() and reader-EOF no longer
+            # finalize -- this monitor does, exactly once (idempotent).
+            monitor = threading.Thread(
+                target=self._exit_monitor,
+                args=(ap,),
+                daemon=True,
+                name=f"agent-exit-{engine.name}",
+            )
+            monitor.start()
+
             event_bus.publish(
                 "agent.started",
                 {
@@ -389,6 +466,16 @@ class ProcessManager:
             ap.status = status
             ap._psutil_proc = None  # PERF-009: release cached handle
 
+        # Drain the output reader before closing the transcript: the reader
+        # thread may still be appending the tail of stdout when the OS-exit
+        # monitor (or kill()) reaches finalize, and sessions.finish() pops the
+        # transcript entry -- lines not yet appended would be lost from disk
+        # while already present in the live buffer. T-562's verify surfaced this
+        # race once the child entered a Job Object and shifted the timing.
+        rt = ap._reader_thread
+        if rt is not None and rt is not threading.current_thread() and rt.is_alive():
+            rt.join(timeout=10)
+
         if ap.run_id:
             self.sessions.finish(ap.run_id, status, exit_code)
 
@@ -407,6 +494,7 @@ class ProcessManager:
             reaper_key = self._key(ap.project_root)
 
             def _delayed_reaper(proc=ap.process, root=ap.project_root, rkey=reaper_key,
+                               kill_intent=ap._kill_intent,
                                interval=0.5, max_wait=120.0):
                 elapsed = 0.0
                 while elapsed < max_wait:
@@ -419,12 +507,24 @@ class ProcessManager:
                             self._stuck_agents.discard(rkey)
                         self.ownership.release_agent(Path(root))
                         return
-                    # Still alive: best-effort force kill, then re-verify death.
-                    try:
-                        proc.kill()
-                    except (OSError, subprocess.SubprocessError):
-                        # Kill failed -- cannot prove death. Keep ownership and
-                        # mark stuck; keep polling on the next iteration.
+                    # Still alive. CORE-004: only force-kill when there was an
+                    # explicit kill/shutdown intent. An output-EOF with no kill
+                    # intent must NOT trigger a kill -- the agent is simply
+                    # still working. Without intent we keep waiting for natural
+                    # death and retain ownership so a live agent is never handed
+                    # to a second writer.
+                    if kill_intent:
+                        try:
+                            proc.kill()
+                        except (OSError, subprocess.SubprocessError):
+                            # Kill failed -- cannot prove death. Keep ownership
+                            # and mark stuck; keep polling on the next iter.
+                            with self._lock:
+                                self._stuck_agents.add(rkey)
+                    else:
+                        # No kill intent: do not release ownership of a process
+                        # we cannot prove is dead. Keep it flagged so a later
+                        # launch/write for this root is refused until it dies.
                         with self._lock:
                             self._stuck_agents.add(rkey)
                     elapsed += interval
@@ -524,10 +624,8 @@ class ProcessManager:
             # Only copy the suffix we need, not the whole buffer.
             start = max(since_line, first_available)
             offset = start - first_available
-            lines = list(ap.output_lines)[offset:]
-
-        first_available = total - buf_len
-        dropped = max(0, first_available - since_line)
+            lines = list(itertools.islice(ap.output_lines, offset, None))
+            dropped = max(0, first_available - since_line)
 
         return {
             "lines": lines,
@@ -617,6 +715,22 @@ class ProcessManager:
         for root in roots:
             self.kill(root)
 
+    def _exit_monitor(self, ap: AgentProcess) -> None:
+        """Wait for the process's real OS exit, then finalize exactly once.
+
+        CORE-004: this thread -- not the output reader -- owns lifecycle
+        completion. Output-EOF only ends the reader; process death is proven
+        here by blocking on ``proc.wait()``. The exit may take hours for a
+        long-lived agent; that is fine for a daemon thread. kill() and the
+        reader reaching EOF never finalize, so a child that closed its output
+        handles but is still alive is neither marked finished nor force-killed.
+        """
+        try:
+            ap.process.wait()
+        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+            pass
+        self._finalize(ap)
+
     def _read_output(self, ap: AgentProcess) -> None:
         """Background thread: read stdout line by line, store + publish."""
         try:
@@ -660,4 +774,9 @@ class ProcessManager:
         except OSError as exc:
             print(f"SAIPENVIEW: output reader error: {exc}", file=sys.stderr)
 
-        self._finalize(ap)
+        # CORE-004: reaching EOF on the captured output stream is NOT process
+        # termination. A valid long-lived agent may close its stdout/stderr and
+        # keep running -- finalizing here would mark it finished and (via the
+        # reaper) force-kill it. Process-lifecycle completion is owned solely by
+        # the exit monitor started in launch() (which waits for real OS exit),
+        # so EOF only ends the reader, never the process.

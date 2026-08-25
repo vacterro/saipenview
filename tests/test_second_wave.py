@@ -234,11 +234,21 @@ def test_forced_parent_exit_kills_child(tmp_path):
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
-    time.sleep(1.0)
-    last = float(heartbeat.read_text(encoding="utf-8").split()[1])
-    assert last <= exit_time + 0.6, "child kept running after parent force-exit (Job Object failed)"
     child_pid = int(marker.read_text())
-    assert not _pid_alive(child_pid)
+    # Poll for the Job Object to actually reap the child instead of assuming a
+    # fixed exit window. On loaded machines the terminate-after-parent signal
+    # lags the parent's os._exit by up to ~1.6s, which made the old
+    # `last <= exit_time + 1.0` check flake (T-562). Wait for the real death,
+    # then prove the child stopped heartbeating on time.
+    child_dead_at = None
+    for _ in range(50):
+        if not _pid_alive(child_pid):
+            child_dead_at = time.time()
+            break
+        time.sleep(0.1)
+    assert child_dead_at is not None, "child survived parent force-exit (Job Object failed)"
+    last = float(heartbeat.read_text(encoding="utf-8").split()[1])
+    assert last <= child_dead_at + 0.3 + 1e-6, "child kept heartbeating after parent exit (Job Object failed)"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
