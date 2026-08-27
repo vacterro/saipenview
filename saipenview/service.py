@@ -183,8 +183,10 @@ class SaipenViewService:
     def start(self) -> None:
         """Create the Api, wire the event bridge, start the HTTP server.
 
-        CORE-018: double-start is a deterministic no-op. Bind/thread failure
-        after Api start unwinds successfully-started resources in reverse.
+        CORE-018: double-start is a deterministic no-op. The entire lifecycle
+        transition is serialized under _state_lock so a concurrent stop()
+        cannot interleave mid-start and leave _api=None while state is
+        "running".
         """
         with self._state_lock:
             if self._state != "stopped":
@@ -195,47 +197,45 @@ class SaipenViewService:
             # immediately after a documented restart.
             self._stopping.clear()
 
-        api_created = False
-        event_subscribed = False
-        try:
-            if self._api is None:
-                self._api = Api()
-                api_created = True
-                if not self._auto_scan:
-                    self._api._auto_scan = False
-                    self._api._config["auto_scan"] = False
-                event_bus.subscribe("saipen.file_changed", self._on_file_changed)
-                event_subscribed = True
-                self._api.start()
+            api_created = False
+            event_subscribed = False
+            try:
+                if self._api is None:
+                    self._api = Api()
+                    api_created = True
+                    if not self._auto_scan:
+                        self._api._auto_scan = False
+                        self._api._config["auto_scan"] = False
+                    event_bus.subscribe("saipen.file_changed", self._on_file_changed)
+                    event_subscribed = True
+                    self._api.start()
 
-            server = ThreadingHTTPServer((self._host, self._port), self._make_handler())
-            server.handle_error = self._handle_server_error
-            self._server = server
-            self._thread = threading.Thread(
-                target=server.serve_forever, name="saipenview-service", daemon=True
-            )
-            self._thread.start()
-            with self._state_lock:
+                server = ThreadingHTTPServer((self._host, self._port), self._make_handler())
+                server.handle_error = self._handle_server_error
+                self._server = server
+                self._thread = threading.Thread(
+                    target=server.serve_forever, name="saipenview-service", daemon=True
+                )
+                self._thread.start()
                 self._state = "running"
-        except Exception:  # noqa: BLE001
-            # CORE-018: unwind successfully-started resources in reverse.
-            with self._state_lock:
+            except Exception:  # noqa: BLE001
+                # Unwind successfully-started resources in reverse.
                 self._state = "stopped"
-            if self._thread and self._thread.is_alive():
-                try:
-                    self._server.shutdown()
-                    self._server.server_close()
-                except OSError:
-                    pass
-                self._thread.join(timeout=2)
-                self._thread = None
-            self._server = None
-            if event_subscribed and self._api is not None:
-                event_bus.unsubscribe("saipen.file_changed", self._on_file_changed)
-            if api_created and self._api is not None:
-                self._api.stop()
-                self._api = None
-            raise
+                if self._thread and self._thread.is_alive():
+                    try:
+                        self._server.shutdown()
+                        self._server.server_close()
+                    except OSError:
+                        pass
+                    self._thread.join(timeout=2)
+                    self._thread = None
+                self._server = None
+                if event_subscribed and self._api is not None:
+                    event_bus.unsubscribe("saipen.file_changed", self._on_file_changed)
+                if api_created and self._api is not None:
+                    self._api.stop()
+                    self._api = None
+                raise
 
     def stop(self) -> None:
         """Graceful shutdown: stop the HTTP server then the Api backend.
