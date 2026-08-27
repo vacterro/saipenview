@@ -259,6 +259,10 @@ class SessionStore:
             entry.record.status = status
             entry.record.exit_code = exit_code
             entry.record.finished_at = datetime.now(timezone.utc).isoformat()
+        # Write metadata BEFORE releasing the entry lock so a concurrent
+        # history() call sees a consistent state: either the run is still in
+        # _open (not yet finished) or the disk record is terminal. Writing
+        # atomically prevents corrupt JSON from a mid-write crash.
         self._write_meta(entry.record)
 
     # ---- reading ---------------------------------------------------------
@@ -360,15 +364,26 @@ class SessionStore:
 
     def _write_meta(self, record: SessionRecord) -> None:
         path = self._dir / f"{record.run_id}.json"
+        tmp_path = path.with_suffix(".json.tmp")
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
-            path.write_text(
+            # Atomic write: write to temp file first, then replace. A crash
+            # during write leaves either the old valid record or no file --
+            # never a truncated/corrupt JSON that would drop history count.
+            tmp_path.write_text(
                 json.dumps(record.to_dict(), indent=2), encoding="utf-8", newline="\n"
             )
+            tmp_path.replace(path)
         except OSError as exc:
             print(
                 f"SAIPENVIEW: cannot write session meta {path}: {exc}", file=sys.stderr
             )
+        finally:
+            # Clean up temp file on failure so it does not accumulate.
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _prune(self, key: str) -> None:
         metas = self._meta_files(key)
