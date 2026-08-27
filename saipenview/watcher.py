@@ -69,8 +69,16 @@ class _SaipenEventHandler(FileSystemEventHandler):
         self._maybe_path(event.src_path)
 
     def _maybe_path(self, path_str: str) -> None:
-        if Path(path_str).name in _TRACKED:
-            self._debounce(Path(path_str).name)
+        # CORE-006: compute the path relative to the .saipen/ watch root so
+        # nested same-named files (e.g. extensions/subs/x/BOARD.md vs
+        # BOARD.md at the project root) use independent debounce keys and
+        # publish the correct relative path for _on_file_changed to resolve.
+        try:
+            rel = Path(path_str).relative_to(Path(self.root) / ".saipen")
+        except ValueError:
+            return  # path is outside the watched tree
+        if rel.name in _TRACKED:
+            self._debounce(str(rel))
 
     def _debounce(self, name: str) -> None:
         with self._lock:
