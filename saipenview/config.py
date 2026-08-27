@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 from saipenview.paths import canonical, dedupe
@@ -295,9 +296,19 @@ def save_config(cfg: dict) -> None:
             merged[key] = dedupe(merged.get(key))
         if merged.get("selected_root"):
             merged["selected_root"] = canonical(merged["selected_root"])
-        # Atomic write (temp + replace) -- a crash/kill mid plain write leaves
-        # truncated JSON, and load_config()'s JSONDecodeError fallback would
-        # then silently reset every user preference to DEFAULTS.
-        tmp_path = path.with_name(path.name + ".tmp")
-        tmp_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
-        os.replace(tmp_path, path)
+        # Atomic write (unique temp + replace) -- W2-010: the temp name must be
+        # unique per writer so two concurrent processes cannot collide on the
+        # same .tmp path (one os.replace succeeds, the other gets
+        # FileNotFoundError and silently loses its update).
+        tmp_path = path.with_name(
+            path.name + f".tmp.{os.getpid()}.{time.monotonic_ns()}"
+        )
+        try:
+            tmp_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+            os.replace(tmp_path, path)
+        except OSError:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
