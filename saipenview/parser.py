@@ -579,6 +579,11 @@ def _insert_into_todo(board_text: str, ticket_line: str) -> str:
 _MANUAL_WORK_RE = re.compile(
     r"\[E-(\d+)\] \[(T-\d+)\](?: \[op: ([^\]]+)\])? RUN: manual work recorded -- (.*)$"
 )
+# W2-024: capture the description payload from the LOG line so we can
+# bind the operation_id to its canonical payload and reject mismatches.
+_MANUAL_WORK_PAYLOAD_RE = re.compile(
+    r"\[E-(\d+)\] \[(T-\d+)\] ?\[op: ([^\]]+)\] RUN: manual work recorded -- (.*)$"
+)
 
 
 def _new_operation_id() -> str:
@@ -624,10 +629,20 @@ def record_manual_work(
 
         # Idempotent resume: did a prior attempt with THIS operation_id already
         # write the LOG line?
-        for m in re.finditer(_MANUAL_WORK_RE, log_text):
+        for m in re.finditer(_MANUAL_WORK_PAYLOAD_RE, log_text):
             if m.group(3) == op_id:
                 event_id = f"E-{m.group(1)}"
                 ticket_id = m.group(2)
+                # W2-024: bind operation_id to canonical normalized payload.
+                # Same id+same payload -> resume/no-op. Same id+different
+                # payload -> IDEMPOTENCY_CONFLICT with zero writes.
+                persisted_desc = m.group(4).strip()
+                if persisted_desc != description:
+                    return _refuse_dict(
+                        "IDEMPOTENCY_CONFLICT",
+                        f"operation_id {op_id} bound to payload "
+                        f"{persisted_desc!r}; got {description!r}",
+                    )
                 if re.search(rf"\b{re.escape(ticket_id)}\b", board_text):
                     return {
                         "ok": True,
