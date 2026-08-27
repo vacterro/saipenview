@@ -560,6 +560,32 @@ def _is_gen_current(gen: int) -> bool:
         return gen == _current_gen
 
 
+class _GenCounter:
+    """Per-scanner generation tracker.
+
+    W2-008: the old module-global ``_current_gen`` meant that constructing a
+    second BackgroundScanner invalidated every first one (its _gen was no
+    longer == _current_gen).  Each scanner now owns an independent counter
+    so scanners are isolation-safe: S1 running, S2 constructed+started,
+    S1 continues unaffected.
+    """
+
+    __slots__ = ("_lock", "_gen")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._gen = 0
+
+    def next(self) -> int:
+        with self._lock:
+            self._gen += 1
+            return self._gen
+
+    def is_current(self, gen: int) -> bool:
+        with self._lock:
+            return gen == self._gen
+
+
 class BackgroundScanner:
     """Runs `scan()` on a timer, delivering results to `on_result` off the main thread.
 
@@ -588,7 +614,10 @@ class BackgroundScanner:
         self._on_scan_start = on_scan_start
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._gen = _next_gen()
+        # W2-008: per-instance generation counter so constructing a second
+        # scanner cannot invalidate a running first scanner.
+        self._gen_counter = _GenCounter()
+        self._gen = self._gen_counter.next()
         # W2-007: records whether stop() could not cleanly release the thread.
         # start() must not treat a still-alive stale thread as a reason to bail
         # when a restart was explicitly requested -- the old thread will exit
@@ -607,7 +636,7 @@ class BackgroundScanner:
             cancel=self._stop_event,
         )
         # CORE-010: re-check stop + generation AFTER scan completes.
-        if self._stop_event.is_set() or not _is_gen_current(self._gen):
+        if self._stop_event.is_set() or not self._gen_counter.is_current(self._gen):
             return
         # PERF-001: pass the worktree list alongside the projects so the
         # consumer can skip its own second walk. Backward-compatible: the
@@ -620,7 +649,7 @@ class BackgroundScanner:
     def _loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                if not _is_gen_current(self._gen):
+                if not self._gen_counter.is_current(self._gen):
                     break
                 if self._on_scan_start:
                     self._on_scan_start()
@@ -658,20 +687,20 @@ class BackgroundScanner:
         self._stop_event.clear()
         # CORE-010: acquire a fresh epoch on start so a previously-stopped
         # scanner's old generation can never match the current one.
-        self._gen = _next_gen()
+        self._gen = self._gen_counter.next()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
     def rescan_now(self) -> None:
         """Manual rescan participates in the newest-request-wins generation model."""
-        if not _is_gen_current(self._gen):
+        if not self._gen_counter.is_current(self._gen):
             return
         if self._on_scan_start:
             self._on_scan_start()
         self._do_scan()
 
     def stop(self) -> None:
-        _next_gen()
+        self._gen_counter.next()
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=1)

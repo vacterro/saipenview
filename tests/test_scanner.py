@@ -311,14 +311,15 @@ class TestBackgroundScanner:
         # No assertion on events — just verify no crash
 
     def test_generation_increment_on_stop(self):
-        """Stop increments the generation counter."""
-        from saipenview.scanner import BackgroundScanner, _is_gen_current, _next_gen
+        """Stop increments the scanner's own generation counter."""
+        from saipenview.scanner import BackgroundScanner
 
-        gen = _next_gen()
         bs = BackgroundScanner(on_result=lambda p, **kw: None, scan_roots=[])
+        initial_gen = bs._gen
         bs.start()
         bs.stop()
-        assert not _is_gen_current(gen)
+        # After stop, the scanner's generation has advanced.
+        assert bs._gen_counter.is_current(initial_gen) is False
 
     def test_double_start_is_noop(self):
         """Starting an already-running scanner is a no-op."""
@@ -346,13 +347,13 @@ class TestBackgroundScanner:
 
     def test_rescan_now_stale_gen_returns_early(self):
         """rescan_now returns early if generation is stale."""
-        from saipenview.scanner import BackgroundScanner, _next_gen
+        from saipenview.scanner import BackgroundScanner
 
         events = []
         bs = BackgroundScanner(
             on_result=lambda p, **kw: events.append(len(p)),
         )
-        _next_gen()  # Invalidate gen
+        bs._gen_counter.next()  # Invalidate bs own gen
         bs.rescan_now()  # Should return without calling scan
         assert len(events) == 0
 
