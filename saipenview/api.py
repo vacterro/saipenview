@@ -276,7 +276,7 @@ def _project_to_dict(
 class Api:
     """Owns the cached scan result + user config; BackgroundScanner refreshes off-thread."""
 
-    def __init__(self, on_hotkeys_changed=None, window=None):
+    def __init__(self, on_hotkeys_changed=None, window=None, debounce_delay: float = 0.1):
         self._window = window
         self._lock = threading.Lock()
         self._cache_lock = threading.Lock()
@@ -324,6 +324,15 @@ class Api:
         self._refresh_changed_roots: list[str] = []  # PERF-002
         # PERF-008: in-memory ticket search index, keyed by root.
         self._ticket_index: dict[str, list[dict]] = {}
+        # PERF-002: when True, refresh_known() must do a full re-parse (startup,
+        # or just after a scan replaced the cache). Between scans the watcher
+        # already keeps _projects current, so an idle poll may short-circuit
+        # and skip the re-parse entirely.
+        self._full_refresh_pending = True
+        # W2-007: registry revision. Bumped on every _projects mutation so a
+        # refresh_known that reparsed outside the lock can detect a concurrent
+        # _set_cache / file-event change and merge instead of clobbering.
+        self._registry_rev = 0
         from saipenview.protocol_write import get_coordinator
 
         self._process_manager = ProcessManager(
@@ -346,79 +355,117 @@ class Api:
         # launch/finish has nothing to do with it.
         self._watcher = SaipenWatcher()
 
-        # CORE-004: debounce state must be INSTANCE-owned. As class attributes it
-        # was shared by every Api instance, so two instances cancelled each
-        # other's pending refreshes and corrupted each other's file sets.
+        # CORE-004 / T-542: debounce state must be INSTANCE-owned.
+        self._debounce_delay = debounce_delay
         self._root_refresh_timers: dict[str, threading.Timer] = {}
-        self._root_refresh_lock = threading.Lock()
-        # CORE-004: exact files observed to change per root, accumulated across
-        # coalesced events so attribution is precise (not a blanket STATE/BOARD/
-        # LOG sweep that fabricates external-change records).
-        self._root_refresh_files: dict[str, set[str]] = {}
+        self._root_refresh_lock = threading.RLock()
+        # Exact files observed to change per root with immediate origin attribution:
+        # root -> {fname: origin}
+        self._root_refresh_files: dict[str, dict[str, str]] = {}
 
     def _on_file_changed(self, data: dict) -> None:
         root = data["root"]
         changed_file = data.get("file")
-        # CORE-004: debounce per-root refresh to coalesce burst events, but
-        # retain the EXACT set of files the watcher reported as changed
-        # ({"root", "file"} per event). Attribution is deferred to
-        # _do_root_refresh and runs only for the observed files.
+        origin = "external"
+        if changed_file:
+            from saipenview.external_changes import get_registry
+            from saipenview.protocol_write import get_coordinator
+
+            coord = get_coordinator()
+            changed_path = Path(root) / ".saipen" / changed_file
+            try:
+                if coord.self_writes.has_live(root, changed_file):
+                    # PERF-004: a live self-write record exists, so this file is
+                    # in our write window -- but an EXTERNAL edit can land in the
+                    # same sub-second window AFTER our write. We must still verify
+                    # the file's CURRENT fingerprint against the registered one,
+                    # not blindly trust has_live(): otherwise an outside change
+                    # would be mislabeled "self" and its external-change evidence
+                    # never recorded. Hashing one changed file is bounded cost.
+                    fp = coord.fingerprint(changed_path)
+                    origin = "self" if coord.self_writes.consume(root, changed_file, fp) else "external"
+                    if origin == "external":
+                        get_registry().record(root, changed_file, fp)
+                else:
+                    # No self-write candidate for this file: it cannot be ours,
+                    # so classify external WITHOUT hashing (PERF-004 win) and
+                    # record the external evidence.
+                    origin = "external"
+                    fp = coord.fingerprint(changed_path)
+                    get_registry().record(root, changed_file, fp)
+            except OSError:
+                pass
+            event_bus.publish(
+                "saipen.file_changed",
+                {"root": root, "file": changed_file, "origin": origin},
+            )
+
+        should_run_now = False
         with self._root_refresh_lock:
+            if changed_file:
+                self._root_refresh_files.setdefault(root, {})[changed_file] = origin
             existing = self._root_refresh_timers.get(root)
             if existing:
                 existing.cancel()
-            if changed_file:
-                self._root_refresh_files.setdefault(root, set()).add(changed_file)
-            timer = threading.Timer(0.1, self._do_root_refresh, args=(root,))
-            timer.daemon = True
-            self._root_refresh_timers[root] = timer
-            timer.start()
+            if self._debounce_delay <= 0:
+                should_run_now = True
+            else:
+                timer = threading.Timer(self._debounce_delay, self._do_root_refresh, args=(root,))
+                timer.daemon = True
+                self._root_refresh_timers[root] = timer
+                timer.start()
+
+        if should_run_now:
+            self._do_root_refresh(root)
 
     def _do_root_refresh(self, root: str) -> None:
-        """CORE-004: single refresh per root from the coalesced timer.
+        """T-542: single coalesced refresh per root from debounced timer.
 
-        Attribution runs only for the files actually observed to change (in
-        deterministic order), so a lone STATE.md write never manufactures
-        spurious external-change records for BOARD/LOG.
+        Re-parses the project once, updates cache once, then pushes JS notifications
+        for all accumulated files in deterministic sorted order.
         """
         with self._root_refresh_lock:
             self._root_refresh_timers.pop(root, None)
-            changed = self._root_refresh_files.pop(root, set())
-        self._refresh_one_project(root)
-        if not changed:
+            changed_dict = self._root_refresh_files.pop(root, {})
+        # PERF-004: tell the targeted refresh WHICH artifacts moved so it can
+        # skip the ticket-index rebuild / cache pickle when only LOG or
+        # transcript lines changed. A directory-level event with no specific
+        # file leaves changed_dict empty -> full refresh (None) for safety.
+        if changed_dict:
+            self._refresh_one_project(root, set(changed_dict.keys()))
+        else:
+            self._refresh_one_project(root)
+        if not changed_dict or not self._window:
             return
-        from saipenview.external_changes import get_registry
-        from saipenview.protocol_write import get_coordinator
-        coord = get_coordinator()
-        for fname in sorted(changed):
-            changed_path = Path(root) / ".saipen" / fname
+        for fname in sorted(changed_dict.keys()):
+            origin = changed_dict[fname]
             try:
-                fp = coord.fingerprint(changed_path)
-            except OSError:
-                continue
-            origin = "self" if coord.self_writes.consume(root, fname, fp) else "external"
-            if origin == "external":
-                get_registry().record(root, fname, fp)
-            event_bus.publish(
-                "saipen.file_changed",
-                {"root": root, "file": fname, "origin": origin},
-            )
-            # Push to pywebview window if active.
-            if self._window:
-                try:
-                    self._window.evaluate_js(
-                        "if (window.onSaipenFileChanged) window.onSaipenFileChanged("
-                        + json.dumps(root)
-                        + ", "
-                        + json.dumps(fname)
-                        + ", "
-                        + json.dumps(origin)
-                        + ")"
-                    )
-                except Exception as e:  # noqa: BLE001
-                    print(f"SAIPENVIEW: js push failed: {e}", file=sys.stderr)
+                self._window.evaluate_js(
+                    "if (window.onSaipenFileChanged) window.onSaipenFileChanged("
+                    + json.dumps(root)
+                    + ", "
+                    + json.dumps(fname)
+                    + ", "
+                    + json.dumps(origin)
+                    + ")"
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"SAIPENVIEW: js push failed: {e}", file=sys.stderr)
 
-    def _refresh_one_project(self, root: str) -> None:
+    @staticmethod
+    def _file_affects_index(fname: str) -> bool:
+        """A change to this .saipen artifact moves the ticket index."""
+        low = fname.lower()
+        return "ticket" in low or low.startswith("state") or "board" in low
+
+    @staticmethod
+    def _file_affects_cache(fname: str) -> bool:
+        """A change to this .saipen artifact moves a persisted cache row."""
+        return Api._file_affects_index(fname)
+
+    def _refresh_one_project(
+        self, root: str, changed_files: set[str] | None = None
+    ) -> None:
         """Re-parse one project and update only its cache row.
 
         CORE-011: when load_project returns None (project vanished --
@@ -428,6 +475,12 @@ class Api:
         _sync_watcher() while holding self._lock -- both re-acquire that same
         non-reentrant lock and would self-deadlock the Api thread, freezing all
         later project/cache/watcher operations.
+
+        PERF-004: when *changed_files* is known, only the heavy, recursive work
+        that the changed artifact actually affects is redone. A pure LOG /
+        transcript / agent-output change does not alter any cache row nor the
+        ticket index, so both the index rebuild and the cache pickle+disk write
+        are skipped -- no full re-parse of the ticket tree on every log line.
         """
         pinned_set = set(self._config.get("pinned_roots") or [])
         try:
@@ -446,6 +499,7 @@ class Api:
                 # CORE-011/012: project vanished -- drop its row + index under
                 # the lock, but defer cache/watcher writes until after release.
                 self._projects = [p for p in self._projects if p["root"] != root]
+                self._registry_rev += 1
                 self._ticket_index.pop(root, None)
                 vanished = True
             else:
@@ -463,9 +517,17 @@ class Api:
             self._write_cache()
             self._sync_watcher()
             return
-        # PERF-008: rebuild the ticket index for this root.
-        self._build_ticket_index(root)
-        self._write_cache()
+        # PERF-004: decide whether the durable artifacts actually moved.
+        if changed_files is None:
+            affects_index = affects_cache = True
+        else:
+            affects_index = any(self._file_affects_index(f) for f in changed_files)
+            affects_cache = any(self._file_affects_cache(f) for f in changed_files)
+        if affects_index:
+            # PERF-008: rebuild the ticket index for this root.
+            self._build_ticket_index(root)
+        if affects_cache:
+            self._write_cache()
 
     def _sync_watcher(self) -> None:
         """Reconcile the watcher's watch set with the known projects (T-124)."""
@@ -508,16 +570,24 @@ class Api:
     def _sort_order(self) -> str:
         return self._config.get("sort_order", "smart")
 
-    def _set_cache(self, projects, force: bool = False, complete: bool = True) -> None:
+    def _set_cache(
+        self,
+        projects,
+        force: bool = False,
+        complete: bool = True,
+        worktrees=None,
+    ) -> None:
         """Update the project cache from a scan result.
 
         CORE-011: accepts either a ScanOutcome or a plain list of
         ProjectStatus. A complete empty result replaces the cache; an
         incomplete/failed result preserves existing rows.
-        PERF-003: uses worktrees from ScanOutcome to skip a second walk.
+        PERF-001/PERF-003: prefers worktrees passed through from the scan
+        (ScanOutcome or the ``worktrees`` kwarg) so the linked-worktree walk
+        is never done twice.
         """
         from saipenview.scanner import ScanOutcome
-        worktrees = None
+
         if isinstance(projects, ScanOutcome):
             complete = projects.complete
             project_list = projects.projects
@@ -546,6 +616,7 @@ class Api:
                 # Complete scan returned zero projects: all previous ones vanished.
                 pass  # fall through to set empty
             self._projects = items
+            self._registry_rev += 1
             self._has_scanned = True
             self._scanning = False
         # PERF-003: if the scan already collected worktrees, use them directly.
@@ -565,6 +636,11 @@ class Api:
             self._build_ticket_index(r)
         # Watch exactly what we know about (T-124).
         self._sync_watcher()
+        # PERF-002: a scan just replaced the cache with freshly-discovered
+        # roots; the next idle short-circuit must do one reconciliation parse
+        # so newly-found roots get their ticket index built here (in
+        # refresh_known), not only in the scanner path.
+        self._full_refresh_pending = True
 
     def get_projects(self) -> list[dict]:
         hidden_set = set(self._config.get("hidden_roots") or [])
@@ -576,45 +652,96 @@ class Api:
 
         PERF-002: tracks which roots actually changed so the frontend can
         skip sidebar rebuild and detail reload when nothing changed.
+
+        PERF-002 (idle polling): between scans the watcher already keeps
+        ``_projects`` current on every file event (it calls ``_refresh_one_project``
+        directly, and the JS side re-renders from the pushed projects, not from
+        this poll). So an idle poll -- no scan running and no pending full
+        refresh -- must NOT re-parse the whole tree; it returns the cached rows
+        with an empty changed set. Only a scan result or startup forces the
+        one reconciliation parse.
         """
+        # W2-007: a refresh reparses outside the lock; a concurrent _set_cache
+        # (scan discovery/removal) or file-event refresh may mutate the registry
+        # in the meantime. Retry up to a few times so each attempt re-reads the
+        # now-current set; if it still can't commit cleanly, trust the live
+        # registry rather than clobbering it (never resurrect a removed root,
+        # never drop a discovered one).
+        # PERF-002: snapshot the pending flag under the lock so a concurrent
+        # _set_cache that flips it does not race with the idle-skip decision.
         with self._lock:
+            full_refresh_was_pending = self._full_refresh_pending
+            self._full_refresh_pending = False
             prev_by_root = {p["root"]: p for p in self._projects}
-        if not prev_by_root:
+            rev0 = self._registry_rev
+        if not full_refresh_was_pending and not self._scanning:
+            # Idle (no scan, no startup reconciliation pending): the watcher
+            # already maintains _projects, so skip the re-parse entirely
+            # (PERF-002 win). The previous code never cleared this flag, which
+            # forced every 5s poll into an O(projects) reparse.
+            self._refresh_changed_roots = []
             return self.get_projects()
+        for attempt in range(3):
+            if attempt > 0:
+                with self._lock:
+                    prev_by_root = {p["root"]: p for p in self._projects}
+                    rev0 = self._registry_rev
+            if not prev_by_root:
+                return self.get_projects()
 
-        pinned_set = set(self._config.get("pinned_roots") or [])
-        # CORE-006: refresh hidden projects too -- they remain in the registry,
-        # so their rows stay current and pending external changes keep getting
-        # tracked. Visibility is applied only in get_projects().
-        fresh: list[dict] = []
-        changed_roots: list[str] = []
-        for root in list(prev_by_root.keys()):
-            prev = prev_by_root.get(root)
-            try:
-                proj = load_project(Path(root), with_git=False)
-            except (OSError, subprocess.SubprocessError) as e:
-                print(f"SAIPENVIEW: refresh_known({root}) failed: {e}", file=sys.stderr)
-                proj = None
-            if proj is None:
+            pinned_set = set(self._config.get("pinned_roots") or [])
+            # CORE-006: refresh hidden projects too -- they remain in the registry,
+            # so their rows stay current and pending external changes keep getting
+            # tracked. Visibility is applied only in get_projects().
+            fresh: list[dict] = []
+            changed_roots: list[str] = []
+            for root in list(prev_by_root.keys()):
+                prev = prev_by_root.get(root)
+                transient = False
+                try:
+                    proj = load_project(Path(root), with_git=False)
+                except (OSError, subprocess.SubprocessError) as e:
+                    print(f"SAIPENVIEW: refresh_known({root}) failed: {e}", file=sys.stderr)
+                    proj = None
+                    transient = True
+                if proj is None:
+                    if prev and transient:
+                        # W2-008: a transient read failure keeps the last-known row
+                        # so a flaky disk/permission blip doesn't drop a live project.
+                        fresh.append(prev)
+                    elif prev:
+                        # W2-008: a clean disappearance (STATE.md gone --
+                        # load_project returns None without raising) drops the row,
+                        # so a removed project stops being shown or persisted until
+                        # it returns. Flag it as changed so cache/watcher/UI reconcile.
+                        changed_roots.append(root)
+                    continue
+                row = _project_to_dict(proj, pinned_set)
                 if prev:
-                    fresh.append(prev)
-                continue
-            row = _project_to_dict(proj, pinned_set)
-            if prev:
-                row["git_branch"] = prev.get("git_branch", "")
-                row["git_dirty"] = prev.get("git_dirty", False)
-            fresh.append(row)
-            # CORE-007: detect change by full-row diff, not just the parent
-            # STATE 'updated'. A SubSaipen-only change (e.g. a sub BOARD ticket)
-            # must still be flagged so the sidebar refreshes and the ticket index
-            # rebuilds -- otherwise it stays invisible in UI/search.
-            if prev is None or row != prev:
-                changed_roots.append(root)
+                    row["git_branch"] = prev.get("git_branch", "")
+                    row["git_dirty"] = prev.get("git_dirty", False)
+                fresh.append(row)
+                # CORE-007: detect change by full-row diff, not just the parent
+                # STATE 'updated'. A SubSaipen-only change (e.g. a sub BOARD ticket)
+                # must still be flagged so the sidebar refreshes and the ticket
+                # index rebuilds -- otherwise it stays invisible in UI/search.
+                if prev is None or row != prev:
+                    changed_roots.append(root)
 
-        fresh.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
-        with self._lock:
-            changed = fresh != self._projects
-            self._projects = fresh
+            fresh.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+            with self._lock:
+                if self._registry_rev == rev0:
+                    # No concurrent mutation while we reparsed: commit our view.
+                    changed = fresh != self._projects
+                    self._projects = fresh
+                    self._registry_rev += 1
+                    break
+                # Conflict: a concurrent mutation happened. Retry (the next
+                # attempt re-reads the now-current registry).
+        else:
+            # Exhausted retries: trust the live registry, do not clobber it.
+            self._refresh_changed_roots = []
+            return self.get_projects()
         # CORE-007: rebuild the ticket-search index for changed roots so a
         # SubSaipen-only change is reflected in search/UI immediately instead of
         # staying invisible until an unrelated parent change occurs.
@@ -860,6 +987,14 @@ class Api:
         return dict(self._config)
 
     def save_view_config(self, settings: dict) -> dict:
+        # CORE-015: runtime and persisted state must be identical. Build the
+        # candidate, normalize it via the canonical normalizer (including path
+        # canonicalization), persist exactly that normalized candidate, then
+        # replace live _config with the same values. Callers never see raw
+        # invalid values that differ from disk.
+        from saipenview.config import normalize_config
+        from saipenview.paths import canonical, dedupe
+        candidate = dict(self._config)
         for k in (
             "filter_phase",
             "compact_mode",
@@ -890,8 +1025,22 @@ class Api:
             "collapsed_projects",
         ):
             if k in settings:
-                self._config[k] = settings[k]
-        save_config(self._config)
+                candidate[k] = settings[k]
+        # Normalize via canonical normalizer (type/range/enum validation)
+        normalized = normalize_config(candidate)
+        if isinstance(normalized.get("scan_roots"), list):
+            normalized["scan_roots"] = dedupe(normalized["scan_roots"])
+        for key in ("pinned_roots", "hidden_roots"):
+            normalized[key] = dedupe(normalized.get(key))
+        if normalized.get("selected_root"):
+            try:
+                normalized["selected_root"] = canonical(normalized["selected_root"])
+            except Exception:
+                pass
+        # Persist the exact normalized candidate
+        save_config(normalized)
+        # Replace live config with what was persisted (load back to be sure)
+        self._config = normalized
         return self.get_config()
 
     def set_engine_overrides(self, overrides: dict) -> dict:
@@ -946,17 +1095,28 @@ class Api:
         return self.get_projects()
 
     def get_hidden_projects(self) -> list[dict]:
-        hidden_set = set(self._config.get("hidden_roots") or [])
+        """Return the currently-hidden projects from the authoritative registry.
+
+        CORE-003/PERF-007: hiding is visibility-only (CORE-006), so the hidden
+        rows already live in ``_projects`` under the watcher. A prior build
+        started a fresh recursive scan under every hidden root on every call
+        (and crashed when ScanOutcome replaced the list type); this instead
+        snapshots the in-memory rows whose canonical root is in ``hidden_roots``
+        with ZERO filesystem discovery. The normal watcher/targeted-refresh/
+        background-reconciliation machinery keeps those retained rows current.
+        """
+        hidden_set = {canonical(r) for r in (self._config.get("hidden_roots") or [])}
         if not hidden_set:
             return []
+        with self._lock:
+            rows = [
+                dict(p) for p in self._projects if canonical(p["root"]) in hidden_set
+            ]
+        # Pinned flag may have changed since the row was built; recompute cheaply.
         pinned_set = set(self._config.get("pinned_roots") or [])
-        raw = scan(
-            list(hidden_set),
-            max_depth=self._config.get("scan_depth", 6),
-            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
-            extra_excludes=set(self._config.get("exclude_dirs", [])),
-        )
-        return [_project_to_dict(p, pinned_set) for p in raw]
+        for r in rows:
+            r["is_pinned"] = r["root"] in pinned_set
+        return rows
 
     def open_folder(self, root_str: str) -> bool:
         root = self._resolve_root(root_str)
@@ -1050,12 +1210,28 @@ class Api:
                 text = read_doc(path)
                 # CORE-001: for protocol files, return the canonical version
                 # so the caller can prove they're saving against the same
-                # revision they read.
+                # revision they read. A codec failure is not a green light to
+                # hand back raw text -- that would leak a non-CAS-readable
+                # path whose subsequent save would always be refused as stale.
                 from saipenview.protocol_write import get_coordinator
                 if get_coordinator().is_protocol_file(path):
-                    edit_version = get_coordinator().fingerprint(path)
-                    return {"text": text, "edit_version": edit_version}
-                return text
+                    from saipenview import saio
+                    try:
+                        root = get_coordinator().root_for(path)
+                        codec = saio.engine(root)["codec"]
+                        doc = codec.read_document(path)
+                        return {"text": doc.text_norm, "edit_version": doc.raw_hash}
+                    except Exception as e:
+                        # CORE-001: fail closed -- a plain string would look
+                        # readable but its save could never carry a matching
+                        # edit_version, so the editor would always be rejected
+                        # with no signal to the user about why.
+                        print(
+                            f"SAIPENVIEW: read_file_text({file_path}) protocol "
+                            f"codec failed: {e}",
+                            file=sys.stderr,
+                        )
+                        return None
         except OSError as e:
             print(
                 f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr
@@ -1084,8 +1260,13 @@ class Api:
         if get_coordinator().is_protocol_file(path):
             # CORE-001: protocol files are CAS-protected. A save without the
             # edit_version read token is a fail-open hole (tokenless editor
-            # saves bypass the stale-read check), so refuse it closed.
-            if not edit_version:
+            # saves bypass the stale-read check), so refuse it closed -- EXCEPT
+            # when creating a brand-new file, which has no prior revision to
+            # stale against. Route every mutation through the canonical
+            # coordinator so the OS writer lock, journal, recovery preflight,
+            # byte-verification, and self-write registration all fire exactly
+            # once -- never bypassed by the editor path.
+            if not edit_version and path.is_file():
                 print(
                     f"SAIPENVIEW: write_file_text refused {file_path!r}: "
                     "protocol file requires edit_version (read it first)",
@@ -1099,24 +1280,98 @@ class Api:
                 return False
             try:
                 content = content.replace("\r\n", "\n").replace("\r", "\n")
-                # CORE-001: if an edit_version was provided, the coordinator
-                # must verify the file hasn't changed since the read. A raw
-                # hand-edit uses stale_retry=False and the coordinator returns
-                # STALE_STATE on version mismatch.
-                def _write_transform(_text, c=content):
-                    return c
-                result = get_coordinator().mutate_doc(
-                    path, _write_transform,
+                import codecs
+                import hashlib
+                from saipenview import saio
+                from saipenview.protocol_write import _role_for
+                from saipenview import textio as _textio
+
+                expected = edit_version if path.is_file() else None
+                rel = str(path.relative_to(root)).replace("\\", "/")
+                role = _role_for(rel)
+
+                def _planner(r, attempt):
+                    if path.is_file():
+                        # Read encoding via textio (bypasses codec's BOM
+                        # rejection on core files) so we preserve the viewer's
+                        # encoding contract through the canonical journal.
+                        _, enc, newline = _textio.read_doc_meta(path)
+                        raw = path.read_bytes()
+                        raw_hash = hashlib.sha256(raw).hexdigest()[:16]
+                        if expected and raw_hash != expected:
+                            return {
+                                "ok": False,
+                                "code": "STALE_STATE",
+                                "message": "file changed since it was read",
+                                "changed_files": [],
+                                "retryable": True,
+                                "recovery_required": False,
+                                "op_id": None,
+                            }
+                        # Map textio encoding names to Document fields.
+                        # Strip the -nobom suffix (textio convention, not a real codec).
+                        # Detect BOM from raw bytes so we preserve it through the
+                        # canonical writer even when textio normalizes the name.
+                        codec_enc = enc
+                        no_bom = False
+                        if codec_enc.endswith("-nobom"):
+                            codec_enc = codec_enc[: -len("-nobom")]
+                            no_bom = True
+                        elif codec_enc == "utf-8-sig":
+                            codec_enc = "utf-8"
+                        # Detect BOM from raw bytes (independent of encoding name).
+                        bom = b""
+                        for bom_bytes, _ in _textio._BOMS:
+                            if raw.startswith(bom_bytes):
+                                bom = bom_bytes
+                                break
+                    else:
+                        raw_hash = ""
+                        codec_enc = "utf-8"
+                        bom = b""
+                        newline = "\n"
+                    Doc = saio._load_codec_from(saio.resolve_home(r)).Document
+                    doc = Doc(
+                        text=content,
+                        encoding=codec_enc,
+                        bom=bom,
+                        newline=newline,
+                        final_newline=content.endswith("\n"),
+                        raw_hash=raw_hash,
+                    )
+                    return saio.plan(
+                        r,
+                        f"viewer-{role}",
+                        {"operation": f"viewer-{role}"},
+                        [(rel, role, content, doc)],
+                        {rel: raw_hash},
+                        missing_paths=[] if path.is_file() else [rel],
+                    )
+
+                result = get_coordinator().mutate(
+                    root,
+                    _planner,
                     verification_policy="none",
                     stale_retry=False,
-                    expected_raw_hash=edit_version,
                 )
-                if not result.get("ok"):
-                    code = result.get("code", "")
+                if not result["ok"]:
+                    code = result.get("code")
                     if code == "STALE_STATE":
                         print(
                             f"SAIPENVIEW: write_file_text({file_path}) STALE -- "
                             "file changed since it was read",
+                            file=sys.stderr,
+                        )
+                    elif code == "RECOVERY_REQUIRED":
+                        msg = result.get("message", "")
+                        print(
+                            f"SAIPENVIEW: write_file_text({file_path}) recovery required: {msg}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        msg = result.get("message", result)
+                        print(
+                            f"SAIPENVIEW: write_file_text({file_path}) failed: {msg}",
                             file=sys.stderr,
                         )
                     return False
@@ -1193,6 +1448,58 @@ class Api:
         if self._process_manager.is_running(root):
             return f"Core agent is running for {root}; direct .saipen mutation refused"
         return None
+
+    def _guard_live_agent(self, root: str) -> dict | None:
+        """Reason a backend Git tree mutation is refused, or None.
+
+        CORE-001: while a Core agent launched by this viewer owns the project
+        -- running, launching-but-not-yet-tracked, or stuck-but-unreaped -- any
+        destructive tree mutation (commit/revert/clean) must be refused so
+        SAIPENVIEW cannot clobber the agent's live, in-flight work. The preview
+        fingerprint only guards against stale tree state BEFORE the call; it
+        cannot protect against a concurrent live writer that mutates between
+        fingerprint verification and the mutation. This guard is the
+        authoritative backend invariant; UI disabling is secondary feedback.
+        get_diff (read-only) is intentionally exempt.
+        """
+        pm = self._process_manager
+        if pm.is_running(root) or pm.is_stuck(root):
+            return {
+                "ok": False,
+                "code": "WRITER_BUSY",
+                "error": (
+                    f"Core agent is active on {root}; commit/revert/delete "
+                    "refused to avoid destroying live agent work"
+                ),
+            }
+        return None
+
+    def _git_mutation_tx(
+        self, root: str, fn, *args, **kwargs
+    ) -> dict:
+        """Run a git_diff mutation under the per-root ownership transaction.
+
+        Acquires the RootOwnership lock before fingerprint verification and
+        retains it through the complete Git command. An agent reservation that
+        slips in after the pre-check blocks on this lock until the mutation
+        finishes, preventing the race where the guard passes and then a live
+        agent overwrites the tree before git runs (CORE-001).
+        """
+        ownership = get_coordinator().ownership
+        try:
+            if not ownership.begin_app_tx(Path(root)):
+                return {
+                    "ok": False,
+                    "code": "WRITER_BUSY",
+                    "error": (
+                        f"Core agent is active on {root}; "
+                        "commit/revert/delete refused to avoid "
+                        "destroying live agent work"
+                    ),
+                }
+            return fn(root, *args, **kwargs)
+        finally:
+            ownership.end_app_tx(Path(root))
 
     def get_project_detail(self, root_str: str) -> dict | None:
         root = self._resolve_root(root_str)
@@ -1292,7 +1599,9 @@ class Api:
             self._on_hotkeys_changed(hotkeys)
         except (ValueError, KeyError):
             self._on_hotkeys_changed(previous)  # revert to last-known-good
-            return self.get_config()
+            # W2-010: surface the failure as {ok:false} so the Settings runSeq
+            # counts it as failed (not silently applied).
+            return {"ok": False, "error": "hotkey binding failed; reverted to previous"}
         self._config["hotkeys"] = hotkeys
         save_config(self._config)
         return self.get_config()
@@ -1320,7 +1629,14 @@ class Api:
                     f"SAIPENVIEW: snap hotkey rollback to {previous!r} also failed: {revert_err}",
                     file=sys.stderr,
                 )
-            return self.get_config()
+                # W2-010: report the failure as {ok:false} so the Settings
+                # runSeq does not count a dead hotkey as applied.
+                return {
+                    "ok": False,
+                    "error": f"snap hotkey binding failed; rollback also failed: {revert_err}",
+                }
+            # New binding failed but rollback succeeded: still a failure.
+            return {"ok": False, "error": "snap hotkey binding failed; reverted"}
         self._config["snap_hotkey"] = hotkeys
         save_config(self._config)
         return self.get_config()
@@ -1517,11 +1833,21 @@ class Api:
 
         return [c.to_dict() for c in get_registry().pending()]
 
-    def acknowledge_external_change(self, root_str: str, path: str) -> dict:
-        """Explicit user acknowledge: clear one pending external change."""
+    def acknowledge_external_change(self, root_str: str, path: str, token: int | None = None) -> dict:
+        """Explicit user acknowledge: clear one pending external change.
+
+        When token is provided, acknowledgement is conditional -- only the
+        exact generation the user saw is cleared; a newer write remains pending.
+        """
         from saipenview.external_changes import get_registry
 
-        cleared = get_registry().acknowledge(root_str, path)
+        # Normalize token to int when provided (frontend may send string)
+        if token is not None:
+            try:
+                token = int(token)
+            except (TypeError, ValueError):
+                pass
+        cleared = get_registry().acknowledge(root_str, path, token)
         return {"ok": cleared}
 
     def run_command(self, root_str: str, command: str) -> bool:
@@ -1743,8 +2069,15 @@ class Api:
                     "code": "INVALID_ID",
                     "message": "operation_id must be 1-64 chars of [A-Za-z0-9._-]",
                 }
+        # CORE-013: capture pending external changes BEFORE the transaction so
+        # we can conditionally ack only the exact tokens the user saw. A newer
+        # write racing after the prompt keeps its newer token pending.
+        from saipenview.external_changes import get_registry
+        pending_before = list(get_registry().pending(str(root)))
         result = record_manual_work(Path(root), description, operation_id)
         if result.get("ok"):
+            for pc in pending_before:
+                get_registry().acknowledge(str(root), pc.rel_path, pc.token)
             # The watcher (T-124) picks up the BOARD/LOG change and
             # targeted-refreshes the cache row.
             self._refresh_one_project(root)
@@ -1912,21 +2245,36 @@ class Api:
         root = self._resolve_root(root)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
-        return commit_agent_work(root, message, fingerprint)
+        guard = self._guard_live_agent(root)
+        if guard:
+            return guard
+        return self._git_mutation_tx(
+            root, commit_agent_work, message, fingerprint
+        )
 
     def revert_agent_work(self, root: str, fingerprint: str | None = None) -> dict:
         """Restore tracked changes only; untracked files are untouched."""
         root = self._resolve_root(root)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
-        return revert_agent_work(root, fingerprint)
+        guard = self._guard_live_agent(root)
+        if guard:
+            return guard
+        return self._git_mutation_tx(
+            root, revert_agent_work, fingerprint
+        )
 
     def delete_untracked_files(self, root: str, fingerprint: str | None = None) -> dict:
         """Explicit separate operation: delete untracked files (T-162)."""
         root = self._resolve_root(root)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
-        return delete_untracked_files(root, fingerprint)
+        guard = self._guard_live_agent(root)
+        if guard:
+            return guard
+        return self._git_mutation_tx(
+            root, delete_untracked_files, fingerprint
+        )
 
     def send_agent_input(self, root: str, text: str) -> dict:
         """Send text to a running agent's stdin."""
