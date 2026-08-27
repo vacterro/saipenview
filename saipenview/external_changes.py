@@ -81,13 +81,15 @@ class ExternalChangeRegistry:
         calls this for origin=external (the app's own writes were attributed
         self by SelfWriteRegistry and never reach here).
 
-        W2-003: returns the monotonic token so callers can use it for
-        conditional acknowledgement."""
+        W2-003 / T-33: token generation happens UNDER the registry lock so
+        concurrent same-path records receive distinct tokens. A stale token
+        from an earlier record cannot acknowledge a newer entry.
+        """
         key_root = canonical_key(root)
         key_rel = normalize_rel(rel_path)
         now = _time.monotonic()
-        token = _gen_token()
         with self._lock:
+            token = _gen_token()
             self._entries[(key_root, key_rel)] = PendingChange(
                 key_root, key_rel, fingerprint, now, token
             )
