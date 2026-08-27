@@ -384,13 +384,12 @@ class Api:
             changed_path = Path(root) / ".saipen" / changed_file
             try:
                 if coord.self_writes.has_live(root, changed_file):
-                    # PERF-004: a live self-write record exists, so this file is
-                    # in our write window -- but an EXTERNAL edit can land in the
-                    # same sub-second window AFTER our write. We must still verify
-                    # the file's CURRENT fingerprint against the registered one,
-                    # not blindly trust has_live(): otherwise an outside change
-                    # would be mislabeled "self" and its external-change evidence
-                    # never recorded. Hashing one changed file is bounded cost.
+                    # PERF-004 win: skip hashing only when we're SURE no external
+                    # event landed after our write. But W2-014 teaches us that a
+                    # debounced batch can contain self A -> external B -> self C,
+                    # and the final _fire publishes origin=self while B's
+                    # contamination is invisible. ALWAYS hash and compare so
+                    # contamination is caught regardless of debounce timing.
                     fp = coord.fingerprint(changed_path)
                     origin = "self" if coord.self_writes.consume(root, changed_file, fp) else "external"
                     if origin == "external":
@@ -1319,12 +1318,31 @@ class Api:
                 from saipenview.protocol_write import _role_for
                 from saipenview import textio as _textio
 
-                expected = edit_version if path.is_file() else None
+                # W2-015: snapshot existence ONCE at entry. The planner may run
+                # later (under the coordinator lock, with stale_retry), and the
+                # file's existence can transition in between. Without a snapshot,
+                # missing->present is misclassified as edit (requires token ->
+                # STALE_STATE) and present->missing is misclassified as create
+                # (succeeds and overwrites nothing). One snapshot fixes both.
+                exists_at_entry = path.is_file()
+                expected = edit_version if exists_at_entry else None
                 rel = str(path.relative_to(root)).replace("\\", "/")
                 role = _role_for(rel)
 
                 def _planner(r, attempt):
-                    if path.is_file():
+                    if exists_at_entry:
+                        # Edit intent: file existed when the write was requested.
+                        # If it disappeared, that's a stale transition -> refuse.
+                        if not path.is_file():
+                            return {
+                                "ok": False,
+                                "code": "STALE_STATE",
+                                "message": "file disappeared between read and write",
+                                "changed_files": [],
+                                "retryable": True,
+                                "recovery_required": False,
+                                "op_id": None,
+                            }
                         # Read encoding via textio (bypasses codec's BOM
                         # rejection on core files) so we preserve the viewer's
                         # encoding contract through the canonical journal.
@@ -1359,6 +1377,18 @@ class Api:
                                 bom = bom_bytes
                                 break
                     else:
+                        # Create intent: file did not exist at entry.
+                        # If it appeared, that's a stale transition -> refuse.
+                        if path.is_file():
+                            return {
+                                "ok": False,
+                                "code": "STALE_STATE",
+                                "message": "file appeared between read and write",
+                                "changed_files": [],
+                                "retryable": True,
+                                "recovery_required": False,
+                                "op_id": None,
+                            }
                         raw_hash = ""
                         codec_enc = "utf-8"
                         bom = b""
@@ -1378,7 +1408,7 @@ class Api:
                         {"operation": f"viewer-{role}"},
                         [(rel, role, content, doc)],
                         {rel: raw_hash},
-                        missing_paths=[] if path.is_file() else [rel],
+                        missing_paths=[] if exists_at_entry else [rel],
                     )
 
                 result = get_coordinator().mutate(
