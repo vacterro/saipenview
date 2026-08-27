@@ -1204,7 +1204,7 @@ class Api:
                 file=sys.stderr,
             )
             return None
-        path = Path(file_path)
+        path = Path(canonical(file_path))
         try:
             if path.exists():
                 text = read_doc(path)
@@ -1253,7 +1253,7 @@ class Api:
                 file=sys.stderr,
             )
             return False
-        path = Path(file_path)
+        path = Path(canonical(file_path))
         from saipenview.ownership import AgentOwnershipError
         from saipenview.protocol_write import get_coordinator
 
