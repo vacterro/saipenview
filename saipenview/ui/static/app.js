@@ -2243,10 +2243,13 @@ function scheduleProjectListRender() {
 
 function poll() {
   if (!windowVisible) return;
-  Promise.all([window.SaiApi.get_status(), window.SaiApi.refresh_known()])
-    .then(([status, projects]) => {
+  Promise.all([
+    window.SaiApi.get_status(),
+    window.SaiApi.refresh_known(),
+    window.SaiApi.get_changed_roots ? window.SaiApi.get_changed_roots() : Promise.resolve(null),
+  ])
+    .then(([status, projects, changedRoots]) => {
       // PERF-002: only rebuild sidebar/detail if something actually changed.
-      const changedRoots = window.SaiApi.get_changed_roots ? window.SaiApi.get_changed_roots() : null;
       const hasChanges = changedRoots && changedRoots.length > 0;
       if (hasChanges || rawProjects.length !== projects.length) {
         render(projects, status.scanned);
