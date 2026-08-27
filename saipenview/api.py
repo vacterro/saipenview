@@ -609,7 +609,10 @@ class Api:
             # CORE-011: preserve old cache only for incomplete/failed scans.
             # A complete empty scan replaces cache with empty (vanished
             # projects must be removed).
-            if not force and not complete and self._has_scanned and self._projects:
+            # CORE-005: incomplete-result safety is unconditional -- force
+            # controls complete-only replacement, never authorizes an
+            # incomplete erase of the existing registry.
+            if not complete and self._has_scanned and self._projects:
                 self._scanning = False
                 return
             if not force and not project_list and complete and self._has_scanned and self._projects:
