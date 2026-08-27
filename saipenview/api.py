@@ -1255,7 +1255,7 @@ class Api:
                         return {"text": doc.text_norm, "edit_version": doc.raw_hash}
                     except Exception as e:
                         # CORE-001: fail closed -- a plain string would look
-                        # readable but its save could never carry a matching
+                        # readable but its save would never carry a matching
                         # edit_version, so the editor would always be rejected
                         # with no signal to the user about why.
                         print(
@@ -1264,6 +1264,10 @@ class Api:
                             file=sys.stderr,
                         )
                         return None
+                # W2-017: ordinary (non-protocol) files return the decoded text.
+                # The protocol branch above returns early; this is the ordinary
+                # file return path.
+                return text
         except OSError as e:
             print(
                 f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr
