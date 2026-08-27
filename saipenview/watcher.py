@@ -25,7 +25,7 @@ from saipenview.events import event_bus
 
 DEBOUNCE_DELAY = 0.2
 # The only files whose change means the project's protocol state moved.
-_TRACKED = frozenset({"STATE.md", "BOARD.md", "LOG.md"})
+_TRACKED = frozenset({"STATE.md", "BOARD.md", "LOG.md", "OUTBOX.md", "MANIFEST.md"})
 
 
 class _SaipenEventHandler(FileSystemEventHandler):

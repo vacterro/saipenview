@@ -159,7 +159,8 @@ class TestEventKinds:
 
     def test_unrelated_file_ignored(self, watcher, project, event_log):
         watcher.sync([str(project)])
-        (project / ".saipen" / "MANIFEST.md").write_text("- x\n", encoding="utf-8")
+        # scratch.txt is outside .saipen/ entirely -- should never fire.
+        # (MANIFEST.md and OUTBOX.md are now tracked per W2-016.)
         (project / "scratch.txt").write_text("x\n", encoding="utf-8")
         time.sleep(TEST_DEBOUNCE * 4)
         assert event_log.count() == 0

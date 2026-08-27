@@ -468,7 +468,7 @@ class Api:
     def _file_affects_index(fname: str) -> bool:
         """A change to this .saipen artifact moves the ticket index."""
         low = fname.lower()
-        return "ticket" in low or low.startswith("state") or "board" in low
+        return "ticket" in low or low.startswith("state") or "board" in low or "outbox" in low or "manifest" in low
 
     @staticmethod
     def _file_affects_cache(fname: str) -> bool:
