@@ -188,16 +188,20 @@ class HotkeyListener:
         self._last_fire = now
         self._on_toggle()
 
-    def start(self, strict: bool = False) -> None:
+    def start(self, strict: bool = False, hotkeys: Iterable[str] | None = None) -> None:
         """Register every combo.  CORE-014: when ``strict=True`` (used by
         set_hotkeys), the entire set is atomic -- if ANY binding fails,
         old handles are restored and the method raises ValueError.  When
         ``strict=False`` (cold start), failures are tolerated per-combo.
         """
+        # W2-009: allow caller to pass a hotkey set without mutating self._hotkeys
+        # first; this lets rollback read the real prior combos even when
+        # set_hotkeys has not yet committed the new set.
+        keys = list(hotkeys) if hotkeys is not None else self._hotkeys
         old_removers = list(self._registered)
         temp_removers: list[Callable[[], None]] = []
         first_error: Exception | None = None
-        for combo in self._hotkeys:
+        for combo in keys:
             try:
                 remover = keyboard.add_hotkey(
                     to_layout_independent(combo), self._debounced_toggle
@@ -215,15 +219,19 @@ class HotkeyListener:
                             keyboard.remove_hotkey(r)
                         except KeyError:
                             pass
-                    # Restore old handles
+                    # Restore old handles using the captured old_removers list,
+                    # NOT self._hotkeys (which set_hotkeys may have already
+                    # overwritten). W2-009.
                     for r in old_removers:
                         try:
+                            idx = old_removers.index(r)
+                            old_combo = (
+                                self._hotkeys[idx]
+                                if idx < len(self._hotkeys)
+                                else self._hotkeys[0]
+                            )
                             remover2 = keyboard.add_hotkey(
-                                to_layout_independent(
-                                    self._hotkeys[old_removers.index(r)]
-                                    if old_removers.index(r) < len(self._hotkeys)
-                                    else self._hotkeys[0]
-                                ),
+                                to_layout_independent(old_combo),
                                 self._debounced_toggle,
                             )
                             self._registered.append(remover2)
@@ -251,5 +259,14 @@ class HotkeyListener:
         self._registered.clear()
 
     def set_hotkeys(self, hotkeys: Iterable[str]) -> None:
+        # W2-009: do NOT overwrite _hotkeys before registration succeeds.
+        # Pass the new set directly to start() so rollback can always read
+        # the correct combo from self._hotkeys (which still holds the prior
+        # set if start() fails).
+        prev_hotkeys = list(self._hotkeys)
+        try:
+            self.start(strict=True, hotkeys=hotkeys)
+        except Exception:
+            self._hotkeys = prev_hotkeys
+            raise
         self._hotkeys = list(hotkeys)
-        self.start(strict=True)
