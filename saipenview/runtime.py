@@ -328,6 +328,59 @@ class AgentProcess:
         return (end - self.started_at).total_seconds()
 
 
+
+def _schedule_reaper(registry, ap, status):
+    """Background reaper: prove death BEFORE releasing ownership.
+
+    CORE-002: returns None (unproven death) must never trigger
+    ownership release or session finish until proc.returncode is non-None.
+    """
+    reaper_key = registry._key(ap.project_root)
+
+    def _delayed_reaper(proc=ap.process, root=ap.project_root, rkey=reaper_key,
+                        kill_intent=ap._kill_intent,
+                        interval=0.5, max_wait=120.0):
+        elapsed = 0.0
+        while elapsed < max_wait:
+            try:
+                proc.wait(timeout=interval)
+            except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+                pass
+            if proc.returncode is not None:
+                with registry._lock:
+                    registry._stuck_agents.discard(rkey)
+                registry.ownership.release_agent(Path(root))
+                return
+            # Still alive. CORE-004: only force-kill when there was an
+            # explicit kill/shutdown intent. An output-EOF with no kill
+            # intent must NOT trigger a kill -- the agent is simply
+            # still working. Without intent we keep waiting for natural
+            # death and retain ownership so a live agent is never handed
+            # to a second writer.
+            if kill_intent:
+                try:
+                    proc.kill()
+                except (OSError, subprocess.SubprocessError):
+                    # Kill failed -- cannot prove death. Keep ownership
+                    # and mark stuck; keep polling on the next iter.
+                    with registry._lock:
+                        registry._stuck_agents.add(rkey)
+            else:
+                # No kill intent: do not release ownership of a process
+                # we cannot prove is dead. Keep it flagged so a later
+                # launch/write for this root is refused until it dies.
+                with registry._lock:
+                    registry._stuck_agents.add(rkey)
+            elapsed += interval
+        # Exceeded max_wait without proven death: keep the reservation
+        # and leave the stuck flag set rather than releasing a live agent.
+        with registry._lock:
+            registry._stuck_agents.add(rkey)
+
+    threading.Thread(target=_delayed_reaper, daemon=True,
+                     name="reaper-" + ap.engine.name).start()
+
+
 class ProcessManager:
     """Manages agent subprocesses across all projects.
 
