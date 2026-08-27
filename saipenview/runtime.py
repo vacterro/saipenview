@@ -574,6 +574,12 @@ class ProcessManager:
                     proc.wait(timeout=5)
             except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
                 raise
+            # W2-012: if we got far enough to insert ap into _processes but then
+            # hit a post-spawn failure (reader/monitor Thread.start, event publish),
+            # the dict still holds a running-entry that blocks every later launch.
+            # Remove it now that death is proven so the next launch sees a clean slate.
+            with self._lock:
+                self._processes.pop(key, None)
             self.ownership.release_agent(Path(project_root))
             raise
 
