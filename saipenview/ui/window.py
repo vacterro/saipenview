@@ -152,7 +152,13 @@ class MainWindow:
         self._window.events.resized += self._on_moved_or_resized
         self._snap_idx = 0
         self._last_geometry_save = 0.0
+        # W2-018: per-worker generation. _start_geometry_thread increments
+        # _geom_gen and passes it into the new thread; the thread loops until
+        # _geometry_stop fires OR its generation no longer matches. This
+        # prevents rapid hide/show from spawning duplicate workers.
+        self._geom_gen = 0
         self._geometry_stop = threading.Event()
+        self._lock = threading.Lock()
         self._geometry_thread: threading.Thread | None = None
         # W2-011: coalescing visibility worker -- at most one evaluate_js
         # in flight, latest-desired-state slot.
@@ -167,9 +173,19 @@ class MainWindow:
             self._last_geometry_save = now
             self._save_geometry()
 
-    def _geometry_periodic(self) -> None:
-        while not self._geometry_stop.wait(15):
+    def _geometry_periodic(self, gen: int) -> None:
+        while True:
+            # Check generation under lock. Keep the critical section short
+            # so _start_geometry_thread (which also acquires _lock) is not
+            # blocked while an old worker is mid-_save_geometry.
+            with self._lock:
+                if self._geom_gen != gen:
+                    return
+                stopping = self._geometry_stop.is_set()
+            if stopping:
+                return
             self._save_geometry()
+            self._geometry_stop.wait(15)
 
     def _save_geometry(self) -> None:
         if not self._api:
@@ -238,12 +254,16 @@ class MainWindow:
         self._start_geometry_thread()
 
     def _start_geometry_thread(self) -> None:
-        if self._geometry_thread is None:
-            self._geometry_stop.clear()
-            self._geometry_thread = threading.Thread(
-                target=self._geometry_periodic, daemon=True
+        with self._lock:
+            if self._geometry_thread is not None and self._geometry_thread.is_alive():
+                return
+            self._geom_gen += 1
+            gen = self._geom_gen
+            t = threading.Thread(
+                target=self._geometry_periodic, args=(gen,), daemon=True
             )
-            self._geometry_thread.start()
+            t.start()
+            self._geometry_thread = t
 
     def _stop_geometry_thread(self) -> None:
         """Signal the periodic saver to exit and let show() start a fresh one.
@@ -253,8 +273,9 @@ class MainWindow:
         hide by up to 15 seconds. Dropping the reference is what lets
         _start_geometry_thread's `is None` guard build a new one on show.
         """
-        self._geometry_stop.set()
-        self._geometry_thread = None
+        with self._lock:
+            self._geom_gen += 1  # invalidate any in-flight worker
+            self._geometry_thread = None
 
     def minimize(self) -> None:
         """Minimize window to taskbar."""
@@ -495,13 +516,17 @@ class MainWindow:
             )
 
     def destroy(self) -> None:
-        # W2-011: permanently terminate worker publication.
-        self._geometry_stop.set()
-        self._geometry_thread = None
-        self._save_geometry()
+        # W2-018: invalidate visibility generation so blocked work after
+        # destroy cannot schedule further JS activity.
         with self._vis_lock:
-            self._vis_in_flight = False  # no more visibility pushes
+            self._vis_gen += 1
+            self._vis_in_flight = False
             self._vis_desired = None
+        self._geometry_stop.set()
+        with self._lock:
+            self._geom_gen += 1
+            self._geometry_thread = None
+        self._save_geometry()
         self._allow_close = True
         self._window.destroy()
 
