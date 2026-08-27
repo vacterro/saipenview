@@ -143,8 +143,13 @@ class TestWritePreservesEncodingAndNewline:
         raw = "---\nphase: DONE\ntask: none\n---\n".encode("utf-16-le")
         root = _register(api, _seed_project(tmp_path / "proj", raw))
         f = root / ".saipen" / "STATE.md"
+        read = api.read_file_text(str(f))
+        assert isinstance(read, dict) and "edit_version" in read
         assert (
-            api.write_file_text(str(f), "---\nphase: BUILD\ntask: T-1\n---\n") is True
+            api.write_file_text(
+                str(f), "---\nphase: BUILD\ntask: T-1\n---\n", read["edit_version"]
+            )
+            is True
         )
         assert f.read_bytes() == "---\nphase: BUILD\ntask: T-1\n---\n".encode(
             "utf-16-le"
@@ -154,14 +159,24 @@ class TestWritePreservesEncodingAndNewline:
         raw = b"\xef\xbb\xbf" + b"---\nphase: DONE\n---\n"
         root = _register(api, _seed_project(tmp_path / "proj", raw))
         f = root / ".saipen" / "STATE.md"
-        assert api.write_file_text(str(f), "---\nphase: BUILD\n---\n") is True
+        read = api.read_file_text(str(f))
+        assert isinstance(read, dict) and "edit_version" in read
+        assert (
+            api.write_file_text(str(f), "---\nphase: BUILD\n---\n", read["edit_version"])
+            is True
+        )
         assert f.read_bytes() == b"\xef\xbb\xbf" + b"---\nphase: BUILD\n---\n"
 
     def test_crlf_is_preserved(self, api, tmp_path):
         raw = b"---\r\nphase: DONE\r\ntask: none\r\n---\r\n"
         root = _register(api, _seed_project(tmp_path / "proj", raw))
         f = root / ".saipen" / "STATE.md"
-        assert api.write_file_text(str(f), "---\r\nphase: BUILD\r\n---\r\n") is True
+        read = api.read_file_text(str(f))
+        assert isinstance(read, dict) and "edit_version" in read
+        assert (
+            api.write_file_text(str(f), "---\r\nphase: BUILD\r\n---\r\n", read["edit_version"])
+            is True
+        )
         assert f.read_bytes() == b"---\r\nphase: BUILD\r\n---\r\n"
 
     def test_new_file_defaults_to_utf8_lf(self, api, tmp_path):
@@ -178,8 +193,13 @@ class TestAtomicWriteFailure:
         root = _register(api, _seed_project(tmp_path / "proj"))
         f = root / ".saipen" / "STATE.md"
         seeded = f.read_bytes()  # the conformant seeded bytes (saipen_home added)
+        read = api.read_file_text(str(f))
+        assert isinstance(read, dict) and "edit_version" in read
         with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
-            assert api.write_file_text(str(f), "---\nphase: BUILD\n---\n") is False
+            assert (
+                api.write_file_text(str(f), "---\nphase: BUILD\n---\n", read["edit_version"])
+                is False
+            )
         # The original bytes survived; the failed commit left a recoverable
         # journal (nothing applied -> recovery aborts it cleanly).
         assert f.read_bytes() == seeded
@@ -192,8 +212,10 @@ class TestAtomicWriteFailure:
     def test_no_temp_debris_after_failed_write(self, api, tmp_path):
         root = _register(api, _seed_project(tmp_path / "proj"))
         f = root / ".saipen" / "STATE.md"
+        read = api.read_file_text(str(f))
+        assert isinstance(read, dict) and "edit_version" in read
         with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
-            api.write_file_text(str(f), "x\n")
+            api.write_file_text(str(f), "x\n", read["edit_version"])
         # The original file was never replaced.
         assert "phase: DONE" in f.read_text(encoding="utf-8")
 

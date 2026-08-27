@@ -95,9 +95,14 @@ class SelfWriteRegistry:
         with self._lock:
             self._entries[(key_root, file_name)] = (fingerprint, now + self._ttl)
 
-    def consume(self, root: str, file_name: str, fingerprint: str) -> bool:
-        """True when *fingerprint* matches our own post-write record for
-        (root, file) and the record is consumed."""
+    def consume(self, root: str, file_name: str, fingerprint: str | None = None) -> bool:
+        """True when our own post-write record for (root, file) is consumed.
+
+        When *fingerprint* is None the caller has already established that a
+        live record exists (via ``has_live``) and wants to skip the expensive
+        content re-hash on the self-write path (PERF-004): any live record is
+        trusted as our own write.
+        """
         now = _time.monotonic()
         key_root = canonical_key(root)
         with self._lock:
@@ -109,10 +114,24 @@ class SelfWriteRegistry:
             if entry[1] < now:
                 self._entries.pop(key, None)
                 return False
-            if entry[0] != fingerprint:
+            if fingerprint is not None and entry[0] != fingerprint:
                 return False  # external writer landed after ours: report external
             self._entries.pop(key, None)
             return True
+
+    def has_live(self, root: str, file_name: str) -> bool:
+        """True when an unexpired self-write record exists for (root, file).
+
+        Used as a cheap peek so the watcher handler can skip hashing the file
+        on our own write path -- the only way such a record exists is a
+        successful coordinator write (PERF-004)."""
+        now = _time.monotonic()
+        key_root = canonical_key(root)
+        with self._lock:
+            self._purge_locked(now)
+            key = (key_root, file_name)
+            entry = self._entries.get(key)
+            return entry is not None and entry[1] >= now
 
     def _purge_locked(self, now: float) -> None:
         stale = [k for k, (_, exp) in self._entries.items() if exp < now]

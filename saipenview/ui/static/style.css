@@ -16,7 +16,7 @@
   --borderDark:#100E08; --borderHighlight:#F0D060; --borderMuted:#5A5040;
   --textPrimary:#D4C89A; --textSecondary:#9C9371; --textMuted:#6E674E;
   --accentTeal:#008080; --accentTealDeep:#004C4C;
-  --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020; --dangerText:#D66464;
+  --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020; --dangerText:#D66464; --dangerText:#D66464;
   --selection:#3D372A; --compareBack:#14120C;
   --goldStar:#FFC107;
   /* Red for TEXT. --danger stays what it is -- a fill/border colour, fine
@@ -509,16 +509,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .dblclick-hint { display: none; font-size: 9px; margin-left: 1px; cursor: default; }
 .collapsible-header:hover .dblclick-hint { display: inline; }
 .collapse-icon { font-size: 9px; color: var(--textMuted); flex: 0 0 auto; }
-.collapsible.collapsed .collapsible-body > :nth-last-child(n+6) { display: none; }
-/* Conformance is the one card whose findings are NOT direct children of the
-   body -- they sit inside a .conf-list wrapper, so the rule above sees a body
-   of exactly two children (the list + the baseline note), matches nothing, and
-   collapsing it hid nothing at all. The arrow flipped and the screen did not
-   move, on the one card most likely to be 100+ rows long.
-   Counts from the FRONT here, not the back: findings are ordered most-severe
-   first, so the useful five are the first five -- keeping the last five would
-   collapse a 114-row FAIL list down to its five least important entries. */
-.collapsible.collapsed .collapsible-body > .conf-list > :nth-child(n+6) { display: none; }
+.collapsible.collapsed .collapsible-body { display: none; }
 
 /* Mini-collapsible inside State Summary — collapsed by default, toggled via JS */
 .mini-c.collapsed .mini-c-body { display: none; }

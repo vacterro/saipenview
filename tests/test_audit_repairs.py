@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,12 +62,22 @@ def test_freshness_loader_uses_same_normalized_home_identity(tmp_path, monkeypat
         (home / "VERSION").write_text("1\n", encoding="utf-8")
 
     monkeypatch.setattr(saio, "_ENGINE_CACHE", {})
-    # Load from home_a first to populate the engine cache.
-    saio._load_freshness_from(home_a)  # type: ignore[attr-defined]
-    # Now try to load from a DIFFERENT home -- must be refused.
+    saved_modules = dict(sys.modules)
+    saved_path = list(sys.path)
     try:
-        saio._load_freshness_from(home_b)  # type: ignore[attr-defined]
-    except saio.SaioUnavailable as exc:
-        assert "MULTI-HOME" in str(exc)
-    else:
-        raise AssertionError("distinct freshness home was not refused")
+        # Load from home_a first to populate the engine cache.
+        saio._load_freshness_from(home_a)  # type: ignore[attr-defined]
+        # Now try to load from a DIFFERENT home -- must be refused.
+        try:
+            saio._load_freshness_from(home_b)  # type: ignore[attr-defined]
+        except saio.SaioUnavailable as exc:
+            assert "MULTI-HOME" in str(exc)
+        else:
+            raise AssertionError("distinct freshness home was not refused")
+    finally:
+        # The stub `freshness` module and the tmp tools/ dir must NOT leak into
+        # the process: a later saio.source_identity() would hit the stub and
+        # crash with AttributeError. Restore the exact pre-test state.
+        sys.modules.clear()
+        sys.modules.update(saved_modules)
+        sys.path[:] = saved_path

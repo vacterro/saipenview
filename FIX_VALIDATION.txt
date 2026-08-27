@@ -1,0 +1,41 @@
+SAIPENVIEW corrected source bundle
+Generated: 2026-08-15
+
+Assembly basis
+- User-supplied full SAIPENVIEW source archive.
+- Core source/tests/tooling reconciled with the reachable current GitHub main content during this session.
+- Package source reports __version__ 0.1.29 and protocol baseline 7.223.12.
+- This is a corrected working source bundle, NOT an official Git tag/release.
+
+Audit repairs applied/retained
+- Versioned file-editor read/save contract; protocol saves bind to canonical Document.raw_hash and stale full-file saves fail closed.
+- Canonical Event/Ticket allocation and real Event Graph tail retained; manual-work resume no longer rewinds STATE.last_event.
+- One coordinator-owned canonical APPLY/finalize path retained; self-write attribution remains backend-owned.
+- STATE authority parser is bounded to a complete frontmatter block and rejects duplicate authority keys/unclosed frontmatter.
+- One-SAIPEN_HOME-per-process protection extended to standalone freshness loading; same-home engine source changes require restart.
+- Recovery-aware canonical APPLY result handling retained.
+- Manual-work operation_id is minted in UI before RPC and retained across transport retry.
+- Frontend no longer uses selfWriteRoots/unrecordedChangeRoot; backend pending_external_changes is authoritative.
+- File-change debounce is scoped by root+file instead of one global timer.
+- Service RPC allowlist includes versioned read_file_document/write_file_document methods.
+- Strict ticket/OUTBOX parsing and canonical freshness delegation from the current core retained.
+
+Verification performed in this sandbox
+PASS: python -m compileall -q saipenview tests tools
+PASS: node --check saipenview/ui/static/app.js
+PASS: focused post-audit regressions: 7/7
+
+Not falsely claimed
+- Full Windows Python 3.10/3.11/3.12 matrix was not runnable in this Linux sandbox.
+- Full canonical-writer tests require a reachable canonical SAIPEN_HOME; absent here.
+- Optional desktop dependencies (pywebview/watchdog/keyboard/etc.) are not installed in this sandbox.
+- ruff is not installed in this sandbox.
+
+Run on the target Windows machine before publishing/tagging:
+  set SAIPEN_HOME=<canonical-SAIPEN-path>
+  python -m pytest -q
+  python -m compileall -q saipenview tests tools
+  node --check saipenview/ui/static/app.js
+  python tools/release_gate.py --dev
+
+Do not treat this bundle as an official release until the repository CI/release gates pass from a committed tree.

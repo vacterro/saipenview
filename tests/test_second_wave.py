@@ -489,11 +489,11 @@ def test_stale_generation_does_not_publish_result(monkeypatch):
     monkeypatch.setattr(scanner_mod, "scan", fake_scan)
 
     s1 = BackgroundScanner(
-        on_result=lambda projects, complete=False: captured.append(("s1", projects)),
+        on_result=lambda projects, complete=False, **kw: captured.append(("s1", projects)),
         scan_roots=["z"],
     )
     s2 = BackgroundScanner(
-        on_result=lambda projects, complete=False: captured.append(("s2", projects)),
+        on_result=lambda projects, complete=False, **kw: captured.append(("s2", projects)),
         scan_roots=["z"],
     )
     s1.start()

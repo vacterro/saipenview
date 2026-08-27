@@ -193,6 +193,7 @@ def _window_stub(pushed):
 def test_self_write_origin_after_coordinator_mutation(api, tmp_path):
     root = make_conformant_project(tmp_path)
     pushed = {}
+    api._debounce_delay = 0  # force synchronous publish (CORE-005 regression)
     api._window = _window_stub(pushed)
     with patch.object(api, "_refresh_one_project"):
         res = record_manual_work(root, "self write")
@@ -205,6 +206,7 @@ def test_self_write_origin_after_coordinator_mutation(api, tmp_path):
 def test_external_write_reports_external(api, tmp_path):
     root = make_conformant_project(tmp_path)
     pushed = {}
+    api._debounce_delay = 0  # force synchronous publish
     api._window = _window_stub(pushed)
     with patch.object(api, "_refresh_one_project"):
         # No coordinator write happened; an outside edit did.
@@ -219,6 +221,7 @@ def test_external_write_reports_external(api, tmp_path):
 def test_external_edit_after_self_write_reports_external(api, tmp_path):
     root = make_conformant_project(tmp_path)
     pushed = {}
+    api._debounce_delay = 0  # force synchronous publish
     api._window = _window_stub(pushed)
     with patch.object(api, "_refresh_one_project"):
         res = record_manual_work(root, "self write")
@@ -284,3 +287,81 @@ def test_concurrent_mixed_mutations_keep_board_valid(project):
         for t in board.todo
         if t.ticket_id not in ("T-002",)
     )
+
+
+def test_transaction_burst_coalesces_to_one_refresh(tmp_path):
+    """T-542: STATE+BOARD+LOG watcher events coalesce into 1 project load & cache refresh."""
+    import time
+    from saipenview.api import Api
+    from saipenview.config import DEFAULTS
+
+    cfg = dict(DEFAULTS)
+    cfg["pinned_roots"] = []
+    cfg["hidden_roots"] = []
+    cfg["scan_roots"] = None
+    with (
+        patch("saipenview.api.config_path"),
+        patch("saipenview.api.load_config", return_value=cfg),
+        patch("saipenview.api.save_config"),
+        patch("saipenview.api.BackgroundScanner"),
+    ):
+        api = Api(debounce_delay=0.05)
+        try:
+            pushed_calls = []
+            api._window = type(
+                "W", (), {"evaluate_js": lambda self, s: pushed_calls.append(s)}
+            )()
+            root = str(make_conformant_project(tmp_path))
+            with patch.object(api, "_refresh_one_project") as mock_refresh:
+                api._on_file_changed({"root": root, "file": "STATE.md"})
+                api._on_file_changed({"root": root, "file": "BOARD.md"})
+                api._on_file_changed({"root": root, "file": "LOG.md"})
+                time.sleep(0.15)
+                # PERF-004: refresh now receives the coalesced set of changed
+                # filenames so it can skip the ticket-index rebuild / cache
+                # rewrite when only LOG moved.
+                mock_refresh.assert_called_once()
+                args, kwargs = mock_refresh.call_args
+                assert args[0] == root
+                assert args[1] == {"STATE.md", "BOARD.md", "LOG.md"} or kwargs.get(
+                    "changed_files"
+                ) == {"STATE.md", "BOARD.md", "LOG.md"}
+            assert len(pushed_calls) == 3
+            assert '"BOARD.md"' in pushed_calls[0]
+            assert '"LOG.md"' in pushed_calls[1]
+            assert '"STATE.md"' in pushed_calls[2]
+        finally:
+            api.stop()
+
+
+def test_production_api_default_coalesces_same_root_burst(tmp_path):
+    """CORE-005: plain Api() uses a nonzero debounce default, so a burst of
+    same-root watcher events coalesces to exactly one refresh, not N. The
+    existing explicit-debounce test above validates the opt-in path."""
+    import time
+    from saipenview.api import Api
+    from saipenview.config import DEFAULTS
+
+    cfg = dict(DEFAULTS)
+    cfg["pinned_roots"] = []
+    cfg["hidden_roots"] = []
+    cfg["scan_roots"] = None
+    with (
+        patch("saipenview.api.config_path"),
+        patch("saipenview.api.load_config", return_value=cfg),
+        patch("saipenview.api.save_config"),
+        patch("saipenview.api.BackgroundScanner"),
+    ):
+        api = Api()  # production default
+        try:
+            root = str(make_conformant_project(tmp_path))
+            with patch.object(api, "_refresh_one_project") as mock_refresh:
+                api._on_file_changed({"root": root, "file": "STATE.md"})
+                api._on_file_changed({"root": root, "file": "BOARD.md"})
+                api._on_file_changed({"root": root, "file": "LOG.md"})
+                # The default 0.1s debounce must be in effect; burst arrives
+                # within one debounce window so exactly one timer fires.
+                time.sleep(0.25)
+                mock_refresh.assert_called_once()
+        finally:
+            api.stop()

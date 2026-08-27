@@ -113,11 +113,21 @@ def _seed_verified_root(api, root: Path) -> Path:
 
     The T-164 boundary means scan roots grant nothing: a root is actionable
     only when it holds a real .saipen/STATE.md and the Api knows about it.
-    This helper builds both halves -- the file and a pinned-root entry."""
+    This helper builds both halves -- the file and a pinned-root entry.
+
+    CORE-001: STATE.md is seeded with a saipen_home field so the canonical
+    codec can read it back. Tests that exercise the read/write CAS path need
+    a canonical-readable file or the codec fails closed (per audit).
+    """
+    from conftest import canonical_home
+
     saipen = root / ".saipen"
     saipen.mkdir(parents=True, exist_ok=True)
+    home = canonical_home()
+    home_line = f"saipen_home: {home}\n" if home else ""
     (saipen / "STATE.md").write_text(
-        "---\nphase: DONE\ntask: none\nnext_action: RUN: noop\nblocker: none\n---\n",
+        f"---\nphase: DONE\ntask: none\nnext_action: RUN: noop\n"
+        f"blocker: none\n{home_line}---\n",
         encoding="utf-8",
     )
     (saipen / "BOARD.md").write_text(
@@ -147,6 +157,10 @@ def api_with_projects(api, tmp_path) -> Api:
     ]
     # Sort to match what _set_cache would produce
     api._projects.sort(key=lambda x: _project_sort_key(x, "smart"))
+    # PERF-002: tests that expect refresh_known to actually reparse must
+    # set the pending flag; idle polls (the default production state) must
+    # not trigger an O(projects) reparse.
+    api._full_refresh_pending = True
     return api
 
 
@@ -312,9 +326,15 @@ class TestRefreshKnown:
             api_with_projects.refresh_known()
             assert mock_load.call_count == 3
 
-    def test_preserves_previous_on_load_failure(self, api_with_projects, tmp_path):
-        """When load_project returns None, previous project rows are kept."""
-        with patch("saipenview.api.load_project", return_value=None):
+    def test_preserves_previous_on_transient_failure(
+        self, api_with_projects, tmp_path
+    ):
+        """W2-008: a transient read failure (load_project raises) keeps the
+        previous project rows; only a clean absence (load_project returns None
+        without raising) drops them."""
+        with patch(
+            "saipenview.api.load_project", side_effect=OSError("disk blip")
+        ):
             result = api_with_projects.refresh_known()
             assert len(result) == 3
 
@@ -334,16 +354,15 @@ class TestRefreshKnown:
         """Hidden roots are excluded from refresh_known *results* (visibility is
         applied in get_projects), but CORE-006 still refreshes them so their
         registry rows stay current and pending external changes keep getting
-        tracked."""
+        tracked. W2-008: a clean absence (load_project returns None) drops the
+        row, but the hidden root is still *loaded*."""
         api_with_projects._config["hidden_roots"] = [str(tmp_path / "alpha")]
 
         with patch("saipenview.api.load_project") as mock_load:
             mock_load.return_value = None
             result = api_with_projects.refresh_known()
-            # alpha hidden → excluded from the returned list (beta + gamma only)
-            assert len(result) == 2
-            returned_names = {p["name"] for p in result}
-            assert returned_names == {"beta", "gamma"}
+            # All roots cleanly absent -> every row dropped.
+            assert len(result) == 0
             # CORE-006: hidden roots are still loaded/refreshed even though hidden.
             roots_called = [call.args[0].name for call in mock_load.call_args_list]
             assert "alpha" in roots_called
@@ -377,14 +396,16 @@ class TestRefreshKnown:
             assert mock_cache.called
 
     def test_skips_cache_write_when_unchanged(self, api_with_projects):
-        """When projects don't change, cache is NOT written."""
+        """When projects don't change, cache is NOT written. W2-008: a transient
+        failure (raises) keeps the identical prev rows, so nothing changed and
+        the cache stays untouched."""
         with (
-            patch("saipenview.api.load_project", return_value=None),
+            patch(
+                "saipenview.api.load_project", side_effect=OSError("disk blip")
+            ),
             patch.object(api_with_projects, "_write_cache") as mock_cache,
         ):
             api_with_projects.refresh_known()
-            # _projects was pre-sorted in smart order; load_project returns None
-            # for all roots, keeping prev rows → no change → no cache write
             assert not mock_cache.called
 
     def test_uses_with_git_false(self, api_with_projects):
@@ -619,11 +640,17 @@ class TestReadWriteFile:
         return _seed_verified_root(api, tmp_path)
 
     def test_read_existing_file(self, api, tmp_path):
+        from conftest import canonical_home
+
+        if canonical_home() is None:
+            pytest.skip("canonical SAIPEN home unreachable")
         self._seed_root(api, tmp_path)
-        f = tmp_path / "STATE.md"
-        f.write_text("hello\n", encoding="utf-8")
+        f = tmp_path / ".saipen" / "STATE.md"
         result = api.read_file_text(str(f))
-        assert result == "hello\n"
+        # CORE-001: protocol files return {text, edit_version}.
+        assert isinstance(result, dict)
+        assert "text" in result and "edit_version" in result
+        assert result["text"].startswith("---")
 
     def test_read_nonexistent_file(self, api, tmp_path):
         self._seed_root(api, tmp_path)
@@ -1034,3 +1061,237 @@ class TestBrowseFolderQuarantine:
             f"_scan_linked_worktrees ran {mock_wt.call_count} times per browse -- "
             "_set_cache is its single owner"
         )
+
+
+# ── T-591 / PERF-002: idle polling must not re-parse the whole tree ──
+
+
+class TestIdlePolling:
+    @pytest.fixture
+    def idle_api(self, api):
+        calls = {"load": 0}
+
+        class _FakeProj:
+            def __init__(self, root):
+                self.root = Path(root)
+
+        def fake_load(*args, **kwargs):
+            calls["load"] += 1
+            root = args[0] if args else Path("/mock/project")
+            return _FakeProj(root)
+
+        def fake_to_dict(project, pinned=None):
+            return {
+                "root": str(project.root),
+                "name": "mock",
+                "phase": "X",
+                "mtime": 0,
+                "is_pinned": False,
+                "conformance": {"verdict": "pass"},
+            }
+
+        api._build_ticket_index = MagicMock()
+        api._write_cache = MagicMock()
+        api._sync_watcher = MagicMock()
+        import saipenview.api as api_mod
+
+        orig_load = api_mod.load_project
+        orig_to = api_mod._project_to_dict
+        api_mod.load_project = fake_load
+        api_mod._project_to_dict = fake_to_dict
+        api._projects = [{
+            "root": "/mock/project",
+            "name": "mock",
+            "phase": "X",
+            "mtime": 0,
+            "is_pinned": False,
+            "conformance": {"verdict": "pass"},
+            "git_branch": "",
+            "git_dirty": False,
+        }]
+        api._has_scanned = True
+        api._scanning = False
+        api._full_refresh_pending = True  # startup -> one full parse
+        yield api, calls
+        api_mod.load_project = orig_load
+        api_mod._project_to_dict = orig_to
+
+    def test_idle_poll_skips_reparse(self, idle_api):
+        api, calls = idle_api
+        # First call: startup pending -> full reconciliation parse.
+        api.refresh_known()
+        assert calls["load"] == 1, calls
+        # Second call: idle (pending cleared, not scanning) -> NO re-parse.
+        calls["load"] = 0
+        api.refresh_known()
+        assert calls["load"] == 0, "idle poll must not call load_project"
+        # A scan result flips the pending flag -> next poll reconciles once.
+        api._full_refresh_pending = True
+        api.refresh_known()
+        assert calls["load"] == 1, "post-scan poll must reconcile"
+
+    def test_idle_poll_reports_no_changes(self, idle_api):
+        api, calls = idle_api
+        api.refresh_known()  # startup pending -> one full reconciliation parse
+        calls["load"] = 0
+        api._full_refresh_pending = False
+        api.refresh_known()  # idle -> no re-parse, empty changed set
+        assert calls["load"] == 0, "idle poll must not call load_project"
+        assert api.get_changed_roots() == [], "idle poll must report no changes"
+
+
+# ── T-590 / PERF-001: scan worktrees must pass through, not be re-walked ──
+
+
+class TestWorktreePassthrough:
+    def test_scanoutcome_worktrees_skip_second_walk(self, api):
+        from saipenview.scanner import ScanOutcome
+
+        api._scan_linked_worktrees = MagicMock()
+        outcome = ScanOutcome(
+            projects=[], worktrees=[{"root": "/x", "git_dir": "/x/.git"}]
+        )
+        api._set_cache(outcome)
+        assert api._scan_linked_worktrees.call_count == 0, (
+            "worktrees from ScanOutcome must skip the linked-worktree walk"
+        )
+        assert api._linked_worktrees == [{"root": "/x", "git_dir": "/x/.git"}]
+
+    def test_worktree_kwarg_skip_second_walk(self, api):
+        api._scan_linked_worktrees = MagicMock()
+        api._set_cache([], worktrees=[{"root": "/y"}])
+        assert api._scan_linked_worktrees.call_count == 0
+        assert api._linked_worktrees == [{"root": "/y"}]
+
+    def test_no_worktrees_falls_back_to_walk(self, api):
+        api._scan_linked_worktrees = MagicMock()
+        api._set_cache([])  # plain list, no worktrees -> must still walk
+        assert api._scan_linked_worktrees.call_count == 1
+
+
+# ── T-589 / W2-010: setter result contracts must surface failure (ok:false) ──
+
+
+class TestSetterResultContracts:
+    def test_hotkeys_binding_failure_is_ok_false(self, api):
+        # First call (new binding) raises; revert (second call) succeeds.
+        api._on_hotkeys_changed = MagicMock(side_effect=[ValueError("bad combo"), None])
+        api._config["hotkeys"] = []
+        result = api.set_hotkeys(["ctrl+x"])
+        assert result.get("ok") is False, result
+        assert "error" in result
+
+    def test_hotkeys_success_returns_config(self, api):
+        api._on_hotkeys_changed = MagicMock()
+        api._config["hotkeys"] = []
+        result = api.set_hotkeys(["ctrl+x"])
+        # Success path has no `ok` key (it is a config dict) -> not a failure.
+        assert result.get("ok") is not False
+
+    def test_snap_hotkey_binding_failure_is_ok_false(self, api):
+        api._on_snap_hotkey_changed = MagicMock(side_effect=[Exception("kbd fail"), None])
+        api._config["snap_hotkey"] = []
+        result = api.set_snap_hotkey(["ctrl+s"])
+        assert result.get("ok") is False, result
+
+    def test_engine_overrides_invalid_is_ok_false(self, api):
+        # `path` must be a string -> 123 is invalid.
+        result = api.set_engine_overrides({"openai": {"path": 123}})
+        assert result.get("ok") is False, result
+
+    def test_autostart_false_is_not_counted_as_applied(self, api):
+        # set_autostart_enabled returns a bool; a False return is a failure
+        # signal that runSeq must NOT count as applied.
+        import saipenview.autostart as autostart_mod
+
+        with patch.object(autostart_mod, "set_enabled", return_value=False):
+            assert api.set_autostart_enabled(True) is False
+
+
+# ── T-587 / W2-008: clean disappearance vs transient read failure ──
+
+
+class TestRefreshKnownDisappearance:
+    @pytest.fixture
+    def fresh_api(self, api):
+        import saipenview.api as api_mod
+
+        api._build_ticket_index = MagicMock()
+        api._write_cache = MagicMock()
+        api._sync_watcher = MagicMock()
+        orig_to = api_mod._project_to_dict
+        api_mod._project_to_dict = lambda p, pin=None: {
+            "root": str(p.root),
+            "name": "m",
+            "phase": "X",
+            "mtime": 0,
+            "is_pinned": False,
+            "conformance": {"verdict": "pass"},
+            "git_branch": "",
+            "git_dirty": False,
+        }
+        api._projects = [
+            {
+                "root": "/mock/project",
+                "name": "m",
+                "phase": "X",
+                "mtime": 0,
+                "is_pinned": False,
+                "conformance": {"verdict": "pass"},
+                "git_branch": "",
+                "git_dirty": False,
+            }
+        ]
+        api._has_scanned = True
+        api._scanning = False
+        api._full_refresh_pending = True
+        yield api
+        api_mod._project_to_dict = orig_to
+
+    def test_clean_disappearance_drops_row_and_signals(self, fresh_api):
+        import saipenview.api as api_mod
+
+        orig = api_mod.load_project
+        api_mod.load_project = lambda *a, **k: None  # STATE.md gone, no raise
+        try:
+            fresh_api.refresh_known()
+        finally:
+            api_mod.load_project = orig
+        assert all(p["root"] != "/mock/project" for p in fresh_api._projects)
+        assert "/mock/project" in fresh_api.get_changed_roots()
+
+    def test_transient_failure_keeps_row(self, fresh_api):
+        import saipenview.api as api_mod
+
+        orig = api_mod.load_project
+
+        def boom(*a, **k):
+            raise OSError("disk blip")
+
+        api_mod.load_project = boom
+        try:
+            fresh_api.refresh_known()
+        finally:
+            api_mod.load_project = orig
+        assert any(p["root"] == "/mock/project" for p in fresh_api._projects)
+        assert "/mock/project" not in fresh_api.get_changed_roots()
+
+
+# ── CORE-003 / PERF-007: get_hidden_projects must not scan ──
+
+
+class TestHiddenProjectsNoScan:
+    def test_returns_registry_rows_no_scan(self, api_with_projects):
+        """CORE-003/PERF-007: get_hidden_projects snaps _projects, never calls scan()."""
+        api_with_projects._config["hidden_roots"] = [
+            str(api_with_projects._projects[0]["root"])
+        ]
+        with patch("saipenview.api.scan") as mock_scan:
+            result = api_with_projects.get_hidden_projects()
+            assert len(result) >= 1
+            assert mock_scan.call_count == 0
+
+    def test_empty_when_none_hidden(self, api_with_projects):
+        api_with_projects._config["hidden_roots"] = []
+        result = api_with_projects.get_hidden_projects()
+        assert result == []

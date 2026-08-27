@@ -451,7 +451,7 @@ def make_ready_outbox(
         f"- **role_revision:** {rr}\n"
         f"- **coverage:** fixture root files\n"
         f"- **payload:** kitchen/{entry_id}.md\n"
-        f"- **verified:** gate fixture\n"
+        f"- **verified:** PASS -- gate fixture\n"
         f"- **instructions:** apply the fixture payload\n"
     )
     outbox = subs_dir / sub / "kitchen" / "OUTBOX.md"

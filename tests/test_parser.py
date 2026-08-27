@@ -297,8 +297,25 @@ class TestMoveTicket:
             phase="SHIP",
             task="T-001",
             next_action="PHASE SHIP T-001",
-            board_text="# BOARD\n## DOING\n- [/] T-001 done work\n"
+            board_text="# BOARD\n## DOING\n- [/] T-001 done work | owner: testseat | claim_time: 2026-08-23T00:00:00Z | verify: PASS -- ship-gate evidence\n"
             "## TODO\n## DONE\n## BLOCKED\n",
+        )
+        # Canonical finish requires a current-cycle VERIFY boundary in the
+        # journaled history plus PASS conf: high evidence after it.
+        log = root / ".saipen" / "LOG.md"
+        log.write_text(
+            "- 11.08.26 00:00 [E-1] RUN: boot\n"
+            "- 11.08.26 00:01 [E-2] [parent: E-1] RUN: validate.py -> PASS\n"
+            "- 11.08.26 00:02 [E-3] [parent: E-2] [T-001] RUN: transition to VERIFY\n"
+            "- 11.08.26 00:03 [E-4] [parent: E-3] [T-001] RUN: PASS conf: high -- suite green\n",
+            encoding="utf-8",
+        )
+        state = root / ".saipen" / "STATE.md"
+        state.write_text(
+            state.read_text(encoding="utf-8").replace(
+                "last_event: 2", "last_event: 4"
+            ),
+            encoding="utf-8",
         )
         result = move_ticket(root, "T-001", "done")
         assert result["ok"] is True, result
@@ -314,7 +331,7 @@ class TestMoveTicket:
             phase="BUILD",
             task="T-001",
             next_action="PHASE BUILD T-001",
-            board_text="# BOARD\n## DOING\n- [/] T-001 in flight\n"
+            board_text="# BOARD\n## DOING\n- [/] T-001 in flight | owner: testseat | claim_time: 2026-08-23T00:00:00Z\n"
             "## TODO\n## DONE\n## BLOCKED\n",
         )
         result = move_ticket(root, "T-001", "done")
@@ -956,6 +973,67 @@ class TestCheckSubsStaleness:
             branch, dirty = get_git_status(tmp_path)
             assert branch == ""
             assert dirty is False
+
+    def test_get_git_status_clean_repo(self, tmp_path):
+        """get_git_status parses clean repo correctly with single command."""
+        from unittest.mock import MagicMock, patch
+
+        from saipenview.parser import get_git_status
+
+        (tmp_path / ".git").mkdir()
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "# branch.oid 123456\n# branch.head main\n# branch.upstream origin/main\n"
+        with patch("subprocess.run", return_value=mock_res) as mock_run:
+            branch, dirty = get_git_status(tmp_path)
+            assert branch == "main"
+            assert dirty is False
+            assert mock_run.call_count == 1
+            cmd = mock_run.call_args[0][0]
+            assert cmd == ["git", "-C", str(tmp_path), "status", "--porcelain=v2", "--branch"]
+
+    def test_get_git_status_dirty_repo(self, tmp_path):
+        """get_git_status parses dirty repo correctly with single command."""
+        from unittest.mock import MagicMock, patch
+
+        from saipenview.parser import get_git_status
+
+        (tmp_path / ".git").mkdir()
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "# branch.oid 123456\n# branch.head feature/fast\n1 M. N... 100644 100644 100644 abc def file.txt\n"
+        with patch("subprocess.run", return_value=mock_res) as mock_run:
+            branch, dirty = get_git_status(tmp_path)
+            assert branch == "feature/fast"
+            assert dirty is True
+            assert mock_run.call_count == 1
+
+    def test_get_git_status_detached_head(self, tmp_path):
+        """get_git_status parses detached HEAD correctly."""
+        from unittest.mock import MagicMock, patch
+
+        from saipenview.parser import get_git_status
+
+        (tmp_path / ".git").mkdir()
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = "# branch.oid 123456\n# branch.head (detached)\n"
+        with patch("subprocess.run", return_value=mock_res):
+            branch, dirty = get_git_status(tmp_path)
+            assert branch == "(detached)"
+            assert dirty is False
+
+    def test_get_git_status_non_git_dir(self, tmp_path):
+        """get_git_status returns empty for non-git directory without running subprocess."""
+        from unittest.mock import patch
+
+        from saipenview.parser import get_git_status
+
+        with patch("subprocess.run") as mock_run:
+            branch, dirty = get_git_status(tmp_path)
+            assert branch == ""
+            assert dirty is False
+            assert mock_run.call_count == 0
 
     def test_load_log_tail_handles_exception(self, tmp_path):
         """load_log_tail returns [] when read fails."""

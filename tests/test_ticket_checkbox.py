@@ -82,7 +82,7 @@ class TestDoneIsCanonicalFinish:
             phase="BUILD",
             task="T-001",
             next_action="PHASE BUILD T-001",
-            board_text="# BOARD\n## DOING\n- [/] T-001 in flight\n"
+            board_text="# BOARD\n## DOING\n- [/] T-001 in flight | owner: testseat | claim_time: 2026-08-23T00:00:00Z\n"
             "## TODO\n## DONE\n## BLOCKED\n",
         )
         res = move_ticket(root, "T-001", "done")
@@ -97,8 +97,24 @@ class TestDoneIsCanonicalFinish:
             phase="SHIP",
             task="T-001",
             next_action="PHASE SHIP T-001",
-            board_text="# BOARD\n## DOING\n- [/] T-001 done work\n"
+            board_text="# BOARD\n## DOING\n- [/] T-001 done work | owner: testseat | claim_time: 2026-08-23T00:00:00Z | verify: PASS -- ship-gate evidence\n"
             "## TODO\n## DONE\n## BLOCKED\n",
+        )
+        # Canonical finish needs a current-cycle VERIFY boundary + PASS conf: high.
+        log = root / ".saipen" / "LOG.md"
+        log.write_text(
+            "- 11.08.26 00:00 [E-1] RUN: boot\n"
+            "- 11.08.26 00:01 [E-2] [parent: E-1] RUN: validate.py -> PASS\n"
+            "- 11.08.26 00:02 [E-3] [parent: E-2] [T-001] RUN: transition to VERIFY\n"
+            "- 11.08.26 00:03 [E-4] [parent: E-3] [T-001] RUN: PASS conf: high -- suite green\n",
+            encoding="utf-8",
+        )
+        state = root / ".saipen" / "STATE.md"
+        state.write_text(
+            state.read_text(encoding="utf-8").replace(
+                "last_event: 2", "last_event: 4"
+            ),
+            encoding="utf-8",
         )
         res = move_ticket(root, "T-001", "done")
         assert res["ok"] is True, res

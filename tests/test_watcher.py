@@ -254,6 +254,7 @@ class TestJsBridge:
             patch("saipenview.api.BackgroundScanner"),
         ):
             api = Api()
+            api._debounce_delay = 0  # CORE-005: test expects synchronous publish
             try:
                 pushed = {}
                 api._window = type(
@@ -262,7 +263,10 @@ class TestJsBridge:
                 tricky = r"V:\it's & weird ünïcode"
                 with patch.object(api, "_refresh_one_project") as mock_refresh:
                     api._on_file_changed({"root": tricky, "file": "STATE.md"})
-                    mock_refresh.assert_called_once_with(tricky)
+                    mock_refresh.assert_called_once()
+                    args, kwargs = mock_refresh.call_args
+                    assert args[0] == tricky
+                    assert args[1] == {"STATE.md"} or kwargs.get("changed_files") == {"STATE.md"}
                 assert json.dumps(tricky) in pushed["js"], pushed["js"]
             finally:
                 api.stop()
@@ -282,6 +286,7 @@ class TestJsBridge:
             patch("saipenview.api.BackgroundScanner"),
         ):
             api = Api()
+            api._debounce_delay = 0  # CORE-005: test expects synchronous publish
             try:
                 api._window = type("W", (), {"evaluate_js": lambda self, s: None})()
                 with (

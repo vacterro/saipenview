@@ -15,17 +15,13 @@ from saipenview.ui.window import MainWindow
 
 def run() -> int:
     guard = SingleInstanceGuard()
+    # W2-005: Api's constructor already starts a live SaipenWatcher, so the
+    # api is registered for cleanup IMMEDIATELY -- before MainWindow or the
+    # guard -- so any failure after this point unwinds it.
     api = Api()
-    window = MainWindow(api=api, api_ref=api)
-    api._window = window
-
-    if not guard.acquire(on_show_request=window.show):
-        api.stop()
-        return 0
-
-    # CORE-015: track started components so the finally block can unwind
-    # them in reverse order, even if an exception fires mid-startup.
-    _started: list[str] = []
+    # CORE-015/W2-005: track started components so the finally-style cleanup
+    # can unwind them in reverse order, even if an exception fires mid-startup.
+    _started: list[str] = ["api"]
     tray = None
     hotkeys = None
     snap_hotkey = None
@@ -54,6 +50,16 @@ def run() -> int:
                 print(f"SAIPENVIEW: cleanup {name} failed: {e}", file=sys.stderr)
 
     try:
+        window = MainWindow(api=api, api_ref=api)
+        api._window = window
+
+        if not guard.acquire(on_show_request=window.show):
+            _cleanup()
+            return 0
+        # W2-005: guard ownership is registered the instant acquire() returns
+        # True, never deferred until after api.start().
+        _started.append("guard")
+
         tray = build_tray_icon(on_toggle=window.toggle, on_quit=lambda: window.destroy())
         tray_thread = threading.Thread(target=tray.run, daemon=True)
         tray_thread.start()
@@ -81,8 +87,6 @@ def run() -> int:
         _started.append("kill_hotkey")
 
         api.start()
-        _started.append("api")
-        _started.append("guard")
         webview.start()
     except Exception:  # noqa: BLE001
         _cleanup()

@@ -350,7 +350,7 @@ class TestBackgroundScanner:
 
         events = []
         bs = BackgroundScanner(
-            on_result=lambda p: events.append(len(p)),
+            on_result=lambda p, **kw: events.append(len(p)),
         )
         _next_gen()  # Invalidate gen
         bs.rescan_now()  # Should return without calling scan

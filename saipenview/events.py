@@ -43,6 +43,16 @@ class EventBus:
         with self._lock:
             self._subscribers[event_type].append(callback)
 
+    def has_subscribers(self, event_type: str) -> bool:
+        """True when at least one callback is registered for *event_type*.
+
+        Publishers of high-frequency events (per-line agent output) use this
+        to skip payload construction entirely when nobody is listening --
+        building a dict nobody receives is pure waste (T-598/PERF-009).
+        """
+        with self._lock:
+            return bool(self._subscribers.get(event_type))
+
     def unsubscribe(self, event_type: str, callback: Callable) -> None:
         """Remove a previously registered callback."""
         with self._lock:

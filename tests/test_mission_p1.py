@@ -157,6 +157,7 @@ def _origin(api, root, file) -> str:
     """Simulate the watcher firing for a changed file; return the origin.
     `file` is relative to `.saipen/` (the watcher's own contract)."""
     pushed = {}
+    api._debounce_delay = 0  # CORE-005: force synchronous publish
     api._window = type(
         "W", (), {"evaluate_js": lambda self, s: pushed.setdefault("js", s)}
     )()

@@ -9,6 +9,7 @@ events to the event bus for real-time UI updates.
 
 from __future__ import annotations
 
+import codecs
 import itertools
 import subprocess
 import sys
@@ -140,6 +141,152 @@ from saipenview.sessions import SessionStore
 # Maximum lines to keep in the per-process output buffer.
 DEFAULT_OUTPUT_BUFFER_SIZE = 5000
 
+# T-597 / PERF-008: one logical stdout record is capped while it is being
+# READ, not after an unbounded string already exists -- a child that emits a
+# multi-megabyte record without a newline must not spike the reader's memory.
+OUTPUT_RECORD_MAX_CHARS = 65536
+_OUTPUT_TRUNCATION_MARKER = " [... truncated]"
+# One os.read syscall worth of bytes per iteration; short reads preserve
+# latency (the reader never waits for a full chunk before emitting a line).
+_OUTPUT_READ_CHUNK_BYTES = 8192
+# Decoding happens in slices no larger than this so a large read never
+# materializes as one huge decoded string (PERF-008's whole point).
+_OUTPUT_DECODE_SLICE_BYTES = 4096
+
+
+def _bounded_output_lines(
+    stream,
+    *,
+    limit: int = OUTPUT_RECORD_MAX_CHARS,
+    chunk_bytes: int = _OUTPUT_READ_CHUNK_BYTES,
+):
+    """Yield newline-framed logical records from a binary stdout stream.
+
+    Records are capped at *limit* characters DURING accumulation: an oversized
+    record yields exactly one truncated line plus one `` [... truncated]``
+    marker, and its remaining bytes are discarded until the next newline.
+    Peak memory is bounded by chunk size + limit regardless of record length.
+
+    Decoding uses an incremental UTF-8 decoder with ``errors="replace"``,
+    matching the previous TextIOWrapper(encoding="utf-8", errors="replace")
+    contract, including multibyte sequences split across chunk boundaries and
+    a trailing record with no final newline. Trailing ``\\r`` characters are
+    stripped per record (CRLF output reads exactly as before).
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    parts: list[str] = []
+    length = 0
+    overflow = False
+    # Completed records waiting to be handed to the caller by the read loop.
+    ready: list[str] = []
+
+    def _emit() -> str:
+        nonlocal parts, length, overflow
+        line = "".join(parts).rstrip("\r")
+        if overflow:
+            line += _OUTPUT_TRUNCATION_MARKER
+        parts = []
+        length = 0
+        overflow = False
+        return line
+
+    def _consume(text: str) -> None:
+        nonlocal length, overflow
+        if overflow:
+            return
+        room = limit - length
+        if room > 0:
+            take = text[:room]
+            parts.append(take)
+            length += len(take)
+        if len(text) > room:
+            overflow = True
+
+    def _frame(text: str) -> None:
+        start = 0
+        while start < len(text):
+            nl = text.find("\n", start)
+            if nl == -1:
+                _consume(text[start:])
+                break
+            _consume(text[start:nl])
+            ready.append(_emit())
+            start = nl + 1
+
+    while True:
+        chunk = stream.read(chunk_bytes)
+        if not chunk:
+            break
+        for i in range(0, len(chunk), _OUTPUT_DECODE_SLICE_BYTES):
+            text = decoder.decode(chunk[i : i + _OUTPUT_DECODE_SLICE_BYTES])
+            if text:
+                _frame(text)
+            while ready:
+                yield ready.pop(0)
+    # EOF: flush any pending partially-decoded bytes, then emit a trailing
+    # record that lacked its final newline (old TextIOWrapper behavior).
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        _frame(tail)
+    while ready:
+        yield ready.pop(0)
+    if parts or overflow:
+        yield _emit()
+
+# PERF-009: live-output arrival is announced through at most one coalesced
+# "agent.output_available" event per root per interval -- never one event per
+# stdout line. The default production path publishes nothing at all: with no
+# subscribers the reader thread builds no payloads, and the UI follows its own
+# single-flight cursor poll instead.
+OUTPUT_NOTIFY_INTERVAL_SECONDS = 0.25
+
+
+class _OutputNotifier:
+    """Coalesces output arrivals into bounded-cadence root notifications.
+
+    ``touch(root)`` is called per line by the reader thread; at most one
+    daemon timer per root is alive at any moment, so a burst of thousands of
+    lines collapses into <= 4 notifications per second for that root. When
+    nothing listens to the coalesced (or legacy per-line) event, ``touch``
+    allocates nothing.
+    """
+
+    def __init__(
+        self,
+        bus=event_bus,
+        interval: float = OUTPUT_NOTIFY_INTERVAL_SECONDS,
+    ) -> None:
+        self._bus = bus
+        self._interval = interval
+        self._lock = threading.Lock()
+        self._timers: dict[str, threading.Timer] = {}
+
+    def touch(self, root: str) -> None:
+        if not self._bus.has_subscribers("agent.output_available"):
+            return
+        with self._lock:
+            if root in self._timers:
+                return
+            t = threading.Timer(self._interval, self._fire, args=(root,))
+            t.daemon = True
+            self._timers[root] = t
+            t.start()
+
+    def _fire(self, root: str) -> None:
+        with self._lock:
+            self._timers.pop(root, None)
+        if self._bus.has_subscribers("agent.output_available"):
+            self._bus.publish("agent.output_available", {"root": root})
+
+    def cancel(self, root: str | None = None) -> None:
+        """Cancel the pending timer for *root* (or all roots)."""
+        with self._lock:
+            keys = [root] if root is not None else list(self._timers)
+            timers = [self._timers.pop(k, None) for k in keys]
+        for t in timers:
+            if t is not None:
+                t.cancel()
+
 
 @dataclass
 class AgentProcess:
@@ -214,6 +361,9 @@ class ProcessManager:
         # reservation is deliberately retained (never released while liveness is
         # unresolved) so a second writer cannot claim a possibly-live project.
         self._stuck_agents: set[str] = set()
+        # PERF-009: coalesced output-availability notifications (no-op unless
+        # something subscribes to "agent.output_available").
+        self._output_notifier = _OutputNotifier()
 
     def _key(self, project_root: str) -> str:
         return canonical_key(project_root)
@@ -289,10 +439,10 @@ class ProcessManager:
                     if engine.supports_stdin
                     else subprocess.DEVNULL,
                     env=env,
-                    text=True,
-                    bufsize=1,  # line-buffered
-                    encoding="utf-8",
-                    errors="replace",
+                    # PERF-008: stdout is read as bounded binary chunks with an
+                    # incremental decoder (see _bounded_output_lines) so an
+                    # oversized record can never materialize in full.
+                    bufsize=0,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 print(
@@ -443,7 +593,10 @@ class ProcessManager:
         with ap._finalize_lock:
             if ap._finalized:
                 return
-            ap._finalized = True
+            # Do NOT mark finalized until process death is proven below.
+            # Setting _finalized here lets kill() and _exit_monitor() race
+            # into a double-finalize; the guard below re-checks after proven
+            # death so only the winning path actually flips the flag.
 
         # Wait for proven death. Give it a reasonable window, but do NOT
         # give up if it takes longer -- instead schedule a background reaper.
@@ -459,6 +612,24 @@ class ProcessManager:
             status = "killed"
         else:
             status = "done" if exit_code == 0 else "failed"
+
+        if exit_code is None:
+            # Death unproven: do NOT finalize, publish, or finish the session.
+            # The caller (kill or _exit_monitor) already set _finalized=True
+            # above only as a speculative guard; re-check and bail out.
+            with ap._finalize_lock:
+                if not ap._finalized:
+                    ap._finalized = True  # claim the slot so no one else finalizes
+            # Schedule a background reaper to wait for proven death before
+            # completing the lifecycle (ownership release, session finish, etc.).
+            _schedule_reaper(self, ap, status)
+            return
+
+        # Proven death: commit the terminal transition.
+        with ap._finalize_lock:
+            if ap._finalized:
+                return
+            ap._finalized = True
 
         with ap._io_lock:
             ap.exit_code = exit_code
@@ -479,6 +650,10 @@ class ProcessManager:
         if ap.run_id:
             self.sessions.finish(ap.run_id, status, exit_code)
 
+        # PERF-009: a pending availability timer for a finalized run is stale
+        # -- cancel it so a dead root never fires a notification afterwards.
+        self._output_notifier.cancel(ap.project_root)
+
         # CORE-004: only release ownership when process death is PROVEN.
         # If returncode is None the OS hasn't reaped the child yet -- we
         # must not release ownership because the agent is still alive and
@@ -491,50 +666,7 @@ class ProcessManager:
             # It must never release while liveness is unresolved: if the kill
             # fails, ownership is retained and the root flagged stuck so a
             # later launch/write for it is refused until it truly dies.
-            reaper_key = self._key(ap.project_root)
-
-            def _delayed_reaper(proc=ap.process, root=ap.project_root, rkey=reaper_key,
-                               kill_intent=ap._kill_intent,
-                               interval=0.5, max_wait=120.0):
-                elapsed = 0.0
-                while elapsed < max_wait:
-                    try:
-                        proc.wait(timeout=interval)
-                    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
-                        pass
-                    if proc.returncode is not None:
-                        with self._lock:
-                            self._stuck_agents.discard(rkey)
-                        self.ownership.release_agent(Path(root))
-                        return
-                    # Still alive. CORE-004: only force-kill when there was an
-                    # explicit kill/shutdown intent. An output-EOF with no kill
-                    # intent must NOT trigger a kill -- the agent is simply
-                    # still working. Without intent we keep waiting for natural
-                    # death and retain ownership so a live agent is never handed
-                    # to a second writer.
-                    if kill_intent:
-                        try:
-                            proc.kill()
-                        except (OSError, subprocess.SubprocessError):
-                            # Kill failed -- cannot prove death. Keep ownership
-                            # and mark stuck; keep polling on the next iter.
-                            with self._lock:
-                                self._stuck_agents.add(rkey)
-                    else:
-                        # No kill intent: do not release ownership of a process
-                        # we cannot prove is dead. Keep it flagged so a later
-                        # launch/write for this root is refused until it dies.
-                        with self._lock:
-                            self._stuck_agents.add(rkey)
-                    elapsed += interval
-                # Exceeded max_wait without proven death: keep the reservation
-                # and leave the stuck flag set rather than releasing a live agent.
-                with self._lock:
-                    self._stuck_agents.add(rkey)
-
-            threading.Thread(target=_delayed_reaper, daemon=True,
-                            name="reaper-" + ap.engine.name).start()
+            _schedule_reaper(self, ap, status)
 
         event_bus.publish(
             "agent.finished",
@@ -570,7 +702,9 @@ class ProcessManager:
             text = text.rstrip("\r\n")
             if not text.strip():
                 return {"ok": False, "error": "input is empty"}
-            ap.process.stdin.write(text + "\n")
+            # PERF-008: stdin is a binary pipe now (unbuffered, matching the
+            # bounded stdout reader); the wire contract stays UTF-8 + "\n".
+            ap.process.stdin.write((text + "\n").encode("utf-8"))
             ap.process.stdin.flush()
         except OSError as exc:
             print(f"SAIPENVIEW: send_input failed: {exc}", file=sys.stderr)
@@ -732,13 +866,9 @@ class ProcessManager:
         self._finalize(ap)
 
     def _read_output(self, ap: AgentProcess) -> None:
-        """Background thread: read stdout line by line, store + publish."""
+        """Background thread: read stdout in bounded records, store + publish."""
         try:
-            for raw_line in ap.process.stdout:
-                line = raw_line.rstrip("\n\r")
-                # W2-010: bound one logical output record in live memory.
-                if len(line) > 65536:
-                    line = line[:65536] + " [... truncated]"
+            for line in _bounded_output_lines(ap.process.stdout):
                 with ap._io_lock:
                     ap.output_lines.append(line)
                     ap._line_count += 1
@@ -747,24 +877,33 @@ class ProcessManager:
                 if ap.run_id:
                     self.sessions.append(ap.run_id, line)
 
-                # Try structured parsing via engine
-                event = ap.engine.parse_event(line)
+                # PERF-009: event work only for real listeners. The default
+                # production path has no "agent.output" subscriber -- the
+                # engine parse + payload dict per line was pure waste there,
+                # and the UI follows its own single-flight cursor poll. A
+                # legacy subscriber still gets the exact per-line payload;
+                # a coalesced listener gets bounded-cadence root notices.
+                if event_bus.has_subscribers("agent.output"):
+                    # Try structured parsing via engine
+                    event = ap.engine.parse_event(line)
 
-                event_bus.publish(
-                    "agent.output",
-                    {
-                        "root": ap.project_root,
-                        "engine": ap.engine.name,
-                        "line": line,
-                        "line_num": ap._line_count,
-                        "event": {
-                            "kind": event.kind,
-                            "text": event.text,
-                        }
-                        if event
-                        else None,
-                    },
-                )
+                    event_bus.publish(
+                        "agent.output",
+                        {
+                            "root": ap.project_root,
+                            "engine": ap.engine.name,
+                            "line": line,
+                            "line_num": ap._line_count,
+                            "event": {
+                                "kind": event.kind,
+                                "text": event.text,
+                            }
+                            if event
+                            else None,
+                        },
+                    )
+                else:
+                    self._output_notifier.touch(ap.project_root)
 
                 # Small yield to prevent this thread from starving others
                 # when agent produces extremely fast output

@@ -21,6 +21,7 @@ from saipenview.protocol_write import (
     escape_pipe,
     get_coordinator,
 )
+from saipenview.tailio import tail_entry_lines
 from saipenview.textio import read_doc
 
 # T-123: `updated` stamps. A valid protocol timestamp is explicit UTC (Z) or
@@ -787,6 +788,13 @@ def load_sub_log_tail(sub_path: Path, max_lines: int = 3) -> list[str]:
     if not log_path.is_file():
         return []
     try:
+        # PERF-007: bounded backward tail -- never reads the whole LOG just
+        # to show the last three entries. Legacy whole-file decode remains
+        # the fallback for BOM'd/UTF-16/pathological files (tailio returns
+        # None) and for files whose entries are sparse beyond the budget.
+        tail = tail_entry_lines(log_path, max_lines)
+        if tail is not None:
+            return tail
         lines = [
             line.strip()
             for line in read_doc(log_path).splitlines()
@@ -1140,7 +1148,7 @@ def collect_outbox_entry(
         outbox_rel = f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md"
     elif legacy_outbox.is_file():
         outbox_path = legacy_outbox
-        outbox_rel = f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md"
+        outbox_rel = f"extensions/subs/{sub_name}/kitchen/OUTBOX.md"
     else:
         return _refuse_dict("TICKET_NOT_FOUND", f"{sub_name} has no OUTBOX.md")
 
@@ -1180,13 +1188,17 @@ def collect_outbox_entry(
                 )
 
             # Boundary: unresolved external changes + canonical recovery debt.
-            from saipenview.external_changes import get_registry
+            from saipenview.external_changes import get_registry, normalize_rel
 
-            outbox_rel = f"extensions/subs/{sub_name}/kitchen/OUTBOX.md"
+            # Registry key is normalized; outbox_rel is the snapshot-identity (canonical or legacy)
+            try:
+                registry_rel = normalize_rel(outbox_rel)
+            except ValueError:
+                registry_rel = outbox_rel
             unresolved = [
                 c
                 for c in get_registry().unresolved(str(root))
-                if c.rel_path != outbox_rel  # the package itself is the subject
+                if c.rel_path != registry_rel  # the package itself is the subject
             ]
             if unresolved:
                 return _refuse_dict(
@@ -1473,11 +1485,10 @@ def _collect_freshness_precheck(root: Path, proof: dict) -> dict | None:
             return _refuse_dict(
                 saio.STALE_FRESHNESS, "role charter changed after the gate; zero writes"
             )
+    # Use proof's immutable outbox_rel when present; fallback to canonical for old proofs
+    outbox_rel_proof = proof.get("outbox_rel") or f".saipen/extensions/subs/{proof.get('sub_name', '')}/kitchen/OUTBOX.md"
     for key, rel in (
-        (
-            "outbox_hash",
-            f".saipen/extensions/subs/{proof.get('sub_name', '')}/kitchen/OUTBOX.md",
-        ),
+        ("outbox_hash", outbox_rel_proof),
         ("state_hash", ".saipen/STATE.md"),
         ("board_hash", ".saipen/BOARD.md"),
         ("log_hash", ".saipen/LOG.md"),
@@ -1497,6 +1508,10 @@ def load_log_tail(root: Path, max_lines: int = 5) -> list[str]:
     if not log_path.is_file():
         return []
     try:
+        # PERF-007: bounded backward tail (see load_sub_log_tail).
+        tail = tail_entry_lines(log_path, max_lines)
+        if tail is not None:
+            return tail
         lines = [
             line.strip()
             for line in read_doc(log_path).splitlines()

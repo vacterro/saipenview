@@ -20,6 +20,7 @@
   "use strict";
 
   var SAI_API_METHODS = [
+    "acknowledge_external_change",
     "add_human_note",
     "browse_folder",
     "clipboard_copy",
@@ -32,6 +33,7 @@
     "get_agent_status",
     "get_agent_transcript",
     "get_autostart_enabled",
+    "get_changed_roots",
     "get_config",
     "get_diff",
     "get_engines",
@@ -140,6 +142,17 @@
         } catch (e) {
           console.error("[SaiApi] saiapiready dispatch failed:", e);
         }
+      },
+
+      /* Capability check: is method supported by current transport? */
+      supports: function (name) {
+        if (SAI_API_METHODS.indexOf(name) === -1) return false;
+        if (!transport) return false;
+        var desktopOnly = ["get_autostart_enabled","set_autostart_enabled","set_hotkeys","set_snap_hotkey","set_always_on_top","set_frameless","open_folder","open_terminal","open_editor","run_command","clipboard_copy","quit","minimize_window","maximize_window","close_window","restore_window","move_by","browse_folder"];
+        try {
+          if (transport.name && transport.name() === "http" && desktopOnly.indexOf(name) !== -1) return false;
+        } catch (e) { /* ignore */ }
+        return true;
       },
 
       /* Generic RPC fallback — `call(method, ...args)`. The named methods

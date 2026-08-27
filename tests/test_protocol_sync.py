@@ -152,23 +152,23 @@ def _taxonomy_read_allowance(src: str) -> frozenset[str]:
 
 
 def _checkbox_sections(src: str) -> dict[str, tuple[str, ...]]:
-    """The checkbox-vs-section pairing from the validator's ticket loop.
+    """The checkbox-vs-section pairing from the engine's ticket lifecycle
+    check (saipen_engine/board.py; the validator delegates to it).
 
     Same shape the protocol writes it in: ' ' -> (TODO, BLOCKED), '/' -> DOING,
-    'x' -> DONE. Extracted mechanically from the three FAIL statements that
+    'x' -> DONE. Extracted mechanically from the three refuse branches that
     own the rule.
     """
     pairs = {
-        "x": re.search(r't\["checkbox"\] == "x" and t\["section"\] != "## DONE"', src),
-        "/": re.search(r't\["checkbox"\] == "/" and t\["section"\] != "## DOING"', src),
+        "x": re.search(r'checkbox == "x" and section != "## DONE"', src),
+        "/": re.search(r'checkbox == "/" and section != "## DOING"', src),
         " ": re.search(
-            r't\["checkbox"\] in \(" ", ""\) and t\["section"\] in '
-            r'\("## DONE", "## DOING"\)',
+            r'checkbox in \(" ", ""\) and section in \("## DONE", "## DOING"\)',
             src,
         ),
     }
     missing = [k for k, m in pairs.items() if m is None]
-    assert not missing, f"checkbox rule for {missing} not found in validator"
+    assert not missing, f"checkbox rule for {missing} not found in board.py"
     return {
         "x": ("DONE",),
         "/": ("DOING",),
@@ -229,8 +229,8 @@ class TestAgainstValidator:
     def test_log_read_taxonomies(self, validator_src):
         assert protocol.LOG_READ_TAXONOMIES == _taxonomy_read_allowance(validator_src)
 
-    def test_checkbox_sections(self, validator_src):
-        assert protocol.CHECKBOX_SECTIONS == _checkbox_sections(validator_src)
+    def test_checkbox_sections(self, engine_src):
+        assert protocol.CHECKBOX_SECTIONS == _checkbox_sections(engine_src["board"])
 
 
 class TestAgainstEngine:
@@ -281,8 +281,10 @@ class TestAgainstValidatorNested:
         assert set(protocol.WAIT_CATEGORIES) == set(canon)
 
     def test_next_action_prefixes(self, validator_src):
-        canon = _nested_literal(validator_src, "executable_prefixes")
-        assert canon is not None, "executable_prefixes not found in validator"
+        canon = _literal(validator_src, "EXECUTABLE_PREFIXES") or _nested_literal(
+            validator_src, "executable_prefixes"
+        )
+        assert canon is not None, "executable prefixes not found in validator"
         assert set(protocol.NEXT_ACTION_PREFIXES) == set(canon)
 
     def test_goal_caps(self, validator_src):

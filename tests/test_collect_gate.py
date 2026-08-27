@@ -233,4 +233,4 @@ class TestGateAgreementWithCanonicalValidator:
         assert ok is False and kind == "incomplete"
 
         out = _run_canonical_validate(root, home, ["--gate", "collect:saihunt"])
-        assert "**verified:**" in out, out
+        assert "missing verified" in out, out

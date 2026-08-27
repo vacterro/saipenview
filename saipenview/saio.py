@@ -133,6 +133,15 @@ def _load_codec_from(home: Path):
     """Load the canonical codec directly from a known home path (no root
     resolution needed -- used to re-encode bytes in a project whose STATE is
     not yet writable)."""
+    # W2-002: check multi-home BEFORE mutating sys.path to prevent contamination
+    key = str(home)
+    if _ENGINE_CACHE:
+        existing_key = next(iter(_ENGINE_CACHE.keys()))
+        if existing_key.lower() != key.lower():
+            raise SaioUnavailable(
+                f"MULTI-HOME CONTAMINATION BLOCKED: engine already loaded from "
+                f"{existing_key}. Cannot load codec from distinct home {key}."
+            )
     tools = str(home / "tools")
     if tools not in sys.path:
         sys.path.insert(0, tools)
@@ -567,16 +576,8 @@ def _load_freshness_from(home: Path):
     """
     import importlib as _il
 
-    tools = str(home / "tools")
-    if tools not in sys.path:
-        sys.path.insert(0, tools)
+    # W2-002: check multi-home BEFORE mutating sys.path
     key = str(home)
-    cached = _ENGINE_CACHE.get(key)
-    if cached is not None and "_freshness_only" in cached:
-        return cached["_freshness_only"]
-    # CORE-008: refuse a second distinct home. Python's sys.modules is global
-    # by module name -- loading freshness from two different homes means the
-    # second load gets the FIRST home's cached module, not the second's code.
     if _ENGINE_CACHE:
         existing_key = next(iter(_ENGINE_CACHE.keys()))
         if existing_key.lower() != key.lower():
@@ -585,6 +586,12 @@ def _load_freshness_from(home: Path):
                 f"{existing_key}. Cannot load from distinct home {key} because "
                 f"Python sys.modules is global by name."
             )
+    tools = str(home / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    cached = _ENGINE_CACHE.get(key)
+    if cached is not None and "_freshness_only" in cached:
+        return cached["_freshness_only"]
     # Load into a private slot, never a partial engine cache: engine() checks
     # for a COMPLETE module set, so a half-built cache can never leak out.
     mod = _il.import_module("freshness")

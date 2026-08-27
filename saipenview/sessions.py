@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from saipenview.config import config_path
+from saipenview.tailio import tail_raw_lines
 
 # Transcripts are kept per project, oldest pruned past this. 50 runs is enough
 # to answer "what did it do last night" without turning _data/ into a landfill.
@@ -296,6 +297,37 @@ class SessionStore:
     def transcript(self, run_id: str, max_lines: int = 2000) -> dict:
         """The last ``max_lines`` lines of one run's transcript."""
         path = self._dir / f"{_RUN_ID_SAFE.sub('-', run_id)}.log"
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return {"lines": [], "total": 0, "found": False}
+        # PERF-007: bounded backward tail for UTF-8 transcripts. A finished
+        # run's metadata line_count is the authoritative total; without it the
+        # exact total is only known when the backward walk reached the start
+        # of the file. Everything else falls back to the legacy whole-file
+        # read, so results stay byte-identical in every corner case.
+        meta = self._read_meta(self._dir / f"{_RUN_ID_SAFE.sub('-', run_id)}.json")
+        authoritative_total = (
+            meta.line_count if meta is not None and meta.finished_at else None
+        )
+        if size > 0:
+            tail = tail_raw_lines(path, max_lines)
+            if tail is not None:
+                lines, reached_bof = tail
+                if reached_bof and len(lines) < max_lines:
+                    # The whole file fit in the window.
+                    return {"lines": lines, "total": len(lines), "found": True}
+                if authoritative_total is not None and authoritative_total >= len(
+                    lines
+                ):
+                    return {
+                        "lines": lines,
+                        "total": authoritative_total,
+                        "found": True,
+                    }
+        elif authoritative_total is None:
+            # Empty log, no trusted counter -- identical to the legacy result.
+            return {"lines": [], "total": 0, "found": True}
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

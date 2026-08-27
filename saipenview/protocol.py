@@ -22,7 +22,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.223.12"
+BASELINE_VERSION = "7.231.3"
 
 # CORE § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.
@@ -111,6 +111,7 @@ SAIPEN_COMMANDS: frozenset[str] = frozenset(
         "prepare",
         "collect",
         "ship",
+        "push",
         "validate",
         "test",
         "crew",
@@ -119,6 +120,12 @@ SAIPEN_COMMANDS: frozenset[str] = frozenset(
         "sub",
         "userperson",
         "improve",
+        "runtime",
+        "build",
+        "focus",
+        "source",
+        "cut",
+        "undo",
     }
 )
 
@@ -182,6 +189,7 @@ TICKET_FIELDS: frozenset[str] = frozenset(
         "source_reports",
         "recurrence",
         "weak_model",
+        "source_receipts",
     }
 )
 

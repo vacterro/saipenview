@@ -1,0 +1,6 @@
+# Validator runtime residue, never part of the tracked snapshot shape.
+# The canonical validator writes conformance receipts into the project's
+# own .saipen/recovery/ while validating the fixture (test_conformance_legacy),
+# which otherwise pollutes the source tree fingerprint and FAILs the
+# persistence-contract test. The snapshot shape is STATE/BOARD/LOG only.
+recovery/

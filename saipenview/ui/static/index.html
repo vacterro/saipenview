@@ -22,7 +22,6 @@
     <span id="scanIndicator" class="scan-indicator" style="display:none;" data-i18n-title="toolbar.scanIndicator.title" title="Scanning">SCAN</span>
     <div id="scanProgressWrap" class="progress-wrap" style="display:none;"><div id="scanProgressFill" class="progress-fill" style="width:0%"></div></div>
     <span id="status" data-i18n-title="toolbar.scanning.title" title="Scan status">scanning...</span>
-    <span id="errorBadge" class="error-badge" style="display:none;cursor:pointer;" data-i18n-title="toolbar.errorBadge.title" title="Click for scan errors">!</span>
     <span id="wtBadge" class="wt-badge" style="display:none;cursor:pointer;" data-i18n-title="toolbar.wtBadge.title" title="Linked git worktrees (no .saipen/)">WT</span>
     <span id="runningAgentsBadge" class="running-agents-badge" style="display:none;cursor:pointer;" title="Running agents">🤖 0</span>
     <input type="text" id="excludeInput" class="exclude-input" data-i18n-placeholder="toolbar.exclude.placeholder" data-i18n-title="toolbar.exclude.title" placeholder="exclude..." title="Comma-separated dirs to skip" style="width:60px;" />
@@ -61,11 +60,6 @@
     <button id="closeBtn" data-i18n-title="toolbar.close.title" title="Close to tray (SAIPENVIEW keeps running)">×</button>
     <button id="quitBtn" class="quit-btn" data-i18n="toolbar.quit.text" data-i18n-title="toolbar.quit.title" title="Exit SAIPENVIEW (stays in tray on close)">Exit</button>
   </div>
-</div>
-<div id="collapseHint" class="collapse-hint" style="display:none;">
-  <span data-i18n="collapseHint.text">Alt+D to uncollapse</span>
-  <button id="hintGotIt" data-i18n-value="collapseHint.gotIt" style="font-size:9px; padding:0 4px; height:16px; line-height:12px;">Got it</button>
-  <button id="hintDismiss" style="font-size:9px; padding:0 3px; height:16px; line-height:12px; min-width:unset;" data-i18n-title="collapseHint.dismiss.title" title="Dismiss, show next time">✕</button>
 </div>
 <div id="settingsModal" class="modal-overlay" style="display:none;">
   <div class="modal-box raised">

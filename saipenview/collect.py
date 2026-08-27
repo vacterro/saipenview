@@ -284,21 +284,26 @@ def check_package(
             {},
         )
 
+    # OUTBOX identity: canonical preferred, legacy fallback -- same resolution as parser
+    canonical_outbox = root / ".saipen" / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
+    legacy_outbox = root / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
+    if canonical_outbox.is_file():
+        outbox_hash = _hash_of(canonical_outbox)
+        outbox_rel = f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md"
+    elif legacy_outbox.is_file():
+        outbox_hash = _hash_of(legacy_outbox)
+        outbox_rel = f"extensions/subs/{sub_name}/kitchen/OUTBOX.md"
+    else:
+        outbox_hash = ""
+        outbox_rel = f".saipen/extensions/subs/{sub_name}/kitchen/OUTBOX.md"
     proof = {
         "source_head": head,
         "source_tree_fingerprint": fp,
         "role_revision": rr,
         "sub_name": sub_name,
         "entry_id": entry.entry_id,
-        "outbox_hash": _hash_of(
-            root
-            / ".saipen"
-            / "extensions"
-            / "subs"
-            / sub_name
-            / "kitchen"
-            / "OUTBOX.md"
-        ),
+        "outbox_hash": outbox_hash,
+        "outbox_rel": outbox_rel,
         "state_hash": _hash_of(root / ".saipen" / "STATE.md"),
         "board_hash": _hash_of(root / ".saipen" / "BOARD.md"),
         "log_hash": _hash_of(root / ".saipen" / "LOG.md"),

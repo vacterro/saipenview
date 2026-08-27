@@ -241,6 +241,7 @@ def _walk_with_depth_limit(
     extra_excludes: set[str] | None = None,
     *,
     collect_worktrees: bool = False,
+    cancel: threading.Event | None = None,
 ):
     """Walk a scan root, yielding discovered project Paths.
 
@@ -248,12 +249,18 @@ def _walk_with_depth_limit(
     records during the same traversal so callers never need a second walk.
     Yields either a Path (project) or a dict (worktree record) depending on
     *collect_worktrees*.
+
+    PERF-006: when *cancel* is set the walk stops cooperatively -- checked
+    before every directory descent -- instead of grinding through a wedged
+    drive after its owner is gone.
     """
     combined = EXCLUDE_DIRS | (extra_excludes or set())
     dir_count = 0
     for dirpath, dirnames, _filenames in os.walk(
         root_path, topdown=True, onerror=lambda e: None
     ):
+        if cancel is not None and cancel.is_set():
+            return
         rel = Path(dirpath).relative_to(root_path)
         depth = len(rel.parts) if str(rel) != "." else 0
         if depth >= max_depth:
@@ -307,12 +314,17 @@ def find_saipen_roots(
     max_depth: int = MAX_SCAN_DEPTH,
     delay: float = SCAN_INTER_DIR_DELAY,
     extra_excludes: set[str] | None = None,
+    cancel: threading.Event | None = None,
 ) -> Iterator[Path]:
     for root in scan_roots:
+        if cancel is not None and cancel.is_set():
+            return
         root_path = Path(root)
         if not root_path.exists() or not root_path.is_dir():
             continue
-        yield from _walk_with_depth_limit(root_path, max_depth, delay, extra_excludes)
+        yield from _walk_with_depth_limit(
+            root_path, max_depth, delay, extra_excludes, cancel=cancel
+        )
 
 
 PER_ROOT_TIMEOUT_SECONDS = 120
@@ -325,11 +337,12 @@ def _scan_one_root(
     extra_excludes: set[str] | None = None,
     *,
     collect_worktrees: bool = False,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[ProjectStatus], list[dict]]:
     """Walk one scan root.
 
     PERF-003: returns (projects, worktrees) in a single traversal when
-    *collect_worktrees* is True.
+    *collect_worktrees* is True. PERF-006: stops early when *cancel* is set.
     """
     projects: list[ProjectStatus] = []
     worktrees: list[dict] = []
@@ -339,6 +352,7 @@ def _scan_one_root(
     for item in _walk_with_depth_limit(
         root_path, max_depth, delay, extra_excludes,
         collect_worktrees=collect_worktrees,
+        cancel=cancel,
     ):
         if isinstance(item, dict):
             worktrees.append(item)
@@ -363,7 +377,11 @@ def _auto_roots() -> list[str]:
 
 
 def _scan_worker(
-    root: str, max_depth: int, delay: float, extra_excludes: set[str] | None
+    root: str,
+    max_depth: int,
+    delay: float,
+    extra_excludes: set[str] | None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[ProjectStatus], list[dict]]:
     # CORE-005: the in-flight reservation is now taken atomically in scan()
     # (before worker submission), so the worker only RELEASES it. This avoids
@@ -371,9 +389,16 @@ def _scan_worker(
     # "owned by another scan" the only skip reason.
     ckey = canonical_key(root)
     try:
+        # PERF-006: a worker whose cancellation fired before it started must
+        # not begin any filesystem work -- it still releases its reservation.
+        if cancel is not None and cancel.is_set():
+            with _progress_lock:
+                _scan_progress["roots_done"] += 1
+            return [], []
         _set_scan_progress(root=root)
         projects, worktrees = _scan_one_root(
-            root, max_depth, delay, extra_excludes, collect_worktrees=True
+            root, max_depth, delay, extra_excludes,
+            collect_worktrees=True, cancel=cancel,
         )
         return projects, worktrees
     finally:
@@ -381,7 +406,7 @@ def _scan_worker(
             _inflight_roots.pop(ckey, None)
         with _progress_lock:
             _scan_progress["roots_done"] += 1
-            total = _scan_progress.get("roots_total", 1)
+            total = _scan_progress.get("roots_total", 1) or 1
             _scan_progress["pct"] = min(99, int(_scan_progress["roots_done"] * 100 / total))
 
 
@@ -441,9 +466,26 @@ def scan(
     projects: list[ProjectStatus] = []
     all_worktrees: list[dict] = []
     complete = True
+    # PERF-006: one cooperative cancellation event per scan() invocation.
+    # Workers check it before every directory descent; the timeout paths set
+    # it so running walks unwind promptly instead of grinding on after their
+    # owner is gone (ThreadPoolExecutor workers are NOT daemon threads).
+    internal_cancel = threading.Event()
+    if cancel is not None:
+        # Honor either the caller's event or this scan's own timeout path.
+        class _EitherEvent:
+            def is_set(self) -> bool:
+                return cancel.is_set() or internal_cancel.is_set()
+
+            def set(self) -> None:
+                internal_cancel.set()
+
+        both_cancel = _EitherEvent()  # type: ignore[assignment]
+    else:
+        both_cancel = internal_cancel
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(roots), 32))
     futures = {
-        pool.submit(_scan_worker, root, max_depth, delay, extra_excludes): root
+        pool.submit(_scan_worker, root, max_depth, delay, extra_excludes, both_cancel): root
         for root in roots
     }
     try:
@@ -469,15 +511,21 @@ def scan(
     pending = [f for f in futures if not f.done()]
     if pending:
         complete = False
-        # A root that blew the overall timeout is abandoned, but its worker
-        # thread is still alive (daemon). Give it a bounded grace window so a
-        # mid-run git subprocess can't leave a dead _readerthread at process
-        # exit (T-179 / Bad file descriptor shutdown crash).
+        # PERF-006: tell still-running workers to stop cooperatively, drop any
+        # queued-but-not-started work, then keep a bounded grace window so a
+        # mid-run git subprocess can't leave a dead reader thread at process
+        # exit (T-179). Cancellation must never publish partial data as
+        # authoritative -- `complete` above already stays False. Only the
+        # INTERNAL event is set here; a caller's cancel Event is never ours
+        # to mutate.
+        internal_cancel.set()
+        pool.shutdown(wait=False, cancel_futures=True)
         concurrent.futures.wait(pending, timeout=30)
+    else:
+        pool.shutdown(wait=False)
     _set_scan_progress(
         pct=100, root="", roots_done=_scan_progress.get("roots_total", 0)
     )
-    pool.shutdown(wait=False)
     seen = set()
     deduped = []
     for p in projects:
@@ -546,13 +594,20 @@ class BackgroundScanner:
             max_depth=self._max_depth,
             delay=self._delay,
             extra_excludes=self._extra_excludes,
+            # PERF-006: the scanner's stop event IS the cooperative walk
+            # cancellation -- stop() must actually stop filesystem work.
+            cancel=self._stop_event,
         )
         # CORE-010: re-check stop + generation AFTER scan completes.
         if self._stop_event.is_set() or not _is_gen_current(self._gen):
             return
-        # Pass both projects list and complete flag for backward compat
-        # with callbacks that accept (projects, complete=False).
-        self._on_result(result.projects, complete=result.complete)
+        # PERF-001: pass the worktree list alongside the projects so the
+        # consumer can skip its own second walk. Backward-compatible: the
+        # worktrees travel as a keyword, and a ScanOutcome-aware consumer (the
+        # Api cache) also receives them inside the projects object.
+        self._on_result(
+            result.projects, complete=result.complete, worktrees=result.worktrees
+        )
 
     def _loop(self) -> None:
         while not self._stop_event.is_set():
@@ -570,8 +625,19 @@ class BackgroundScanner:
             self._stop_event.wait(self._interval)
 
     def start(self) -> None:
-        if self._thread is not None:
-            return
+        t = self._thread
+        if t is not None:
+            if not t.is_alive():
+                self._thread = None  # a finished old generation, safe to reuse
+            else:
+                # PERF-006: the previous coordinator still owns live work and
+                # root reservations. Give it a bounded moment to unwind after
+                # its generation was invalidated; never stack a second loop on
+                # top of it while it lives.
+                t.join(timeout=2)
+                if t.is_alive():
+                    return
+                self._thread = None
         self._stop_event.clear()
         # CORE-010: acquire a fresh epoch on start so a previously-stopped
         # scanner's old generation can never match the current one.
@@ -592,4 +658,16 @@ class BackgroundScanner:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=1)
-            self._thread = None
+            if not self._thread.is_alive():
+                self._thread = None
+            # else: keep the reference. The thread still owns live walk work
+            # and inflight root reservations (PERF-006); advertising it gone
+            # would let a replacement scan collide with the very reservations
+            # this worker has not released yet. start()/stop() remain correct:
+            # the stale thread exits via its generation check and the next
+            # start() reaps the reference.
+
+    def is_alive(self) -> bool:
+        """True when the coordinator thread exists and has not exited."""
+        t = self._thread
+        return t is not None and t.is_alive()

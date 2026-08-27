@@ -56,7 +56,7 @@ def _project(tmp_path, tail="---\n"):
         "---\nschema_version: 3\nphase: DONE\ntransition_from: SHIP\n"
         'task: none\nnext_action: "saipen continue"\nblocker: none\n'
         "agent: testseat\nsaipen_version: 7\n"
-        f"saipen_home: '{home}'\n"
+        f"saipen_home: {home}\n"
         "mode: full\nexecution_intent: normal\n"
         "updated: 2026-08-01T00:00:00Z\nlast_event: 2\n"
         "style_contract: ded-4ae736e4\n---\n",

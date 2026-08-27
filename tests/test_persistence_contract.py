@@ -41,15 +41,20 @@ class TestPersistenceContract:
     def test_no_saipen_files_tracked(self):
         r = _git("ls-files")
         tracked = r.stdout.splitlines()
-        # The own-`.saipen` CI snapshot is the ONE deliberate tracked exception
-        # (repair mission P1): CI validates a sanitized, mechanically-generated
-        # fixture because the live memory is gitignored. Everything else under
-        # .saipen/ must stay untracked.
+        # Two deliberate tracked exceptions: the own-`.saipen` CI snapshot
+        # (repair mission P1, CI validates a sanitized mechanically-generated
+        # fixture because the live memory is gitignored) and the project
+        # lineage carrier `.saipen/IDENTITY.md` (CORE-004 -- the canonical
+        # validator FAILs when the lineage identity is untracked, and the
+        # IDENTITY carrier carries no machine-local path). Everything else
+        # under .saipen/ must stay untracked.
+        _IDENTITY_EXCEPTION = ".saipen/IDENTITY.md"
         banned = [
             p
             for p in tracked
             if ("/.saipen/" in p or p.startswith(".saipen"))
             and not p.startswith("tests/fixtures/own_saipen_snapshot/")
+            and p != _IDENTITY_EXCEPTION
         ]
         assert not banned, "canonical memory must not be tracked raw (machine paths)"
         snapshot = [

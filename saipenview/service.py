@@ -42,6 +42,8 @@ ALLOWED_RPC_METHODS: frozenset[str] = frozenset(
         # project scanning / discovery
         "get_projects",
         "refresh_known",
+        "get_changed_roots",
+        "acknowledge_external_change",
         "rescan",
         "get_status",
         "get_scan_progress",

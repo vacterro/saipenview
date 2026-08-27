@@ -49,12 +49,19 @@ class _SaipenEventHandler(FileSystemEventHandler):
         self._maybe_event(event)
 
     def on_moved(self, event) -> None:
-        # The destination path is the file that now exists and carries the
-        # change; a temp-file rename (write_doc's os.replace) lands here.
-        dest = getattr(event, "dest_path", None)
-        if not dest or event.is_directory:
+        # W2-009: inspect BOTH endpoints independently. A move-away
+        # (STATE.md -> STATE.bak) only appears on src_path; a temp-file rename
+        # (tmp -> STATE.md) only on dest_path. Either way the tracked file's
+        # protocol state moved and the Api must re-read it. Debounce keys by
+        # filename, so a same-name replace collapses to one event naturally.
+        if event.is_directory:
             return
-        self._maybe_path(dest)
+        src = getattr(event, "src_path", None)
+        dest = getattr(event, "dest_path", None)
+        if src:
+            self._maybe_path(src)
+        if dest:
+            self._maybe_path(dest)
 
     def _maybe_event(self, event) -> None:
         if event.is_directory:
@@ -129,7 +136,14 @@ class SaipenWatcher:
                 self.watch(root)
 
     def watch(self, root: str) -> None:
-        """Watch one project's .saipen/ dir (no-op if absent or already watched)."""
+        """Watch one project's .saipen/ dir (no-op if absent or already watched).
+
+        PERF-002: recursive=True so SubSaipen/translate protocol sources under
+        ``.saipen/extensions/subs/<name>/`` events also reach the per-project
+        handler. The handler already filters by tracked filename, so a
+        recursive watch costs only a few extra OS inotify-style entries per
+        project, not extra publishes.
+        """
         saipen_dir = Path(root) / ".saipen"
         if not saipen_dir.is_dir():
             return
@@ -139,7 +153,7 @@ class SaipenWatcher:
             try:
                 handler = _SaipenEventHandler(root, debounce_delay=self._debounce_delay)
                 watch = self._observer.schedule(
-                    handler, str(saipen_dir), recursive=False
+                    handler, str(saipen_dir), recursive=True
                 )
                 self._watches[root] = watch
                 self._handlers[root] = handler
@@ -176,7 +190,6 @@ class SaipenWatcher:
             self._watches.clear()
         try:
             self._observer.stop()
-            self._observer.join(timeout=5)
-        except RuntimeError:
-            # Observer already stopped or never started.
+            self._observer.join(timeout=0.5)
+        except (RuntimeError, OSError):
             pass
