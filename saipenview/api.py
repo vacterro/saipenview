@@ -362,8 +362,17 @@ class Api:
         # Exact files observed to change per root with immediate origin attribution:
         # root -> {fname: origin}
         self._root_refresh_files: dict[str, dict[str, str]] = {}
+        # W2-011: lifecycle generation. Incremented in stop() BEFORE unsubscribe
+        # and timer cancellation so any callback already captured by EventBus
+        # publish's snapshot sees a stale generation and aborts before scheduling
+        # new refresh work or touching the window.
+        self._stop_gen = 0
 
     def _on_file_changed(self, data: dict) -> None:
+        # W2-011: capture generation at entry; if stop() ran concurrently this
+        # callback may still be invoked from an EventBus snapshot. The check in
+        # _do_root_refresh is the hard gate; this captures intent early.
+        gen = self._stop_gen
         root = data["root"]
         changed_file = data.get("file")
         origin = "external"
@@ -410,15 +419,19 @@ class Api:
             if self._debounce_delay <= 0:
                 should_run_now = True
             else:
-                timer = threading.Timer(self._debounce_delay, self._do_root_refresh, args=(root,))
+                timer = threading.Timer(self._debounce_delay, self._do_root_refresh, args=(root, gen))
                 timer.daemon = True
                 self._root_refresh_timers[root] = timer
                 timer.start()
 
         if should_run_now:
-            self._do_root_refresh(root)
+            self._do_root_refresh(root, gen)
 
-    def _do_root_refresh(self, root: str) -> None:
+    def _do_root_refresh(self, root: str, gen: int) -> None:
+        # W2-011: generation gate. If stop() incremented _stop_gen after this
+        # timer was scheduled, abort immediately — no cache mutation, no JS push.
+        if self._stop_gen != gen:
+            return
         """T-542: single coalesced refresh per root from debounced timer.
 
         Re-parses the project once, updates cache once, then pushes JS notifications
@@ -1775,6 +1788,12 @@ class Api:
             self.background_scanner.start()
 
     def stop(self) -> None:
+        # W2-011: bump generation BEFORE cancelling timers or unsubscribing.
+        # EventBus.publish snapshots callbacks under lock then invokes them
+        # outside the lock; a callback captured before this call may still run
+        # and schedule new work. The generation gate in _do_root_refresh kills
+        # that work regardless of unsubscribe/timer-cancellation ordering.
+        self._stop_gen += 1
         self._process_manager.stop_all()
         self.background_scanner.stop()
         self._watcher.stop()
