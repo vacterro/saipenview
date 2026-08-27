@@ -115,8 +115,37 @@ def update_state(root: Path, updates: dict[str, str]) -> dict:
     the plan's precondition is that read's hash, revalidated by the canonical
     journal under the OS writer lock before commit. Returns the normalized
     mutation result contract.
+
+    W2-021: only explicitly allowlisted keys are written; values must be
+    single-line scalars (no embedded newlines or pipe chars). This prevents
+    malicious RPC payloads from manufacturing extra frontmatter fields or
+    breaking the YAML-like parser.
     """
     import datetime
+
+    # W2-021: explicit writable-field allowlist. Anything not on this list is
+    # silently dropped, never written, never errors the caller with a noisy
+    # "unknown field" message that could leak implementation details.
+    _STATE_FIELD_ALLOWLIST = frozenset({
+        "phase", "task", "next_action", "blocker", "agent",
+        "saipen_version", "schema_version", "last_event",
+        "style_contract", "saipen_home", "mode", "updated",
+        "transition_from", "execution_intent", "converge_target",
+        "attempt", "human_note",
+    })
+
+    # W2-021: sanitize keys and values. Strip unsafe content.
+    sanitized: dict[str, str] = {}
+    for k, v in updates.items():
+        safe_key = k.strip()
+        if not safe_key or "\n" in safe_key or "|" in safe_key:
+            continue  # drop malformed keys
+        if safe_key not in _STATE_FIELD_ALLOWLIST:
+            continue  # drop unknown fields silently
+        safe_val = str(v).replace("\n", " ").replace("|", "\\|")[:200]
+        sanitized[safe_key] = safe_val
+    if not sanitized:
+        return _refuse_dict("VALIDATION_FAILED", "no writable fields in updates")
 
     state_path = root / ".saipen" / "STATE.md"
     if not state_path.is_file():
@@ -141,20 +170,20 @@ def update_state(root: Path, updates: dict[str, str]) -> dict:
                 continue
             key, _, _ = line.partition(":")
             k = key.strip()
-            if k in updates:
-                new_lines.append(f"{k}: {updates[k]}")
+            if k in sanitized:
+                new_lines.append(f"{k}: {sanitized[k]}")
                 updated_keys.add(k)
             else:
                 new_lines.append(line)
 
-        for k, v in updates.items():
+        for k, v in sanitized.items():
             if k not in updated_keys:
                 new_lines.append(f"{k}: {v}")
 
         now_str = datetime.datetime.now(datetime.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
-        if "updated" not in updates:
+        if "updated" not in sanitized:
             found = False
             for i, line in enumerate(new_lines):
                 if line.startswith("updated:"):
