@@ -1452,8 +1452,25 @@ def _hash_rel(root: Path, rel: str) -> str:
 def _collect_freshness_precheck(root: Path, proof: dict) -> dict | None:
     """Commit-time freshness proof revalidation (runs under the canonical
     writer lock, immediately before the journal is PREPARED). Any moved input
-    of the proof => STALE_FRESHNESS, zero writes."""
+    of the proof => STALE_FRESHNESS, zero writes.
+
+    W2-013: also re-check the external-change registry here — the initial
+    BOUNDARY gate in collect_outbox_entry runs OUTSIDE the writer lock, so a
+    new unresolved external event recorded between gate and apply would slip
+    through if we only validated file hashes and source identity.
+    """
     from saipenview import collect as collect_gate
+    from saipenview.external_changes import get_registry
+
+    # W2-013: re-validate boundary under writer lock. New external evidence
+    # arriving between the initial gate and this point must block the commit.
+    unresolved = get_registry().unresolved(str(root))
+    if unresolved:
+        return _refuse_dict(
+            saio.BOUNDARY_VIOLATION,
+            "unexplained external change(s) appeared after the gate; collect refused: "
+            + "; ".join(c.rel_path for c in unresolved[:5]),
+        )
 
     try:
         identity = collect_gate.compute_source_identity(root)
