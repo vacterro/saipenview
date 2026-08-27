@@ -1569,8 +1569,14 @@ function renderDetailPane(detail) {
             // pending array will be empty after refresh; keep compatibility
             unrecordedChangeRoot = null;
           }
-          showToast("Recorded as " + (res.ticket_id || "ticket"), "success");
-          window.SaiApi.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
+           showToast("Recorded as " + (res.ticket_id || "ticket"), "success");
+           // W2-020: guard detail repaint against late completion on stale root.
+           // A mutation on project A while B is selected must not repaint B's detail.
+           const mwGen = _detailGen, mwRoot = selectedRoot;
+           window.SaiApi.get_project_detail(detail.root).then((d) => {
+             if (_detailGen !== mwGen || selectedRoot !== mwRoot) return;
+             if (d) renderDetailPane(d);
+           });
         } else {
           showToast("Record failed: " + ((res && (res.error || res.message)) || "unknown"), "error");
           // Failed record must not clear pending -- leave bar intact
@@ -1594,10 +1600,20 @@ function renderDetailPane(detail) {
       fn(...args).then((res) => {
         if (res && res.ok) {
           showToast("Acknowledged " + p, "success");
-          window.SaiApi.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
+          // W2-020: guard detail repaint against late completion on stale root.
+          const mwGen = _detailGen, mwRoot = selectedRoot;
+          window.SaiApi.get_project_detail(detail.root).then((d) => {
+            if (_detailGen !== mwGen || selectedRoot !== mwRoot) return;
+            if (d) renderDetailPane(d);
+          });
         } else {
           showToast("Ack failed (stale token?)", "error");
-          window.SaiApi.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
+          // Same guard for error path.
+          const mwGen2 = _detailGen, mwRoot2 = selectedRoot;
+          window.SaiApi.get_project_detail(detail.root).then((d) => {
+            if (_detailGen !== mwGen2 || selectedRoot !== mwRoot2) return;
+            if (d) renderDetailPane(d);
+          });
         }
       }).catch(() => showToast("Ack failed", "error"));
     });
