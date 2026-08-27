@@ -465,7 +465,10 @@ def scan(
     _set_scan_progress(pct=0, root="", roots_done=0, roots_total=len(roots))
     projects: list[ProjectStatus] = []
     all_worktrees: list[dict] = []
-    complete = True
+    # CORE-004: if any roots were skipped (owned by another scan), the result
+    # is inherently incomplete -- we never saw those projects, so marking
+    # complete=True would let callers treat partial data as authoritative.
+    complete = skipped > 0
     # PERF-006: one cooperative cancellation event per scan() invocation.
     # Workers check it before every directory descent; the timeout paths set
     # it so running walks unwind promptly instead of grinding on after their
