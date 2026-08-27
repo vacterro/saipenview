@@ -589,6 +589,11 @@ class BackgroundScanner:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._gen = _next_gen()
+        # W2-007: records whether stop() could not cleanly release the thread.
+        # start() must not treat a still-alive stale thread as a reason to bail
+        # when a restart was explicitly requested -- the old thread will exit
+        # on its next generation check and the new one takes over immediately.
+        self._restart_pending = False
 
     def _do_scan(self) -> None:
         """Run one scan cycle, publishing results only if the epoch is still current."""
@@ -639,7 +644,16 @@ class BackgroundScanner:
                 # top of it while it lives.
                 t.join(timeout=2)
                 if t.is_alive():
-                    return
+                    # W2-007: a clean stop was requested (restart_pending) but
+                    # the old worker has not exited within the grace window.
+                    # Do NOT discard the restart intent -- the old thread will
+                    # exit on its next iteration once its generation check fails.
+                    # Start the new one immediately; the old one is now a
+                    # no-op daemon that will terminate on its own.
+                    if self._restart_pending:
+                        self._restart_pending = False
+                    else:
+                        return  # not a restart: respect the alive-boundary guard
                 self._thread = None
         self._stop_event.clear()
         # CORE-010: acquire a fresh epoch on start so a previously-stopped
@@ -663,6 +677,12 @@ class BackgroundScanner:
             self._thread.join(timeout=1)
             if not self._thread.is_alive():
                 self._thread = None
+            else:
+                # W2-007: mark that a restart was requested but the old worker
+                # is still alive (blocked scan, slow IO). start() must not drop
+                # this intent -- it will clear the flag and launch a new worker
+                # even if the old one is still running for a few more seconds.
+                self._restart_pending = True
             # else: keep the reference. The thread still owns live walk work
             # and inflight root reservations (PERF-006); advertising it gone
             # would let a replacement scan collide with the very reservations
