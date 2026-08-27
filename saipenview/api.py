@@ -964,7 +964,7 @@ class Api:
 
     def set_locale(self, code: str) -> dict:
         """Set the UI locale. Returns updated config."""
-        self._config["locale"] = code
+        self._mutate_config(lambda cfg: cfg.__setitem__("locale", code))
         save_config(self._config)
         return self.get_config()
 
@@ -986,12 +986,23 @@ class Api:
         """Persist the chosen palette and return the tokens to apply now."""
         resolved, tokens = themes.resolve(slug)
         if resolved:
-            self._config["theme"] = resolved
+            self._mutate_config(lambda cfg: cfg.__setitem__("theme", resolved))
             save_config(self._config)
         return {"slug": resolved, "tokens": tokens}
 
     def get_config(self) -> dict:
         return dict(self._config)
+
+    def _mutate_config(self, fn) -> None:
+        """Atomically mutate self._config under self._lock.
+
+        CORE-008: every config setter must go through this helper so that
+        concurrent mutations cannot interleave and lose updates. *fn* receives
+        the live dict and may mutate it in-place; save_config is called by the
+        caller after this method returns.
+        """
+        with self._lock:
+            fn(self._config)
 
     def save_view_config(self, settings: dict) -> dict:
         # CORE-015: runtime and persisted state must be identical. Build the
@@ -1064,7 +1075,7 @@ class Api:
                     "error": f"engine '{engine_name}': {err}",
                     "invalid_key": engine_name,
                 }
-        self._config["engine_overrides"] = dict(overrides)
+        self._mutate_config(lambda cfg: cfg.__setitem__("engine_overrides", dict(overrides)))
         save_config(self._config)
         return {"ok": True, "config": self.get_config()}
 
@@ -1074,7 +1085,7 @@ class Api:
             pinned.remove(root_str)
         else:
             pinned.append(root_str)
-        self._config["pinned_roots"] = pinned
+        self._mutate_config(lambda cfg: cfg.__setitem__("pinned_roots", pinned))
         save_config(self._config)
         with self._lock:
             for p in self._projects:
@@ -1088,7 +1099,7 @@ class Api:
         hidden = list(self._config.get("hidden_roots") or [])
         if root_str not in hidden:
             hidden.append(root_str)
-        self._config["hidden_roots"] = hidden
+        self._mutate_config(lambda cfg: cfg.__setitem__("hidden_roots", hidden))
         save_config(self._config)
         # CORE-006: hiding is a visibility toggle only. The project stays in the
         # internal registry and under the watcher; get_projects() filters it from
@@ -1099,7 +1110,7 @@ class Api:
         hidden = list(self._config.get("hidden_roots") or [])
         if root_str in hidden:
             hidden.remove(root_str)
-        self._config["hidden_roots"] = hidden
+        self._mutate_config(lambda cfg: cfg.__setitem__("hidden_roots", hidden))
         save_config(self._config)
         return self.get_projects()
 
@@ -1601,7 +1612,7 @@ class Api:
             self._on_quit()
 
     def set_zoom_level(self, zoom: float) -> dict:
-        self._config["zoom_level"] = float(zoom)
+        self._mutate_config(lambda cfg: cfg.__setitem__("zoom_level", float(zoom)))
         save_config(self._config)
         return self.get_config()
 
@@ -1610,7 +1621,7 @@ class Api:
             self._window.move_by(dx, dy)
 
     def set_sort_order(self, order: str) -> dict:
-        self._config["sort_order"] = order
+        self._mutate_config(lambda cfg: cfg.__setitem__("sort_order", order))
         save_config(self._config)
         with self._lock:
             self._projects.sort(key=lambda x: _project_sort_key(x, order))
@@ -1628,7 +1639,7 @@ class Api:
             # W2-010: surface the failure as {ok:false} so the Settings runSeq
             # counts it as failed (not silently applied).
             return {"ok": False, "error": "hotkey binding failed; reverted to previous"}
-        self._config["hotkeys"] = hotkeys
+        self._mutate_config(lambda cfg: cfg.__setitem__("hotkeys", hotkeys))
         save_config(self._config)
         return self.get_config()
 
@@ -1663,7 +1674,7 @@ class Api:
                 }
             # New binding failed but rollback succeeded: still a failure.
             return {"ok": False, "error": "snap hotkey binding failed; reverted"}
-        self._config["snap_hotkey"] = hotkeys
+        self._mutate_config(lambda cfg: cfg.__setitem__("snap_hotkey", hotkeys))
         save_config(self._config)
         return self.get_config()
 
@@ -1671,15 +1682,17 @@ class Api:
         self, scan_depth: int, scan_delay_ms: int, rescan_interval: int
     ) -> dict:
         """Rebuilds the background scanner with new tuning."""
-        self._config["scan_depth"] = max(1, min(8, int(scan_depth)))
-        self._config["scan_delay_ms"] = max(0, int(scan_delay_ms))
-        self._config["rescan_interval"] = max(10, int(rescan_interval))
+        self._mutate_config(lambda cfg: cfg.update({
+            "scan_depth": max(1, min(8, int(scan_depth))),
+            "scan_delay_ms": max(0, int(scan_delay_ms)),
+            "rescan_interval": max(10, int(rescan_interval)),
+        }))
         save_config(self._config)
         self._replace_background_scanner()
         return self.get_config()
 
     def set_scan_roots(self, roots: list[str] | None) -> list[dict]:
-        self._config["scan_roots"] = roots
+        self._mutate_config(lambda cfg: cfg.__setitem__("scan_roots", roots))
         save_config(self._config)
         self.background_scanner.stop()
         self._set_scanning(True)
@@ -1689,7 +1702,7 @@ class Api:
         return self.get_projects()
 
     def set_exclude_dirs(self, dirs: list[str]) -> list[dict]:
-        self._config["exclude_dirs"] = list(dirs)
+        self._mutate_config(lambda cfg: cfg.__setitem__("exclude_dirs", list(dirs)))
         save_config(self._config)
         return self.rescan()
 
@@ -1745,9 +1758,8 @@ class Api:
         existing = dedupe(existing)
         if folder_str not in existing:
             existing.append(folder_str)
-        self._config["scan_roots"] = existing
+        self._mutate_config(lambda cfg: cfg.__setitem__("scan_roots", existing))
         save_config(self._config)
-
         self._set_scanning(True)
         projects = scan(**self._scan_kwargs())
         self._set_cache(projects, force=True)
@@ -1782,7 +1794,7 @@ class Api:
 
     def set_auto_scan(self, enabled: bool) -> dict:
         self._auto_scan = enabled
-        self._config["auto_scan"] = enabled
+        self._mutate_config(lambda cfg: cfg.__setitem__("auto_scan", enabled))
         save_config(self._config)
         if enabled:
             self._set_scanning(True)
@@ -1806,7 +1818,7 @@ class Api:
         return autostart.set_enabled(enabled)
 
     def set_always_on_top(self, enabled: bool) -> dict:
-        self._config["always_on_top"] = enabled
+        self._mutate_config(lambda cfg: cfg.__setitem__("always_on_top", enabled))
         save_config(self._config)
         if self._window:
             self._window.set_always_on_top(enabled)
@@ -1818,7 +1830,7 @@ class Api:
         Separate from toggle_frameless below because a checkbox knows the
         state it wants; a blind flip against an unknown current state is how
         the collapse button ended up ADDING a titlebar."""
-        self._config["frameless"] = frameless
+        self._mutate_config(lambda cfg: cfg.__setitem__("frameless", frameless))
         save_config(self._config)
         if self._window:
             self._window.set_frameless(frameless)
