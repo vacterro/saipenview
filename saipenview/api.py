@@ -1383,13 +1383,30 @@ class Api:
                 )
                 return False
         try:
-            content = content.replace("\r\n", "\n").replace("\r", "\n")
-            if path.is_file():
-                _, enc, newline = read_doc_meta(path)
-                write_doc(path, content, enc, newline)
-            else:
-                write_doc(path, content)
-            return True
+            # W2-003: ordinary files beneath a verified root must also
+            # participate in the per-root ownership transaction so that a
+            # live agent cannot be clobbered by a direct editor write.
+            root = get_coordinator().root_for(path)
+            if root:
+                ownership = get_coordinator().ownership
+                if not ownership.begin_app_tx(Path(root)):
+                    print(
+                        f"SAIPENVIEW: write_file_text refused {file_path!r}: "
+                        "Core agent is active on this root",
+                        file=sys.stderr,
+                    )
+                    return False
+            try:
+                content = content.replace("\r\n", "\n").replace("\r", "\n")
+                if path.is_file():
+                    _, enc, newline = read_doc_meta(path)
+                    write_doc(path, content, enc, newline)
+                else:
+                    write_doc(path, content)
+                return True
+            finally:
+                if root:
+                    ownership.end_app_tx(Path(root))
         except OSError as e:
             print(
                 f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr
