@@ -2141,7 +2141,8 @@ class Api:
         }
 
     def record_manual_work(
-        self, root_str: str, description: str, operation_id: str | None = None
+        self, root_str: str, description: str, operation_id: str | None = None,
+        ack_tokens: list[tuple[str, int]] | None = None
     ) -> dict:
         """Record a user's manual edit as a board entry (T-127).
 
@@ -2171,15 +2172,26 @@ class Api:
                     "code": "INVALID_ID",
                     "message": "operation_id must be 1-64 chars of [A-Za-z0-9._-]",
                 }
-        # CORE-013: capture pending external changes BEFORE the transaction so
-        # we can conditionally ack only the exact tokens the user saw. A newer
-        # write racing after the prompt keeps its newer token pending.
+        # CORE-013 / W2-025: acknowledge ONLY the tokens the user explicitly
+        # observed (passed as ack_tokens). Without an explicit set, fall back
+        # to acknowledging all pending entries for backward compat with old
+        # UI calls that don't pass the set. A delayed duplicate of a completed
+        # operation_id can arrive after a new external write and would clear
+        # the newer event if we acknowledged everything — binding to the
+        # observed set prevents that.
         from saipenview.external_changes import get_registry
-        pending_before = list(get_registry().pending(str(root)))
         result = record_manual_work(Path(root), description, operation_id)
         if result.get("ok"):
-            for pc in pending_before:
-                get_registry().acknowledge(str(root), pc.rel_path, pc.token)
+            ack_tokens = ack_tokens or list(
+                get_registry().pending(str(root))
+            )
+            for pc in ack_tokens:
+                # ack_tokens can be either PendingChange objects (from pending())
+                # or (rel_path, token) tuples (passed by caller).
+                if hasattr(pc, "rel_path"):
+                    get_registry().acknowledge(str(root), pc.rel_path, pc.token)
+                else:
+                    get_registry().acknowledge(str(root), pc[0], pc[1])
             # The watcher (T-124) picks up the BOARD/LOG change and
             # targeted-refreshes the cache row.
             self._refresh_one_project(root)
