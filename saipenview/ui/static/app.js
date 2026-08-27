@@ -15,6 +15,8 @@ let collapsedConfig = {};
 let currentDetailRoot = null;
 let stateEditActive = false;
 let agentSinceLineNum = {};
+// W2-006: per-root live-output poll serialization flag.
+let _outputPollInFlight = {};
 let availableEnginesCache = [];
 // Which engine the launcher opens on. Loaded from config.default_engine and
 // re-saved whenever the user launches with a different one, so the choice
@@ -583,7 +585,10 @@ function updateCycleStatus() {
 function restoreCollapseState(root) {
   const s = (collapsedConfig && collapsedConfig[root]) || {};
   document.querySelectorAll('.collapsible[data-section]').forEach(el => {
-    const collapsed = !!s[el.getAttribute('data-section')];
+    const sec = el.getAttribute('data-section');
+    // Default collapsed sections: history, completed tickets, conformance audit
+    const defaultCollapsed = ["log", "tickets-recent-done", "conformance"].includes(sec);
+    const collapsed = (sec in s) ? !!s[sec] : defaultCollapsed;
     el.classList.toggle('collapsed', collapsed);
     const ic = el.querySelector('.collapse-icon');
     if (ic) ic.textContent = collapsed ? '\u25B6' : '\u25BC';
@@ -989,7 +994,7 @@ function renderDetailPane(detail) {
   const renderTicketGroupWithActions = (title, tickets, root) => {
     if (!tickets || !tickets.length) return "";
     const sectionKey = "tickets-" + title.toLowerCase().replace(/[^a-z]+/g, "-");
-    const canCollapse = tickets.length > 5;
+    const canCollapse = true;
     const actionFor = {
       DOING: "done",
       TODO: "start",
@@ -999,7 +1004,7 @@ function renderDetailPane(detail) {
     const checkedFor = { DOING: "ind", "Recent DONE": "on", TODO: "", BLOCKED: "" };
     return `<div class="collapsible" data-section="${sectionKey}">
       <div class="card-title${canCollapse ? " collapsible-header" : ""}">
-        <span>${title} (${tickets.length}) <span class="dblclick-hint">📄</span></span>
+        <span>${title} (${tickets.length})</span>
         ${canCollapse ? '<span class="collapse-icon">▼</span>' : ""}
       </div>
       <div class="ticket-list collapsible-body" data-section="${escapeHtml(title)}">
@@ -1024,11 +1029,11 @@ function renderDetailPane(detail) {
 
   let logHtml = "";
   if (detail.log_tail && detail.log_tail.length) {
-    const canCollapse = detail.log_tail.length > 5;
+    const canCollapse = true;
     logHtml = `<div class="detail-card history">
       <div class="collapsible" data-section="log">
         <div class="card-title${canCollapse ? " collapsible-header" : ""}">
-          <span>Recent Activity (LOG.md) <span class="dblclick-hint">📄</span></span>
+          <span>Recent Activity (LOG.md)</span>
           ${canCollapse ? '<span class="collapse-icon">▼</span>' : ""}
         </div>
         <div class="ticket-list collapsible-body">
@@ -1043,11 +1048,11 @@ function renderDetailPane(detail) {
       const staleBadge = detail.subs_stale
         ? `<span class="stale-badge" title="Sub-agent protocol files are out of date — ${escapeHtml(detail.subs_stale_details || '')}">STALE</span>`
         : "";
-      const canCollapse = detail.subs.length > 5;
+      const canCollapse = true;
       subsHtml = `<div class="detail-card">
         <div class="collapsible" data-section="sub-agents">
           <div class="card-title${canCollapse ? " collapsible-header" : ""}">
-            <span>Sub-agents (${detail.subs.length})${staleBadge ? ' ' + staleBadge : ''} <span class="dblclick-hint">📄</span></span>
+            <span>Sub-agents (${detail.subs.length})${staleBadge ? ' ' + staleBadge : ''}</span>
             ${canCollapse ? '<span class="collapse-icon">▼</span>' : ""}
           </div>
           <div class="ticket-list collapsible-body">
@@ -1083,7 +1088,7 @@ function renderDetailPane(detail) {
                 ${nextActionHtml}
                 ${logTailHtml}
                 ${s.phase === 'BLOCKED' && s.blocker && s.blocker !== 'none' ? '<div style="font-size:11px; margin-top:2px; color:var(--danger)"><span style="color:var(--textMuted)">Blocker:</span> ' + escapeHtml(s.blocker) + '</div>' : ''}
-                <div style="font-size:10px; color:var(--textMuted); margin-top:2px;">Updated: ${escapeHtml(formatLocalTime(s.updated))}${timeWithHeat(s.updated, s.updated_kind)} <span class="now-clock" style="font-size:10px;margin-left:4px;">(now: ${nowStr()})</span></div>
+                <div style="font-size:10px; color:var(--textMuted); margin-top:2px;">Updated: ${escapeHtml(formatLocalTime(s.updated))}${timeWithHeat(s.updated, s.updated_kind)}</div>
                 ${subOutboxHtml(s)}
               </div>`;
             }).join("")}
@@ -1092,32 +1097,31 @@ function renderDetailPane(detail) {
       </div>`;
     }
 
-    // Fetch scan errors for the error card (polled fresh each renderDetailPane)
-    const errorApi = window.SaiApi;
-    let errorCardHtml = "";
-    if (errorApi) {
-      errorApi.get_scan_error_log().then((errors) => {
-        if (errors && errors.length) {
-          const errorCard = document.getElementById("errorCard");
-          if (errorCard) {
-            errorCard.style.display = "block";
-            const body = errorCard.querySelector(".collapsible-body");
-            if (body) {
-              body.innerHTML = errors.slice(0, 20).map(e =>
-                `<div class="error-item"><span class="error-time">${escapeHtml(formatLocalTime(e.time))}</span><span class="error-message">${escapeHtml(e.message)}</span></div>`
-              ).join("");
-            }
-          }
-        }
-      }).catch((e) => console.error("error card fetch failed:", e));
-    }
-
-    contentDiv.innerHTML = `
-      ${unrecordedChangeRoot === detail.root ? `<div id="unrecordedBar" style="display:flex; gap:6px; align-items:center; padding:3px 6px; margin-bottom:3px; background:var(--surfaceRaised); border:1px solid var(--goldStar); color:var(--textPrimary); font-size:10px;">
+    // CORE-013: render from backend pending_external_changes (authoritative multi-root registry),
+    // not the transient single-root unrecordedChangeRoot. Keep fallback for older backends.
+    let _pending = detail.pending_external_changes || [];
+    let _pendingBarHtml = "";
+    if (_pending.length > 0) {
+      const _items = _pending.map(pc => `<span style="display:inline-flex;gap:4px;align-items:center;background:var(--surface);border:1px solid var(--borderMuted);padding:1px 4px;margin:1px;">
+        <span style="color:var(--goldStar);font-weight:bold;">!</span>
+        <span>${escapeHtml(pc.path)}</span>
+        <button class="ack-btn" data-path="${escapeHtml(pc.path)}" data-token="${pc.token}" style="font-size:8px;padding:0 3px;">Ack</button>
+      </span>`).join("");
+      _pendingBarHtml = `<div id="unrecordedBar" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:3px 6px;margin-bottom:3px;background:var(--surfaceRaised);border:1px solid var(--goldStar);color:var(--textPrimary);font-size:10px;">
+        <span style="color:var(--goldStar);font-weight:bold;">!</span>
+        <span style="flex:1;">${escapeHtml(t("agent.unrecorded"))} (${_pending.length})</span>
+        ${_items}
+        <button id="recordManualWorkBtn" style="font-size:9px;padding:1px 4px;color:var(--success);" title="${escapeHtml(t("agent.unrecorded.title"))}">${escapeHtml(t("agent.unrecorded.record"))}</button>
+      </div>`;
+    } else if (unrecordedChangeRoot === detail.root) {
+      _pendingBarHtml = `<div id="unrecordedBar" style="display:flex; gap:6px; align-items:center; padding:3px 6px; margin-bottom:3px; background:var(--surfaceRaised); border:1px solid var(--goldStar); color:var(--textPrimary); font-size:10px;">
         <span style="color:var(--goldStar); font-weight:bold;">!</span>
         <span style="flex:1;">${escapeHtml(t("agent.unrecorded"))}</span>
         <button id="recordManualWorkBtn" style="font-size:9px; padding:1px 4px; color:var(--success);" title="${escapeHtml(t("agent.unrecorded.title"))}">${escapeHtml(t("agent.unrecorded.record"))}</button>
-      </div>` : ""}
+      </div>`;
+    }
+    contentDiv.innerHTML = `
+      ${_pendingBarHtml}
       <div class="detail-header">
         <div class="detail-title">
           <span class="detail-name-group">
@@ -1155,7 +1159,7 @@ function renderDetailPane(detail) {
       <div class="detail-card">
         <div class="collapsible" data-section="state-summary">
           <div class="card-title collapsible-header">
-            <span>State Summary <span class="dblclick-hint">📄</span></span>
+            <span>State Summary</span>
             <span style="display:flex; align-items:center; gap:4px;">
               <button id="editStateBtn" title="Edit project state fields" style="font-size:9px; padding:0 4px; border-radius:2px;">Edit</button>
               <span class="collapse-icon">▼</span>
@@ -1220,16 +1224,6 @@ function renderDetailPane(detail) {
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <div id="errorCard" class="detail-card error-card" style="display:none;">
-        <div class="collapsible" data-section="scan-errors">
-          <div class="card-title collapsible-header" style="color:var(--danger);">
-            <span>Scan Errors</span>
-            <span class="collapse-icon">▼</span>
-          </div>
-          <div class="ticket-list collapsible-body"></div>
         </div>
       </div>
   
@@ -1563,23 +1557,51 @@ function renderDetailPane(detail) {
     recordBtn.addEventListener("click", () => {
       const desc = prompt("Describe what you changed manually:");
       if (desc === null || !desc.trim()) return;
-      // The operation id is generated HERE, once per user intent, and reused
-      // on a retry of the same intent -- idempotency is by operation id,
-      // never by human prose, so two separate actions named the same way stay
-      // two records.
       const opId = pendingRecordOpId || ("mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8));
       window.SaiApi.record_manual_work(detail.root, desc.trim(), opId).then((res) => {
         if (res && res.ok) {
           pendingRecordOpId = null;
-          unrecordedChangeRoot = null;
+          // CORE-013: record success conditionally cleared backend pending tokens;
+          // clear legacy single-root flag only on success (failure leaves it intact)
+          if (!detail.pending_external_changes || detail.pending_external_changes.length === 0) {
+            unrecordedChangeRoot = null;
+          } else {
+            // pending array will be empty after refresh; keep compatibility
+            unrecordedChangeRoot = null;
+          }
           showToast("Recorded as " + (res.ticket_id || "ticket"), "success");
           window.SaiApi.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
         } else {
-          showToast("Record failed: " + ((res && res.error) || "unknown"), "error");
+          showToast("Record failed: " + ((res && (res.error || res.message)) || "unknown"), "error");
+          // Failed record must not clear pending -- leave bar intact
         }
       }).catch(() => showToast("Record failed", "error"));
     });
   }
+  // CORE-013: per-file acknowledge with exact (path, token) generation guard
+  document.querySelectorAll('.ack-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const p = btn.getAttribute('data-path');
+      const tok = btn.getAttribute('data-token');
+      const t = tok ? parseInt(tok, 10) : null;
+      if (!p) return;
+      const api = window.SaiApi;
+      const fn = api.acknowledge_external_change ? api.acknowledge_external_change.bind(api) : null;
+      if (!fn) { showToast("Ack not supported", "error"); return; }
+      // try token-bound first, fallback to path-only
+      const args = t !== null && !isNaN(t) ? [detail.root, p, t] : [detail.root, p];
+      fn(...args).then((res) => {
+        if (res && res.ok) {
+          showToast("Acknowledged " + p, "success");
+          window.SaiApi.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
+        } else {
+          showToast("Ack failed (stale token?)", "error");
+          window.SaiApi.get_project_detail(detail.root).then((d) => { if (d) renderDetailPane(d); });
+        }
+      }).catch(() => showToast("Ack failed", "error"));
+    });
+  });
 
   // T-175: drag-to-reorder within a section. Board order is priority, so the
   // dropped order is a re-prioritisation and must reach BOARD.md.
@@ -1815,10 +1837,18 @@ function updateFlashSnapshot(projects) {
   for (const k of Object.keys(flashState)) {
     if (!currentRoots.has(k)) delete flashState[k];
   }
+function _findProjectRow(root) {
+  const rows = document.querySelectorAll(".project-row");
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].getAttribute("data-root") === root) return rows[i];
+  }
+  return null;
+}
+
   // PERF-012: register row refs for any new flash entries and ensure the timer.
   for (const root in flashState) {
     if (!_flashRowRefs[root]) {
-      const row = document.querySelector(`.project-row[data-root="${CSS.escape(root)}"]`);
+      const row = _findProjectRow(root);
       if (row) _flashRowRefs[root] = row;
     }
   }
@@ -2112,16 +2142,7 @@ function updateScanIndicator(scanning) {
 
 function updateErrorBadge() {
   const badge = document.getElementById("errorBadge");
-  if (!badge || !window.SaiApi.ready) return;
-  window.SaiApi.get_scan_errors().then((errors) => {
-    if (errors && errors.length) {
-      badge.textContent = "!" + errors.length;
-      badge.style.display = "inline";
-      badge.title = errors.join(" | ");
-    } else {
-      badge.style.display = "none";
-    }
-  }).catch((e) => console.error("wtBadge update failed:", e));
+  if (badge) badge.style.display = "none";
 }
 
 // WT badge click: scroll to or toggle linked worktrees section
@@ -2137,40 +2158,6 @@ if (wtBadge) {
     }
   });
 }
-
-document.getElementById("errorBadge")?.addEventListener("click", () => {
-  if (!window.SaiApi.ready) return;
-  window.SaiApi.get_scan_errors().then((errors) => {
-    if (errors && errors.length) {
-      showToast(errors.length + " scan error(s) — see Scan Errors card in detail pane", "error", 6000);
-    }
-    // Show and scroll to the error card
-    const errorCard = document.getElementById("errorCard");
-    if (errorCard) {
-      errorCard.style.display = "block";
-      // Ensure it's expanded (not collapsed)
-      const collapsible = errorCard.querySelector(".collapsible");
-      if (collapsible) {
-        collapsible.classList.remove("collapsed");
-        const icon = collapsible.querySelector(".collapse-icon");
-        if (icon) icon.textContent = "▼";
-      }
-      // Fetch fresh error log and fill the body
-      window.SaiApi.get_scan_error_log().then((log) => {
-        const body = errorCard.querySelector(".collapsible-body");
-        if (body && log) {
-          body.innerHTML = log.slice(0, 20).map(e =>
-            `<div class="error-item"><span class="error-time">${escapeHtml(formatLocalTime(e.time))}</span><span class="error-message">${escapeHtml(e.message)}</span></div>`
-          ).join("");
-        }
-      }).catch((e) => console.error("updateErrorBadge failed:", e));
-      // Scroll the error card into view
-      setTimeout(() => {
-        errorCard.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 100);
-    }
-  }).catch((e) => console.error("updateErrorBadge scroll failed:", e));
-});
 
 // Whether the native window is actually on screen. Driven from Python
 // (MainWindow._notify_visibility) because a pywebview hide() is a native window
@@ -2226,10 +2213,33 @@ window.onSaipenFileChanged = function(root, fileName, origin) {
   // a second full re-parse of every project for one file change is the
   // defect T-124 removes.
   window.SaiApi.get_projects().then(projects => {
-    render(projects, true);
+    // PERF-003: a single external edit can arrive as a burst of file-change
+    // notifications; collapse them into one list paint on the next frame
+    // instead of rebuilding the whole list once per event.
+    rawProjects = projects;
+    isScanned = true;
+    scheduleProjectListRender();
     renderLinkedWorktrees();
   }).catch(() => {});
 };
+
+// PERF-003: coalesce the high-frequency project-list repaints. A burst of
+// file-change notifications (or overlapping scan/poll results) previously
+// called render() once per event, rebuilding the entire list N times within a
+// single frame. Now they collapse to exactly one paint on the next animation
+// frame. Direct user actions (toggle pin, hide, rescan, browse) keep calling
+// render() synchronously -- they are single, intentional events where a 16ms
+// deferral buys nothing.
+let _listRenderScheduled = false;
+function scheduleProjectListRender() {
+  if (_listRenderScheduled) return;
+  _listRenderScheduled = true;
+  const raf = window.requestAnimationFrame || ((cb) => setTimeout(cb, 16));
+  raf(() => {
+    _listRenderScheduled = false;
+    if (typeof rawProjects !== "undefined") render(rawProjects, isScanned);
+  });
+}
 
 function poll() {
   if (!windowVisible) return;
@@ -2252,7 +2262,9 @@ function poll() {
         }
       }
       updateScanIndicator(status.scanning);
-      pollAgentOutput();
+      // T-598/PERF-009: the badge only here; live output follows its own
+      // sub-second ticker (_outputPollTick), not the registry poll.
+      pollAgentsBadge();
     })
     .catch(() => {
       const statusEl = document.getElementById("status");
@@ -2877,7 +2889,11 @@ function closeQuickHelp() {
 const settingsBtn = document.getElementById("settingsBtn");
 
 function openSettings() {
-  Promise.all([window.SaiApi.get_config(), window.SaiApi.get_autostart_enabled()]).then(([cfg, autostart]) => {
+  const _cfgP = window.SaiApi.get_config();
+  const _autoP = (window.SaiApi.supports && window.SaiApi.supports("get_autostart_enabled"))
+    ? window.SaiApi.get_autostart_enabled().catch(() => false)
+    : Promise.resolve(false);
+  Promise.all([_cfgP, _autoP]).then(([cfg, autostart]) => {
     document.getElementById("setZoomLevel").value = String(cfg.zoom_level || 1.0);
     document.getElementById("setHotkeys").value = (cfg.hotkeys || []).join(", ");
     document.getElementById("setSnapHotkey").value = Array.isArray(cfg.snap_hotkey) ? cfg.snap_hotkey.join(", ") : (cfg.snap_hotkey || "ctrl+q");
@@ -2959,9 +2975,32 @@ function openSettings() {
       if (ovErr) ovErr.style.display = "none";
     }
     document.getElementById("saveSettingsBtn").textContent = "Save";
+    // Capability gate: disable desktop-only controls in HTTP mode
+    if (window.SaiApi.supports) {
+      const caps = {
+        "set_autostart_enabled": "setAutostart",
+        "set_hotkeys": "setHotkeys",
+        "set_snap_hotkey": "setSnapHotkey",
+        "set_always_on_top": "setAlwaysOnTop",
+        "set_frameless": "setNativeTitlebar"
+      };
+      for (const [method, elemId] of Object.entries(caps)) {
+        if (!window.SaiApi.supports(method)) {
+          const el = document.getElementById(elemId);
+          if (el) { el.disabled = true; el.closest("label").style.opacity = "0.5"; el.closest("label").title = "Not available in this mode"; }
+        }
+      }
+    }
     settingsModal.style.display = "flex";
     window.SaiApi.get_local_drives().then((drives) => {
       renderDrives(drives, cfg.scan_roots);
+    });
+  }).catch(() => {
+    // If config loads but autostart fails (e.g., HTTP 403), still show settings
+    // with supported prefs; desktop-only controls will be disabled via gate above.
+    window.SaiApi.get_config().then((cfg) => {
+      document.getElementById("setZoomLevel").value = String(cfg.zoom_level || 1.0);
+      settingsModal.style.display = "flex";
     });
   });
 }
@@ -3050,12 +3089,8 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
 
   const saveBtn = document.getElementById("saveSettingsBtn");
   const api = window.SaiApi;
-  // W2-007: allow exactly one Settings save operation in flight.
   if (api._settingsSaveInFlight) return;
-  api._settingsSaveInFlight = true;
-  // T-178: parse the engine_overrides JSON up front -- invalid JSON or a
-  // wrong shape aborts the save with a visible error, so a bad override can
-  // never reach the disk.
+  // Validate BEFORE acquiring the in-flight flag (W2-004): invalid input must not poison Save.
   let engineOverrides = null;
   const ovInput = document.getElementById("engineOverridesInput");
   if (ovInput) {
@@ -3068,6 +3103,9 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
     }
     if (ovErr) ovErr.style.display = "none";
   }
+  api._settingsSaveInFlight = true;
+  api._settingsSaveGen = (api._settingsSaveGen || 0) + 1;
+  const _saveGen = api._settingsSaveGen;
   saveBtn.textContent = "Saving...";
   saveBtn.disabled = true;
   const resetHint = document.getElementById("resetCollapseHint").checked;
@@ -3075,26 +3113,38 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
     ? api.save_view_config({ collapse_hint_acknowledged: false })
     : Promise.resolve();
 
-  // Timeout guard: if API calls don't resolve in 10s, force-unlock
+  // Timeout guard: if API calls don't resolve in 10s, release the lock so
+  // the displayed retry actually dispatches (W2-004). A superseded save's
+  // late completion is ignored via _saveGen, never touches button or state.
   let saveTimedOut = false;
   const saveTimeout = setTimeout(() => {
+    if (api._settingsSaveGen !== _saveGen) return;
     saveTimedOut = true;
+    api._settingsSaveInFlight = false;
     saveBtn.textContent = "Save timed out -- retry?";
     saveBtn.disabled = false;
   }, 10000);
+  const _stale = () => api._settingsSaveGen !== _saveGen;
 
   ackPromise.then(() => {
-    if (saveTimedOut) return;
+    if (_stale() || saveTimedOut) return;
     if (resetHint) collapseHintAcknowledged = false;
     // W2-007: apply setters sequentially with explicit success checks.
     const applied = [];
     const failed = [];
     function runSeq(fns, i) {
-      if (saveTimedOut) { api._settingsSaveInFlight = false; return Promise.resolve(); }
-      if (i >= fns.length) return Promise.resolve();
+      if (_stale()) return Promise.resolve();
+      if (saveTimedOut || i >= fns.length) return Promise.resolve();
       const fn = fns[i];
       return fn().then((res) => {
-        applied.push(i);
+        // W2-010: a resolved Promise with a semantic-failure payload must land
+        // in `failed`, never in `applied`.
+        if (setterFailed(res)) {
+          failed.push(i);
+          console.error("settings setter " + i + " failed:", res);
+        } else {
+          applied.push(i);
+        }
         return runSeq(fns, i + 1);
       }).catch((e) => {
         failed.push(i);
@@ -3116,7 +3166,8 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
     ];
     return runSeq(setters, 0).then(() => ({ applied, failed }));
   }).then((result) => {
-    if (saveTimedOut) { api._settingsSaveInFlight = false; return; }
+    if (_stale()) return; // superseded by a newer save -- touch nothing
+    if (saveTimedOut) { clearTimeout(saveTimeout); return; } // timeout already released lock
     const { applied, failed } = result || { applied: [], failed: [] };
     // W2-007: if any setter failed, report partial outcome.
     if (failed.length > 0) {
@@ -3146,6 +3197,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", () => {
     render(rawProjects, isScanned);
     closeSettings();
   }).catch((err) => {
+    if (_stale()) return; // superseded -- never clobber newer save's UI
     clearTimeout(saveTimeout);
     saveBtn.textContent = "Save failed -- retry?";
     saveBtn.disabled = false;
@@ -3438,6 +3490,9 @@ window.addEventListener("saiapiready", () => {
     });
   poll();
   setInterval(poll, POLL_MS);
+  // PERF-009: dedicated live-output loop -- sub-second, single-flight, and
+  // silent unless a visible panel has a live agent (zero RPC otherwise).
+  setTimeout(_outputPollTick, OUTPUT_POLL_MS);
 });
 // File Viewer Modal
 const fileViewerModal = document.getElementById("fileViewerModal");
@@ -3569,6 +3624,7 @@ function openFileViewer(filename, filepath, content) {
   document.getElementById("fileViewerContent").value = text;
   currentFilePath = filepath;
   currentFileEditVersion = editVersion;
+  _fileReadGen++;
   fileViewerMode = fileViewerDefault || "source";
   applyFileViewerMode();
   fileViewerModal.style.display = "flex";
@@ -3598,6 +3654,8 @@ document.getElementById("saveFileViewerBtn")?.addEventListener("click", () => {
   // CORE-001: protocol files must carry the edit_version CAS token read in
   // openFileViewer; ordinary files keep the legacy two-argument contract.
   const isProtocol = currentFilePath.indexOf(".saipen/") !== -1;
+  const savePath = currentFilePath;
+  const saveGen = _fileReadGen;
   const args = isProtocol
     ? [currentFilePath, content, currentFileEditVersion]
     : [currentFilePath, content];
@@ -3605,9 +3663,9 @@ document.getElementById("saveFileViewerBtn")?.addEventListener("click", () => {
     if (ok) {
       btn.textContent = "Saved";
       setTimeout(() => { btn.textContent = "Save"; }, 2000);
-      if (isProtocol && currentFilePath) {
-        // Refresh the token after a successful save so the next save stays
-        // CAS-safe against further external changes.
+      // W2-004: only refresh the token if this save still owns the open file.
+      // A later file open increments _fileReadGen, making this callback stale.
+      if (isProtocol && currentFilePath === savePath && _fileReadGen === saveGen) {
         window.SaiApi.read_file_text(currentFilePath).then((r) => {
           currentFileEditVersion =
             (r && typeof r === "object" && "edit_version" in r) ? r.edit_version : null;
@@ -3745,7 +3803,7 @@ if (typeof _origFlash === 'function') {
   window.flashProject = function(root) {
     _origFlash(root);
     if (flashChangesEnabled && flashState[root]) {
-      const row = document.querySelector(`.project-row[data-root="${CSS.escape(root)}"]`);
+      const row = _findProjectRow(root);
       if (row) _flashRowRefs[root] = row;
       _ensureFlashTimer();
     }
@@ -4105,6 +4163,37 @@ function parseTestLine(root, line) {
 // re-render does not fetch and re-append it every poll tick.
 const agentRestoredRoots = new Set();
 
+// W2-010: classify a setter's resolved result as a semantic failure. A
+// fulfilled Promise is NOT automatically success -- a backend setter can
+// resolve with {ok:false} (engine overrides, hotkeys) or a bare `false`
+// (autostart) while having done nothing. Counting those as applied let the
+// Settings modal close green with zero settings actually written.
+function setterFailed(res) {
+  if (res === false) return true;
+  if (res && typeof res === "object" && res.ok === false) return true;
+  return false;
+}
+
+// PERF-005: append a batch of output lines and prune the oldest excess so the
+// live console DOM stays under MAX_LIVE_OUTPUT_NODES no matter how long the run
+// lasts. parseTestLine still sees every line before pruning; the cumulative
+// line counter lives elsewhere (status.total_lines) so pruning the visual head
+// never falsifies output metrics.
+function appendOutputLines(container, lines, root) {
+  const frag = document.createDocumentFragment();
+  for (const line of lines) {
+    parseTestLine(root, line);
+    const div = document.createElement("div");
+    div.className = "agent-output-line";
+    div.textContent = line;
+    frag.appendChild(div);
+  }
+  container.appendChild(frag);
+  while (container.childElementCount > MAX_LIVE_OUTPUT_NODES) {
+    container.removeChild(container.firstChild);
+  }
+}
+
 // T-169: an async callback that captured `root` before an await must verify
 // the user is still looking at that project before it mutates the panel. A
 // stale response must never write into a different project's Detail Pane.
@@ -4209,11 +4298,21 @@ function renderAgentHistorySelect(root, selectEl) {
   });
 }
 
+// W2-006: per-root history request generation -- a delayed response for an
+// older run selection must never overwrite the newer selection's transcript.
+let _agentRunReq = {};
+
 function loadAgentRun(root, runId) {
   if (!runId) return;
   if (!isCurrentProjectPanel(root)) return;
+  const prev = _agentRunReq[root];
+  const gen = (prev ? prev.gen : 0) + 1;
+  _agentRunReq[root] = { runId: runId, gen: gen };
   window.SaiApi.get_agent_transcript(runId).then((res) => {
     if (!isCurrentProjectPanel(root)) return;
+    // W2-006: apply only if THIS request is still the newest one for the root
+    const req = _agentRunReq[root];
+    if (!req || req.gen !== gen || req.runId !== runId) return;
     const linesContainer = document.getElementById("agentOutputLines");
     if (!linesContainer) return;
     linesContainer.innerHTML = "";
@@ -4248,9 +4347,10 @@ function loadAgentRun(root, runId) {
   });
 }
 
-function pollAgentOutput() {
-  // T-179: always update the running-agents badge (cheap, separate concern);
-  // but the per-project panel below is only meaningful when the dock is on.
+// T-598/PERF-009: the running-agents badge is a cheap global concern that
+// stays on the slow registry poll; the live console below has its own
+// sub-second single-flight loop.
+function pollAgentsBadge() {
   window.SaiApi.list_running_agents().then(agents => {
     const badge = document.getElementById("runningAgentsBadge");
     if (badge) {
@@ -4262,11 +4362,88 @@ function pollAgentOutput() {
       }
     }
   });
+}
+
+// PERF-009: one single-flight delta fetch for a root -- extracted from
+// pollAgentOutput so the fast output ticker can pull new lines without
+// re-rendering the whole panel or re-fetching status every tick.
+function _fetchAgentOutputDelta(root) {
+  if (_outputPollInFlight[root]) return;
+  _outputPollInFlight[root] = true;
+  let since = agentSinceLineNum[root] || 0;
+  window.SaiApi.get_agent_output(root, since).then(res => {
+    _outputPollInFlight[root] = false;
+    if (currentDetailRoot !== root) return;
+    if (res && res.lines && res.lines.length > 0) {
+      const linesContainer = document.getElementById("agentOutputLines");
+      if (linesContainer) {
+        const panel = linesContainer.parentElement;
+        const isScrolledToBottom = panel.scrollHeight - panel.clientHeight <= panel.scrollTop + 10;
+
+        // PERF-005: cap the live DOM to a bounded window. The backend already
+        // keeps a rolling 5000-line buffer; the WebView must not grow without
+        // limit while that buffer (and the transcript 5MiB cap) have long since
+        // stopped storing the head. Batch into a fragment, then prune the oldest
+        // excess -- parseTestLine still sees every delivered line before pruning.
+        const frag = document.createDocumentFragment();
+        appendOutputLines(linesContainer, res.lines, root);
+
+        if (isScrolledToBottom) {
+          panel.scrollTop = panel.scrollHeight;
+        }
+      }
+    }
+    // The cursor is the backend's canonical next_since, never
+    // since + lines.length -- on buffer rollover that arithmetic
+    // would resend lines (T-166). W2-006: never regress the cursor if a
+    // stale response arrives after a newer one advanced it.
+    if (res && typeof res.next_since === "number") {
+      const cur = agentSinceLineNum[root] || 0;
+      if (res.next_since > cur) agentSinceLineNum[root] = res.next_since;
+    }
+  }).catch(() => { _outputPollInFlight[root] = false; });
+}
+
+// PERF-009: live console cadence decoupled from POLL_MS. The ticker early-
+// returns without any RPC unless a visible panel has a cached running agent,
+// so hidden/closed panels generate zero traffic. Every OUTPUT_STATUS_EVERY_N
+// ticks (~6s) a running agent gets a full status refresh so terminal
+// transitions are noticed even when no new lines arrive.
+const OUTPUT_POLL_MS = 750;
+const OUTPUT_STATUS_EVERY_N_TICKS = 8;
+// PERF-005: the live console keeps at most this many line nodes in the DOM.
+// Mirrors the backend's 5000-line rolling buffer; the transcript 5MiB cap is
+// the durable record. The cumulative line counter (agentStatusCache[].total or
+// the run's total_lines) is tracked separately, so pruning visual history
+// never falsifies process/output metrics.
+const MAX_LIVE_OUTPUT_NODES = 5000;
+let _outputTickCounter = 0;
+function _outputPollTick() {
+  _outputTickCounter++;
+  try {
+    if (!windowVisible || !showAgentPanel || !currentDetailRoot) return;
+    const root = currentDetailRoot;
+    const st = agentStatusCache[root];
+    const running = st && (st.status === "running" || st.status === "starting");
+    if (running && _outputTickCounter % OUTPUT_STATUS_EVERY_N_TICKS === 0) {
+      pollAgentOutput();
+      return;
+    }
+    if (running) _fetchAgentOutputDelta(root);
+  } finally {
+    setTimeout(_outputPollTick, OUTPUT_POLL_MS);
+  }
+}
+
+function pollAgentOutput() {
+  // T-179: always update the running-agents badge (cheap, separate concern);
+  // but the per-project panel below is only meaningful when the dock is on.
+  pollAgentsBadge();
 
   if (!showAgentPanel) return;
   if (!currentDetailRoot) return;
   const root = currentDetailRoot;
-  
+
   window.SaiApi.get_agent_status(root).then(status => {
     // T-169: a project switch while this was in flight must not let the old
     // project's status rebuild the current panel.
@@ -4276,37 +4453,9 @@ function pollAgentOutput() {
     if (container) {
       renderAgentPanel(root, container);
     }
-    
+
     if (status && (status.status === "running" || status.status === "done" || status.status === "failed" || status.status === "killed")) {
-      let since = agentSinceLineNum[root] || 0;
-      window.SaiApi.get_agent_output(root, since).then(res => {
-        if (currentDetailRoot !== root) return;
-        if (res && res.lines && res.lines.length > 0) {
-          const linesContainer = document.getElementById("agentOutputLines");
-          if (linesContainer) {
-            const panel = linesContainer.parentElement;
-            const isScrolledToBottom = panel.scrollHeight - panel.clientHeight <= panel.scrollTop + 10;
-            
-            res.lines.forEach(line => {
-              parseTestLine(root, line);
-              const div = document.createElement("div");
-              div.className = "agent-output-line";
-              div.textContent = line;
-              linesContainer.appendChild(div);
-            });
-            
-            if (isScrolledToBottom) {
-              panel.scrollTop = panel.scrollHeight;
-            }
-          }
-        }
-        // The cursor is the backend's canonical next_since, never
-        // since + lines.length -- on buffer rollover that arithmetic
-        // would resend lines (T-166).
-        if (res && typeof res.next_since === "number") {
-          agentSinceLineNum[root] = res.next_since;
-        }
-      });
+      _fetchAgentOutputDelta(root);
     }
   });
 }
