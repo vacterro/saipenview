@@ -559,9 +559,6 @@ class SaipenViewService:
                 except _ServiceError as e:
                     self._send_error_json(e.status, str(e))
                     return
-                except TypeError as e:
-                    self._send_error_json(400, f"bad arguments: {e}")
-                    return
                 except Exception as e:  # noqa: BLE001 - surface backend failure, keep service alive
                     print(
                         f"SAIPENVIEW service: RPC {body['method']} failed: {e}",
