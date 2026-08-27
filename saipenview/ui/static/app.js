@@ -3651,9 +3651,10 @@ document.getElementById("saveFileViewerBtn")?.addEventListener("click", () => {
   const content = document.getElementById("fileViewerContent").value;
   const btn = document.getElementById("saveFileViewerBtn");
   btn.textContent = "Saving...";
-  // CORE-001: protocol files must carry the edit_version CAS token read in
-  // openFileViewer; ordinary files keep the legacy two-argument contract.
-  const isProtocol = currentFilePath.indexOf(".saipen/") !== -1;
+   // CORE-001: protocol files must carry the edit_version CAS token read in
+   // openFileViewer; ordinary files keep the legacy two-argument contract.
+   // CORE-003: normalize backslashes so .saipen/ check works on Windows paths.
+   const isProtocol = currentFilePath.replace(/\\/g, "/").indexOf(".saipen/") !== -1;
   const savePath = currentFilePath;
   const saveGen = _fileReadGen;
   const args = isProtocol
