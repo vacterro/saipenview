@@ -2291,14 +2291,18 @@ class Api:
                 return {"ok": False, "error": err}
             engine = wrapped
 
-        return self._process_manager.launch(engine, root, instruction)
+        result = self._process_manager.launch(engine, root, instruction)
+        # W2-026: expose run_id so frontend can bind control calls to it
+        if result.get("ok") and "run_id" not in result:
+            result["run_id"] = None
+        return result
 
-    def stop_agent(self, root: str) -> dict:
+    def stop_agent(self, root: str, expected_run_id: str | None = None) -> dict:
         """Kill a running agent process."""
         root = self._resolve_root(root)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
-        return self._process_manager.kill(root)
+        return self._process_manager.kill(root, expected_run_id=expected_run_id)
 
     def add_human_note(self, root: str, note: str) -> dict:
         """Leave a note the NEXT agent will actually pick up.
@@ -2390,12 +2394,12 @@ class Api:
             root, delete_untracked_files, fingerprint
         )
 
-    def send_agent_input(self, root: str, text: str) -> dict:
+    def send_agent_input(self, root: str, text: str, expected_run_id: str | None = None) -> dict:
         """Send text to a running agent's stdin."""
         root = self._resolve_root(root)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
-        return self._process_manager.send_input(root, text)
+        return self._process_manager.send_input(root, text, expected_run_id=expected_run_id)
 
     def get_agent_output(self, root: str, since_line: int = 0) -> dict:
         """Return new output lines since a given line number."""

@@ -562,7 +562,7 @@ class ProcessManager:
                 },
             )
 
-            return {"ok": True, "engine": engine.name, "pid": proc.pid}
+            return {"ok": True, "engine": engine.name, "pid": proc.pid, "run_id": ap.run_id}
         except Exception:  # noqa: BLE001 - reservation must not leak on any path
             # CORE-003: a post-spawn setup failure (e.g. sessions.start) left a
             # live child. Reap it BEFORE releasing ownership. If reaping fails
@@ -590,8 +590,13 @@ class ProcessManager:
         with self._lock:
             return self._key(project_root) in self._stuck_agents
 
-    def kill(self, project_root: str) -> dict:
-        """Kill a running agent process."""
+    def kill(self, project_root: str, expected_run_id: str | None = None) -> dict:
+        """Kill a running agent process.
+
+        W2-026: if *expected_run_id* is provided, reject the kill when the
+        active process has a different run_id (delayed stop for old run R1
+        must not kill new run R2 on the same root).
+        """
         key = self._key(project_root)
         with self._lock:
             ap = self._processes.get(key)
@@ -599,6 +604,13 @@ class ProcessManager:
             return {"ok": False, "error": "No agent process found"}
         if ap.status != "running":
             return {"ok": False, "error": f"Agent is not running (status={ap.status})"}
+        # W2-026: run-aware target identity
+        if expected_run_id is not None and ap.run_id != expected_run_id:
+            return {
+                "ok": False,
+                "code": "RUN_STALE",
+                "error": f"expected run_id={expected_run_id}, active={ap.run_id}",
+            }
 
         # Record the INTENT before terminating, not after. terminate() makes
         # stdout hit EOF, so the reader thread's tail can run and reach the
@@ -738,7 +750,7 @@ class ProcessManager:
             },
         )
 
-    def send_input(self, project_root: str, text: str) -> dict:
+    def send_input(self, project_root: str, text: str, expected_run_id: str | None = None) -> dict:
         """Send text to a running agent's stdin."""
         key = self._key(project_root)
         with self._lock:
@@ -747,6 +759,13 @@ class ProcessManager:
             return {"ok": False, "error": "No agent process found"}
         if ap.status != "running":
             return {"ok": False, "error": f"Agent is not running (status={ap.status})"}
+        # W2-026: run-aware target identity
+        if expected_run_id is not None and ap.run_id != expected_run_id:
+            return {
+                "ok": False,
+                "code": "RUN_STALE",
+                "error": f"expected run_id={expected_run_id}, active={ap.run_id}",
+            }
         if not ap.engine.supports_stdin:
             return {
                 "ok": False,
@@ -803,6 +822,7 @@ class ProcessManager:
             total = ap._line_count
             buf_len = len(ap.output_lines)
             status = ap.status
+            run_id = ap.run_id
             # PERF-006: check if there's new data before copying anything.
             first_available = total - buf_len
             if since_line >= total:
@@ -810,6 +830,7 @@ class ProcessManager:
                     "lines": [],
                     "total": total,
                     "status": status,
+                    "run_id": run_id,
                     "first_available": first_available,
                     "next_since": total,
                     "dropped_count": max(0, first_available - since_line),
@@ -824,6 +845,7 @@ class ProcessManager:
             "lines": lines,
             "total": total,
             "status": status,
+            "run_id": run_id,
             "first_available": first_available,
             "next_since": total,
             "dropped_count": dropped,
@@ -865,6 +887,7 @@ class ProcessManager:
 
         return {
             "status": ap.status,
+            "run_id": ap.run_id,
             "engine": ap.engine.name,
             "engine_display": ap.engine.display_name,
             "instruction": ap.instruction[:200],
