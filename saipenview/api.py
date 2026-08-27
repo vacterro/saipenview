@@ -511,6 +511,10 @@ class Api:
                         self._projects[i] = row
                         break
                 self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+                # CORE-007: bump rev on existing-row replacement so concurrent
+                # refresh_known detects the mutation and retries instead of
+                # clobbering with a stale parse.
+                self._registry_rev += 1
 
         # Phase 2: heavy/recursive work OUTSIDE the lock.
         if vanished:
@@ -1076,6 +1080,8 @@ class Api:
             for p in self._projects:
                 p["is_pinned"] = p["root"] in pinned
             self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+            # CORE-007: bump rev so concurrent refresh_known sees the mutation.
+            self._registry_rev += 1
             return list(self._projects)
 
     def hide_project(self, root_str: str) -> list[dict]:
