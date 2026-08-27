@@ -20,6 +20,19 @@ from saipenview.paths import canonical, validate_file_path
 
 def _run_service(args: argparse.Namespace) -> int:
     from saipenview.service import run_service
+    from saipenview.guard import SingleInstanceGuard
+
+    # W2-001: service mode must also acquire the OS-level single-instance lease
+    # so two concurrent service backends cannot mutate one project. The named
+    # mutex (Windows) / TCP bind (other platforms) proves one-writer globally.
+    guard = SingleInstanceGuard(port=args.port or 47189)
+    if not guard.acquire():
+        print(
+            "SAIPENVIEW: another instance already owns this service port; "
+            "exiting.",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         import signal
@@ -28,14 +41,17 @@ def _run_service(args: argparse.Namespace) -> int:
 
         def _stop(*_a, **_k) -> None:
             service.stop()
+            guard.stop()
 
         signal.signal(signal.SIGINT, _stop)
         signal.signal(signal.SIGTERM, _stop)
         service.wait()
         service.stop()
+        guard.stop()
         return 0
     except Exception as e:  # noqa: BLE001 - surface start failure on stderr, exit non-zero
         print(f"SAIPENVIEW service failed to start: {e}", file=sys.stderr)
+        guard.stop()
         return 1
 
 
