@@ -349,11 +349,18 @@ class Api:
             on_scan_start=lambda: self._set_scanning(True),
         )
 
-        event_bus.subscribe("saipen.project_changed", self._on_file_changed)
         # The watcher belongs to the Api/project registry, not the
         # ProcessManager (T-124): every known project is watched, agent
         # launch/finish has nothing to do with it.
         self._watcher = SaipenWatcher()
+
+        # CORE-022 / T-32: subscribe to EventBus AFTER all construction is
+        # complete. If any post-subscription step failed, the constructor
+        # would leave a dangling callback on the global EventBus pointing
+        # at a half-initialized Api. By moving subscribe to start(), the
+        # callback only lives once the object is fully constructed and
+        # ready to handle events safely.
+        self._event_subscribed = False
 
         # CORE-004 / T-542: debounce state must be INSTANCE-owned.
         self._debounce_delay = debounce_delay
@@ -1815,6 +1822,10 @@ class Api:
         return self.get_projects()
 
     def start(self) -> None:
+        # W2-022: subscribe to EventBus here, after full construction.
+        if not self._event_subscribed:
+            event_bus.subscribe("saipen.project_changed", self._on_file_changed)
+            self._event_subscribed = True
         self._auto_scan = self._config.get("auto_scan", True)
         if self._auto_scan:
             self._set_scanning(True)
