@@ -26,6 +26,33 @@ from typing import Literal
 # A Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ensures the OS
 # terminates all processes in the job when the last handle closes.
 
+def _close_saipen_job_handle(proc) -> None:
+    """W2-033: close the Job Object handle stashed on *proc*, if any.
+
+    Platform-safe: on non-Windows _saipen_job_handle is never set, so this
+    is a no-op. On Windows we use the same ctypes kernel32 path as
+    _assign_job_object; if kernel32 is unavailable we silently ignore —
+    the OS reclaims all handles on process exit anyway.
+    """
+    job_handle = getattr(proc, "_saipen_job_handle", None)
+    if job_handle is None:
+        return
+    try:
+        delattr(proc, "_saipen_job_handle")
+    except AttributeError:
+        pass
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        HANDLE = wintypes.HANDLE
+        kernel32.CloseHandle(HANDLE(job_handle))
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 def _assign_job_object(proc: subprocess.Popen) -> None:
     """Assign *proc* to a kill-on-close Job Object (Windows only).
 
@@ -112,15 +139,27 @@ def _assign_job_object(proc: subprocess.Popen) -> None:
         # raw Win32 handle in ``_handle``; fall back to an OpenProcess handle
         # only if that attribute is somehow unavailable.
         handle_attr = getattr(proc, "_handle", None)
+        open_proc_handle = None  # W2-033: tracks OpenProcess-created HANDLE
         if handle_attr is None:
             kernel32.OpenProcess.restype = HANDLE
             kernel32.OpenProcess.argtypes = [DWORD, BOOL, wintypes.DWORD]
-            proc_handle = kernel32.OpenProcess(0x1F0FFF, False, int(proc.pid))
+            open_proc_handle = kernel32.OpenProcess(0x1F0FFF, False, int(proc.pid))
+        if open_proc_handle is not None:
+            proc_handle = HANDLE(open_proc_handle)
         else:
             proc_handle = HANDLE(int(handle_attr))
         if not kernel32.AssignProcessToJobObject(h_job, proc_handle):
             kernel32.CloseHandle(h_job)
+            if open_proc_handle:
+                kernel32.CloseHandle(open_proc_handle)
             return
+        # W2-033: AssignProcessToJobObject steals a reference to proc_handle;
+        # our OpenProcess-created copy is no longer needed -- close it now so
+        # the only surviving handles are h_job (kept on proc) and the OS-owned
+        # one inside the job.
+        if open_proc_handle:
+            kernel32.CloseHandle(open_proc_handle)
+            open_proc_handle = None
         # Keep the Job handle alive for the parent's lifetime: closing it would
         # kill the child. Stash it on the process object so a future explicit
         # teardown can release it deliberately.
@@ -724,6 +763,13 @@ class ProcessManager:
         # PERF-009: a pending availability timer for a finalized run is stale
         # -- cancel it so a dead root never fires a notification afterwards.
         self._output_notifier.cancel(ap.project_root)
+
+        # W2-033: close the Job Object handle exactly once during finalization.
+        # KILL_ON_JOB_CLOSE means the child dies when the last handle closes,
+        # but by this point the child is already dead (returncode is non-None),
+        # so closing here prevents the handle from leaking for the lifetime of
+        # the Popen object (which may outlive this ProcessManager).
+        _close_saipen_job_handle(ap.process)
 
         # CORE-004: only release ownership when process death is PROVEN.
         # If returncode is None the OS hasn't reaped the child yet -- we
