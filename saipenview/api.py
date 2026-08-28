@@ -2256,9 +2256,12 @@ class Api:
         from saipenview.external_changes import get_registry
         result = record_manual_work(Path(root), description, operation_id)
         if result.get("ok"):
-            ack_tokens = ack_tokens or list(
-                get_registry().pending(str(root))
-            )
+            # W2-003: distinguish None (snapshot all pending) from []
+            # (acknowledge nothing). The `or` operator treats both as
+            # falsy, silently clearing newer external changes the caller
+            # never observed.
+            if ack_tokens is None:
+                ack_tokens = list(get_registry().pending(str(root)))
             for pc in ack_tokens:
                 # ack_tokens can be either PendingChange objects (from pending())
                 # or (rel_path, token) tuples (passed by caller).
@@ -2475,19 +2478,30 @@ class Api:
             return {"ok": False, "error": "unknown or unverified project root"}
         return self._process_manager.send_input(root, text, expected_run_id=expected_run_id)
 
-    def get_agent_output(self, root: str, since_line: int = 0) -> dict:
-        """Return new output lines since a given line number."""
-        root = self._resolve_root(root)
-        if not root:
-            return {"ok": False, "error": "unknown or unverified project root"}
-        return self._process_manager.get_output(root, since_line)
+    def get_agent_output(self, root: str, since_line: int = 0, expected_run_id: str | None = None) -> dict:
+        """Return new output lines since a given line number.
 
-    def get_agent_status(self, root: str) -> dict:
-        """Return status info for an agent process on a project."""
+        W2-004: expected_run_id lets the caller express which run they
+        expect.  If the active run differs the response carries a stale-run
+        marker so the frontend discards it instead of appending to the wrong
+        run's console.
+        """
         root = self._resolve_root(root)
         if not root:
             return {"ok": False, "error": "unknown or unverified project root"}
-        return self._process_manager.get_status(root)
+        return self._process_manager.get_output(root, since_line, expected_run_id=expected_run_id)
+
+    def get_agent_status(self, root: str, expected_run_id: str | None = None) -> dict:
+        """Return status info for an agent process on a project.
+
+        W2-004: expected_run_id lets the caller express which run they
+        expect.  If the active run differs the response carries a stale-run
+        marker so the frontend discards it instead of showing stale status.
+        """
+        root = self._resolve_root(root)
+        if not root:
+            return {"ok": False, "error": "unknown or unverified project root"}
+        return self._process_manager.get_status(root, expected_run_id=expected_run_id)
 
     def list_running_agents(self) -> list[dict]:
         """Return status dicts for all tracked agent processes."""

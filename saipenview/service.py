@@ -404,9 +404,9 @@ class SaipenViewService:
         except TypeError as exc:
             raise _ServiceError(f"bad arguments: {exc}", 400) from exc
         result = fn(*args)
-        # JSON-safe serialisation check; the pywebview bridge would also marshal
-        # this, so failing here surfaces the same contract violations early.
-        json.dumps(result)
+        # PERF-014: _send_json handles json.dumps; no need for a separate
+        # validation serialization here. The previous json.dumps(result) was
+        # discarded immediately, doubling CPU/allocation on every RPC.
         return result
 
     def _check_auth(self, token: str | None) -> None:

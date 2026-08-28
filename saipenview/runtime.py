@@ -869,7 +869,7 @@ class ProcessManager:
 
         return {"ok": True}
 
-    def get_output(self, project_root: str, since_line: int = 0) -> dict:
+    def get_output(self, project_root: str, since_line: int = 0, expected_run_id: str | None = None) -> dict:
         """Return new output lines since a given line number.
 
         Args:
@@ -892,6 +892,21 @@ class ProcessManager:
                 "lines": [],
                 "total": 0,
                 "status": "none",
+                "first_available": 0,
+                "next_since": 0,
+                "dropped_count": 0,
+            }
+
+        # W2-004: stale-run guard. If the caller expects a specific run_id
+        # but the active run differs, return a stale marker so the frontend
+        # discards the response instead of appending to the wrong console.
+        if expected_run_id is not None and ap.run_id != expected_run_id:
+            return {
+                "lines": [],
+                "total": 0,
+                "status": ap.status,
+                "run_id": ap.run_id,
+                "stale_run": True,
                 "first_available": 0,
                 "next_since": 0,
                 "dropped_count": 0,
@@ -930,13 +945,19 @@ class ProcessManager:
             "dropped_count": dropped,
         }
 
-    def get_status(self, project_root: str) -> dict:
+    def get_status(self, project_root: str, expected_run_id: str | None = None) -> dict:
         """Return status info for an agent process."""
         key = self._key(project_root)
         with self._lock:
             ap = self._processes.get(key)
         if not ap:
             return {"status": "none"}
+
+        # W2-004: stale-run guard. If the caller expects a specific run_id
+        # but the active run differs, return a stale marker so the frontend
+        # discards the response instead of showing stale status info.
+        if expected_run_id is not None and ap.run_id != expected_run_id:
+            return {"status": ap.status, "run_id": ap.run_id, "stale_run": True}
 
         cpu_percent = 0.0
         memory_mb = 0.0
