@@ -273,13 +273,17 @@ def _project_to_dict(
     }
 
 
+_cache_lock = threading.Lock()
+
 class Api:
     """Owns the cached scan result + user config; BackgroundScanner refreshes off-thread."""
 
     def __init__(self, on_hotkeys_changed=None, window=None, debounce_delay: float = 0.1):
         self._window = window
         self._lock = threading.Lock()
-        self._cache_lock = threading.Lock()
+        # W2-028: module-level cache lock shared across all Api instances.
+        # Prevents two concurrent writers from overwriting each other's
+        # snapshot when they share the same _data/cache.json path.
         self._projects: list[dict] = []
         self._has_scanned = False
         self._scanning = False
@@ -790,7 +794,7 @@ class Api:
             # <name>.tmp would let two concurrent writes clobber each other's
             # temp before os.replace, and a crashed first writer would leave
             # its temp for the second to replace.
-            with self._cache_lock:
+            with _cache_lock:
                 fd, tmp_name = tempfile.mkstemp(
                     dir=str(self._cache_file.parent), prefix="cache.json."
                 )
