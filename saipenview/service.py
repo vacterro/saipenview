@@ -550,8 +550,10 @@ class SaipenViewService:
                 ):
                     self._send_error_json(400, "body must be {method, args}")
                     return
-                args = body.get("args") or []
-                if not isinstance(args, list):
+                args = body.get("args")
+                if args is None:
+                    args = []
+                elif not isinstance(args, list):
                     self._send_error_json(400, "args must be an array")
                     return
                 try:

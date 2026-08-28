@@ -250,6 +250,27 @@ class TestRpc:
             urllib.request.urlopen(req, timeout=10)
         assert exc.value.code == 400
 
+    @pytest.mark.parametrize(
+        "bad_args",
+        [{}, "", 0, False],
+    )
+    def test_args_silent_reinterpretation_rejected(self, service, bad_args):
+        """T-41/W2-031: non-list non-null args must be rejected, not coerced
+        to []. body.get('args') or [] silently reinterprets {}, '', 0 and
+        false as empty list -- all of these are invalid and must return 400."""
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{service.bound_port}/api/rpc",
+            data=json.dumps({"method": "get_projects", "args": bad_args}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Saipenview-Token": "test-token-123",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=10)
+        assert exc.value.code == 400
+
 
 # ── protocol mutation safety (via real backend) ────────────────────────────
 
