@@ -151,6 +151,143 @@ def _tree_fingerprint(root: str, scope: dict, status_raw: str) -> tuple[str, lis
     return h.hexdigest(), unreadable
 
 
+
+def _state_with_preview(
+    root: str,
+    cap_lines: int = 200,
+    cap_total: int = 2000,
+    cap_bytes: int = 2 * 1024 * 1024,
+) -> dict:
+    """PERF-008: single-pass scope + fingerprint + diff preview.
+
+    Runs git status, git diff --cached, and git diff exactly once each.
+    The outputs are reused for scope categorisation, fingerprint hashing,
+    and preview rendering -- eliminating the redundant subprocess calls
+    that _current_state + get_working_diff previously issued.
+    """
+    # 1. Status (scope + raw for fingerprint)
+    try:
+        status_r = _run_git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"ok": False, "error": str(e)}
+    if status_r.returncode != 0:
+        return {"ok": False, "error": (status_r.stderr or "git status failed").strip()}
+    status_raw = status_r.stdout
+
+    staged, modified, deleted, renamed, untracked = [], [], [], [], []
+    for codes, first, second in _parse_status_entries(status_raw):
+        if codes == "??":
+            untracked.append(first)
+            continue
+        if codes[0] in "RC":
+            renamed.append({"from": second or "", "to": first})
+            continue
+        if codes[0] in "MADU" or (codes[0] != " " and codes[1] != " "):
+            staged.append(first)
+        if codes[1] == "M":
+            modified.append(first)
+        if "D" in codes:
+            deleted.append(first)
+    scope = {
+        "staged": staged, "modified": modified, "deleted": deleted,
+        "renamed": renamed, "untracked": untracked,
+        "counts": {
+            "staged": len(staged), "modified": len(modified),
+            "deleted": len(deleted), "renamed": len(renamed),
+            "untracked": len(untracked),
+            "total": len(staged) + len(modified) + len(deleted) + len(renamed) + len(untracked),
+        },
+    }
+
+    # 2. Diffs (for fingerprint + preview display) -- one call each
+    h = hashlib.sha256()
+    h.update(status_raw.encode("utf-8", "replace"))
+    staged_diff = ""
+    unstaged_diff = ""
+    try:
+        staged_r = _run_git(root, ["diff", "--cached"])
+        staged_diff = staged_r.stdout
+        h.update(staged_diff.encode("utf-8", "replace"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        unstaged_r = _run_git(root, ["diff"])
+        unstaged_diff = unstaged_r.stdout
+        h.update(unstaged_diff.encode("utf-8", "replace"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    # 3. Untracked files: hash + preview in one read pass each
+    unreadable: list[str] = []
+    untracked_parts: list[str] = []
+    total = 0
+    for path in sorted(untracked):
+        p = Path(root) / path
+        try:
+            data = p.read_bytes()
+        except OSError:
+            unreadable.append(path)
+            continue
+        # Hash for fingerprint
+        h.update(path.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(data)
+        # Preview rendering (capped)
+        truncated = len(data) > cap_bytes
+        if truncated:
+            data = data[:cap_bytes]
+        if b"\x00" in data[:8192]:
+            untracked_parts.append(f"diff --git a/{path} b/{path}\nnew file mode 100644\nBinary file\n")
+            total += 1
+            continue
+        text = data.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if truncated:
+            lines.append(f"... ({cap_bytes} bytes shown, file larger -- truncated)")
+        shown = lines[:cap_lines]
+        if len(lines) > cap_lines:
+            shown.append(f"... ({len(lines) - cap_lines} more lines not shown)")
+        body = "\n".join("+" + line for line in shown)
+        untracked_parts.append(
+            f"diff --git a/{path} b/{path}\n"
+            f"new file mode 100644\n"
+            f"--- /dev/null\n"
+            f"+++ b/{path}\n"
+            f"@@ -0,0 +1,{len(lines)} @@\n{body}"
+        )
+        total += len(lines)
+        if total > cap_total:
+            untracked_parts.append("... untracked preview truncated ...")
+            break
+
+    if unreadable:
+        return {
+            "ok": False,
+            "error": (
+                f"Cannot preview: {len(unreadable)} untracked file(s) unreadable "
+                f"({', '.join(unreadable[:5])}); refusing to mutate with "
+                "incomplete evidence"
+            ),
+        }
+
+    # 4. Assemble diff text
+    diff_text = staged_diff + unstaged_diff
+    untracked_text = "\n".join(untracked_parts)
+    if untracked_text:
+        diff_text = (
+            (diff_text.rstrip("\n") + "\n" + untracked_text)
+            if diff_text.strip()
+            else untracked_text
+        )
+
+    return {
+        "ok": True,
+        "scope": scope,
+        "fingerprint": h.hexdigest(),
+        "diff": diff_text,
+    }
+
+
 def _current_state(root: str) -> dict:
     """scope + fingerprint in one call (the honest preview state).
 
@@ -258,90 +395,18 @@ def _verify_fingerprint(root: str, expected: str | None) -> dict | None:
 def get_working_diff(
     root: str, untracked_cap_lines: int = 200, untracked_cap_total: int = 2000
 ) -> dict:
-    """Full preview: tracked diffs plus untracked-file content, plus scope."""
+    """Full preview: tracked diffs plus untracked-file content, plus scope.
+
+    PERF-008: uses _state_with_preview for a single-pass that runs each
+    git subprocess exactly once, reusing outputs for scope, fingerprint,
+    and preview rendering.
+    """
     if not is_git_repo(root):
         return {"ok": False, "error": "Not a git repository"}
-    try:
-        staged = _run_git(root, ["diff", "--cached"])
-        unstaged = _run_git(root, ["diff"])
-        if staged.returncode != 0 or unstaged.returncode != 0:
-            return {
-                "ok": False,
-                "error": (
-                    staged.stderr or unstaged.stderr or "git diff failed"
-                ).strip(),
-            }
-        current = _current_state(root)
-        if not current.get("ok"):
-            return current
-        untracked_text = _render_untracked(
-            root,
-            current["scope"]["untracked"],
-            cap_lines=untracked_cap_lines,
-            cap_total=untracked_cap_total,
-        )
-        diff_text = staged.stdout + unstaged.stdout
-        if untracked_text:
-            diff_text = (
-                (diff_text.rstrip("\n") + "\n" + untracked_text)
-                if diff_text.strip()
-                else untracked_text
-            )
-        return {
-            "ok": True,
-            "diff": diff_text,
-            "scope": current["scope"],
-            "fingerprint": current["fingerprint"],
-        }
-    except (OSError, subprocess.SubprocessError) as e:
-        return {"ok": False, "error": str(e)}
+    return _state_with_preview(root, untracked_cap_lines, untracked_cap_total)
 
 
-def _render_untracked(
-    root: str,
-    files: list[str],
-    cap_lines: int = 200,
-    cap_total: int = 2000,
-    cap_bytes: int = 2 * 1024 * 1024,
-) -> str:
-    """Render untracked files as new-file diff hunks so the preview shows
-    everything Commit would actually include (T-162: no invisible files)."""
-    parts: list[str] = []
-    total = 0
-    for f in files:
-        p = Path(root) / f
-        try:
-            with p.open("rb") as fh:
-                data = fh.read(cap_bytes + 1)
-        except OSError:
-            continue
-        truncated = len(data) > cap_bytes
-        if truncated:
-            data = data[:cap_bytes]
-        if b"\x00" in data[:8192]:
-            parts.append(f"diff --git a/{f} b/{f}\nnew file mode 100644\nBinary file\n")
-            total += 1
-            continue
-        text = data.decode("utf-8", errors="replace")
-        lines = text.splitlines()
-        if truncated:
-            lines.append(f"... ({cap_bytes} bytes shown, file larger -- truncated)")
-        shown = lines[:cap_lines]
-        if len(lines) > cap_lines:
-            shown.append(f"... ({len(lines) - cap_lines} more lines not shown)")
-        body = "\n".join("+" + line for line in shown)
-        parts.append(
-            f"diff --git a/{f} b/{f}\n"
-            f"new file mode 100644\n"
-            f"--- /dev/null\n"
-            f"+++ b/{f}\n"
-            f"@@ -0,0 +1,{len(lines)} @@\n{body}"
-        )
-        total += len(lines)
-        if total > cap_total:
-            parts.append("... untracked preview truncated ...")
-            break
-    return "\n".join(parts)
+
 
 
 def commit_agent_work(root: str, message: str, fingerprint: str | None = None) -> dict:
