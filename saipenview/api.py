@@ -707,9 +707,9 @@ class Api:
         if not full_refresh_was_pending and not self._scanning:
             # Idle (no scan, no startup reconciliation pending): the watcher
             # already maintains _projects, so skip the re-parse entirely
-            # (PERF-002 win). The previous code never cleared this flag, which
-            # forced every 5s poll into an O(projects) reparse.
-            self._refresh_changed_roots = []
+            # (PERF-002 win). Do NOT clear _refresh_changed_roots here -- an
+            # unconsumed changed-set from a prior refresh_known must survive
+            # until get_changed_roots() explicitly drains it (T-39/W2-029).
             return self.get_projects()
         for attempt in range(3):
             if attempt > 0:

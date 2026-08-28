@@ -1135,9 +1135,27 @@ class TestIdlePolling:
         api.refresh_known()  # startup pending -> one full reconciliation parse
         calls["load"] = 0
         api._full_refresh_pending = False
-        api.refresh_known()  # idle -> no re-parse, empty changed set
+        api.refresh_known()  # idle -> no re-parse, preserves existing changed set
         assert calls["load"] == 0, "idle poll must not call load_project"
-        assert api.get_changed_roots() == [], "idle poll must report no changes"
+        # After first refresh populates changed_roots, idle poll must NOT clear
+        # them -- get_changed_roots should still deliver the prior refresh's roots
+        # (T-39 / W2-029: destructive mailbox must not leak-unread entries).
+        assert api.get_changed_roots() == ["/mock/project"]
+
+    def test_idle_poll_preserves_unread_changed_roots(self, idle_api):
+        """T-39: an idle refresh between change population and consumption
+        must not swallow an unread changed set.
+        R1 populates ['rootA']; idle R2 arrives before consumer reads;
+        get_changed_roots() still returns ['rootA'].
+        """
+        api, calls = idle_api
+        api.refresh_known()  # startup -> populates _refresh_changed_roots
+        calls["load"] = 0
+        # Simulate: a second idle refresh arrives BEFORE the frontend consumed.
+        api._full_refresh_pending = False
+        api.refresh_known()  # idle short-circuit -- must NOT clear preserved set
+        # First consumer call still sees the original changed roots.
+        assert api.get_changed_roots() == ["/mock/project"]
 
 
 # ── T-590 / PERF-001: scan worktrees must pass through, not be re-walked ──
