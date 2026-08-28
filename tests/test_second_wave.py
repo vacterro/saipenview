@@ -770,27 +770,27 @@ def test_run_unwinds_started_components_on_failure(monkeypatch):
         if app_mod._boom_at == "webview":
             raise _Boom("webview")
 
-        for boom_at in boom_points:
-            stops.clear()
-            app_mod._boom_at = boom_at
-            monkeypatch.setattr(app_mod, "MainWindow", _Window)
-            monkeypatch.setattr(app_mod, "build_tray_icon", lambda **k: _Comp("tray"))
-            monkeypatch.setattr(app_mod, "HotkeyListener", _make_hotkey)
-            monkeypatch.setattr(app_mod, "Api", _Api)
-            monkeypatch.setattr(app_mod, "SingleInstanceGuard", _Guard)
-            monkeypatch.setattr(app_mod.webview, "start", _webview_start)
+    for boom_at in boom_points:
+        stops.clear()
+        app_mod._boom_at = boom_at
+        monkeypatch.setattr(app_mod, "MainWindow", _Window)
+        monkeypatch.setattr(app_mod, "build_tray_icon", lambda **k: _Comp("tray"))
+        monkeypatch.setattr(app_mod, "HotkeyListener", _make_hotkey)
+        monkeypatch.setattr(app_mod, "Api", _Api)
+        monkeypatch.setattr(app_mod, "SingleInstanceGuard", _Guard)
+        monkeypatch.setattr(app_mod.webview, "start", _webview_start)
 
-            reached_boom = False
-            try:
-                app_mod.run()
-            except SystemExit:
-                pass
-            except _Boom:
-                # run() lets the failure propagate (the OS / caller handles it);
-                # the critical contract is that its finally unwinds every
-                # started component first.
-                reached_boom = True
-            assert reached_boom == (boom_at is not None), f"boom propagation wrong for {boom_at}"
+        reached_boom = False
+        try:
+            app_mod.run()
+        except SystemExit:
+            pass
+        except _Boom:
+            # run() lets the failure propagate (the OS / caller handles it);
+            # the critical contract is that its finally unwinds every
+            # started component first.
+            reached_boom = True
+        assert reached_boom == (boom_at is not None), f"boom propagation wrong for {boom_at}"
 
         started_idx = order.index(boom_at) if boom_at in order else len(order)
         for i, name in enumerate(order):
@@ -802,5 +802,9 @@ def test_run_unwinds_started_components_on_failure(monkeypatch):
             if i < started_idx:
                 assert stops.get(name) == 1, f"{name} stop={stops.get(name)} boom={boom_at}"
             else:
-                assert stops.get(name, 0) == 0, f"{name} touched boom={boom_at}"
+                # api is always in _started (created before any boom point),
+                # so it is always stopped during cleanup even for early booms.
+                # All other later-components must not be touched.
+                expected = 1 if name == "api" else 0
+                assert stops.get(name, 0) == expected, f"{name} touched boom={boom_at}"
         assert stops.get("guard") == 1
