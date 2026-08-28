@@ -13,15 +13,23 @@ watcher reports origin=self for the app's own writes). This registry stores
 UNRESOLVED EXTERNAL evidence only -- a later app write that happens to produce
 matching bytes does NOT clear an external violation; only an explicit
 acknowledge or a verified protocol resolution does.
+
+T-37 / W2-027: persistence. The registry is backed by a JSON file in the
+_data/ directory. On every mutation (record/acknowledge) the file is atomically
+rewritten. On construction the file is loaded so unresolved evidence survives
+restart.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time as _time
-from dataclasses import dataclass
+from pathlib import Path
+from dataclasses import dataclass, asdict
 
+from saipenview.config import config_path
 from saipenview.paths import canonical_key
 
 
@@ -63,6 +71,7 @@ class PendingChange:
         return {
             "root": self.root,
             "path": self.rel_path,
+            "fingerprint": self.fingerprint,
             "status": self.status,
             "observed_at": self.observed_at,
             "token": self.token,
@@ -72,9 +81,60 @@ class PendingChange:
 class ExternalChangeRegistry:
     """Per-(canonical-root, normalized-rel-path) unresolved external writes."""
 
+    _PERSIST_FILE = "external_changes.json"
+
     def __init__(self) -> None:
         self._entries: dict[tuple[str, str], PendingChange] = {}
         self._lock = threading.Lock()
+        self._persist_path: Path | None = None
+        self._load()
+
+    def _set_persist_path(self, path: Path) -> None:
+        """Override the default persist path (for tests)."""
+        self._persist_path = path
+        self._load()
+
+    def _persist_file(self) -> Path:
+        if self._persist_path is not None:
+            return self._persist_path
+        return config_path().parent / self._PERSIST_FILE
+
+    def _load(self) -> None:
+        """Load persisted entries from disk. Called on init and after each write."""
+        path = self._persist_file()
+        if not path.exists():
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                for item in data:
+                    try:
+                        pc = PendingChange(
+                            root=item["root"],
+                            rel_path=item["path"],
+                            fingerprint=item["fingerprint"],
+                            observed_at=item["observed_at"],
+                            token=item["token"],
+                            status=item.get("status", "unresolved"),
+                        )
+                        self._entries[(pc.root, pc.rel_path)] = pc
+                    except (KeyError, TypeError):
+                        pass  # skip corrupted entries
+        except (OSError, json.JSONDecodeError):
+            pass  # corrupt file -> start fresh
+
+    def _save(self) -> None:
+        """Atomically write all entries to disk."""
+        path = self._persist_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.parent / (path.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump([c.to_dict() for c in self._entries.values()], f, indent=2)
+            tmp.replace(path)
+        except OSError:
+            pass  # best-effort; in-memory state is authoritative
 
     def record(self, root: str, rel_path: str, fingerprint: str) -> int:
         """Record an external write under canonicalized keys. The watcher only
@@ -93,6 +153,7 @@ class ExternalChangeRegistry:
             self._entries[(key_root, key_rel)] = PendingChange(
                 key_root, key_rel, fingerprint, now, token
             )
+            self._save()
         return token
 
     def acknowledge(self, root: str, rel_path: str, token: int | None = None) -> bool:
@@ -110,6 +171,7 @@ class ExternalChangeRegistry:
             if token is not None and entry.token != token:
                 return False  # stale acknowledgement -- newer write exists
             self._entries.pop((key_root, key_rel), None)
+            self._save()
             return True
 
     def pending(self, root: str | None = None) -> list[PendingChange]:
