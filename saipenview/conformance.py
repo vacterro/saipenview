@@ -1197,14 +1197,19 @@ def _build_log_aggregate(
 def _log_aggregate(root: Path, files: tuple[Path, ...], active: Path | None) -> _LogAggregate:
     with _LOG_CACHE_LOCK:
         cache = _LOG_CACHE.setdefault(root, _ProjectLogCache())
+        # PERF-001: track whether any log file actually changed so we can
+        # skip the O(total history) aggregate rebuild when nothing moved.
+        any_changed = False
         for path in files:
-            cache.files[path] = _load_log_file(path, path == active, cache.files.get(path))
+            prev = cache.files.get(path)
+            cache.files[path] = _load_log_file(path, path == active, prev)
+            if prev is None or prev.signature != cache.files[path].signature:
+                any_changed = True
         if cache.file_order != files:
             cache.aggregate = None
             cache.file_order = files
-        if cache.aggregate is None:
-            cache.aggregate = _build_log_aggregate(files, cache, active)
-        else:
+            any_changed = True
+        if cache.aggregate is None or any_changed:
             cache.aggregate = _build_log_aggregate(files, cache, active)
         return cache.aggregate
 

@@ -429,12 +429,16 @@ def scan(
     # Canonical forms: absolute, case-normalised, symlink-resolved, drive
     # roots carry a single trailing separator (T-138 layer 1).
     roots = [canonical(r) for r in raw_roots]
-    # Stale-root quarantine (T-138 layer 2): a missing drive/root is surfaced,
-    # never silently dropped from the scan set -- and it stays in the set, so
-    # when the drive returns the next scan picks it up again automatically.
+    # W2-009 / T-138 layer 2: a missing drive/root is surfaced, never silently
+    # dropped from the scan set -- and it stays in the set, so when the drive
+    # returns the next scan picks it up again automatically.
+    # Track missing roots so we can force the outcome to incomplete: a
+    # temporarily offline drive must not be treated as authoritative empty.
+    missing_roots: list[str] = []
     for r in roots:
         if not Path(r).exists():
             _push_error(f"scan root missing, quarantined until it returns: {r}")
+            missing_roots.append(r)
     # Deduplicate roots by canonical key before parallel submission -- same
     # path scanned twice wastes a thread and can race on _scan_progress.
     seen_roots: set[str] = set()
@@ -469,7 +473,9 @@ def scan(
     # error/timeout is authoritative. Skipped roots were owned by another
     # scan, so we never saw those projects -- marking complete=True would
     # let callers treat partial data as authoritative.
-    complete = skipped == 0
+    # W2-009: missing roots are also non-authoritative -- the scan cannot
+    # guarantee it saw all projects when a configured root was unreachable.
+    complete = skipped == 0 and not missing_roots
     # PERF-006: one cooperative cancellation event per scan() invocation.
     # Workers check it before every directory descent; the timeout paths set
     # it so running walks unwind promptly instead of grinding on after their

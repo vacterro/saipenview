@@ -1063,15 +1063,13 @@ class Api:
             fn(self._config)
 
     def save_view_config(self, settings: dict) -> dict:
-        # CORE-015: runtime and persisted state must be identical. Build the
-        # candidate, normalize it via the canonical normalizer (including path
-        # canonicalization), persist exactly that normalized candidate, then
-        # replace live _config with the same values. Callers never see raw
-        # invalid values that differ from disk.
+        # W2-005: the entire read-modify-normalize-replace sequence is one
+        # atomic transaction under self._lock. Two concurrent callers
+        # (e.g. search_query from poll and zoom_level from user) now see
+        # each other's mutations instead of losing them.
         from saipenview.config import normalize_config
         from saipenview.paths import canonical, dedupe
-        candidate = dict(self._config)
-        for k in (
+        _VIEW_KEYS = (
             "filter_phase",
             "compact_mode",
             "zoom_level",
@@ -1099,24 +1097,25 @@ class Api:
             "projects_collapsed_by_default",
             "projects_unfolded_tail",
             "collapsed_projects",
-        ):
-            if k in settings:
-                candidate[k] = settings[k]
-        # Normalize via canonical normalizer (type/range/enum validation)
-        normalized = normalize_config(candidate)
-        if isinstance(normalized.get("scan_roots"), list):
-            normalized["scan_roots"] = dedupe(normalized["scan_roots"])
-        for key in ("pinned_roots", "hidden_roots"):
-            normalized[key] = dedupe(normalized.get(key))
-        if normalized.get("selected_root"):
-            try:
-                normalized["selected_root"] = canonical(normalized["selected_root"])
-            except Exception:
-                pass
-        # Persist the exact normalized candidate
+        )
+        with self._lock:
+            candidate = dict(self._config)
+            for k in _VIEW_KEYS:
+                if k in settings:
+                    candidate[k] = settings[k]
+            normalized = normalize_config(candidate)
+            if isinstance(normalized.get("scan_roots"), list):
+                normalized["scan_roots"] = dedupe(normalized["scan_roots"])
+            for key in ("pinned_roots", "hidden_roots"):
+                normalized[key] = dedupe(normalized.get(key))
+            if normalized.get("selected_root"):
+                try:
+                    normalized["selected_root"] = canonical(normalized["selected_root"])
+                except Exception:
+                    pass
+            self._config = normalized
+        # Persist outside lock (save_config has its own _save_lock).
         save_config(normalized)
-        # Replace live config with what was persisted (load back to be sure)
-        self._config = normalized
         return self.get_config()
 
     def set_engine_overrides(self, overrides: dict) -> dict:
