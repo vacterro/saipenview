@@ -92,6 +92,7 @@ class ExternalChangeRegistry:
     def _set_persist_path(self, path: Path) -> None:
         """Override the default persist path (for tests)."""
         self._persist_path = path
+        self._entries.clear()
         self._load()
 
     def _persist_file(self) -> Path:
