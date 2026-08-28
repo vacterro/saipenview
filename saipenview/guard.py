@@ -105,10 +105,15 @@ class SingleInstanceGuard:
             client.settimeout(2.0)
             client.connect(("127.0.0.1", self.port))
             client.sendall(_SHOW_MAGIC)
+            # T-40/W2-030: must read the versioned ACK before closing so the
+            # requester distinguishes "live owner heard us" from "port was open
+            # but nothing answered". A bare send with no read returns True even
+            # when the owner never processed the SHOW request.
+            ack = client.recv(64)
             client.close()
+            return bool(ack and _SHOW_ACK in ack)
         except OSError:
             return False
-        return True
 
     def acquire(self, on_show_request=None) -> bool:
         """True = we own the instance and the app should run.
