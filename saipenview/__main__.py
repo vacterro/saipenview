@@ -20,12 +20,13 @@ from saipenview.paths import canonical, validate_file_path
 
 def _run_service(args: argparse.Namespace) -> int:
     from saipenview.service import run_service
-    from saipenview.guard import SingleInstanceGuard
+    from saipenview.guard import SingleInstanceGuard, SINGLE_INSTANCE_PORT
 
-    # W2-001: service mode must also acquire the OS-level single-instance lease
-    # so two concurrent service backends cannot mutate one project. The named
-    # mutex (Windows) / TCP bind (other platforms) proves one-writer globally.
-    guard = SingleInstanceGuard(port=args.port or 47189)
+    # CORE-004: the guard uses a FIXED global port for single-instance
+    # detection (named mutex on Windows, TCP on other platforms). After
+    # acquisition proves ownership, the TCP listener is released so the
+    # user-specified service port is free for the HTTP server.
+    guard = SingleInstanceGuard(port=SINGLE_INSTANCE_PORT)
     if not guard.acquire():
         print(
             "SAIPENVIEW: another instance already owns this service port; "
@@ -33,6 +34,10 @@ def _run_service(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    # CORE-004: release the guard's TCP listener now that ownership is
+    # proven. The named mutex (Windows) retains the ownership signal; the
+    # service can now bind args.port without EADDRINUSE.
+    guard.release_listener()
 
     try:
         import signal

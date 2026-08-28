@@ -137,6 +137,15 @@ class ExternalChangeRegistry:
         except OSError:
             pass  # best-effort; in-memory state is authoritative
 
+    def flush(self) -> None:
+        """W2-008: synchronous flush — ensure the on-disk state matches memory.
+
+        Called by api.stop() so shutdown never loses the last batch of
+        mutations to a background write that hasn't completed yet.
+        """
+        with self._lock:
+            self._save()
+
     def record(self, root: str, rel_path: str, fingerprint: str) -> int:
         """Record an external write under canonicalized keys. The watcher only
         calls this for origin=external (the app's own writes were attributed

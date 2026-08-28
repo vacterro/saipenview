@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -103,6 +104,10 @@ class Finding:
 class Report:
     findings: list[Finding] = field(default_factory=list)
     baseline: str = protocol.BASELINE_VERSION
+    # PERF-006: the row/cache/UI transport never needs every finding -- only
+    # exact counters and a bounded representative set. 100 keeps the worst
+    # damaged project's row small while showing a human plenty of evidence.
+    MAX_TRANSPORT_FINDINGS = 100
 
     @property
     def fails(self) -> int:
@@ -121,13 +126,20 @@ class Report:
         return "pass"
 
     def to_dict(self) -> dict:
-        return {
+        total = len(self.findings)
+        truncated = total > self.MAX_TRANSPORT_FINDINGS
+        shown = self.findings if not truncated else self.findings[: self.MAX_TRANSPORT_FINDINGS]
+        out = {
             "verdict": self.verdict,
             "fails": self.fails,
             "warns": self.warns,
             "baseline": self.baseline,
-            "findings": [f.to_dict() for f in self.findings],
+            "findings": [f.to_dict() for f in shown],
         }
+        if truncated:
+            out["findings_total"] = total
+            out["findings_truncated"] = True
+        return out
 
 
 class _Collector:
@@ -533,6 +545,21 @@ def parse_board_strict(text: str) -> tuple[dict[str, BoardTicket], list[str], li
     return tickets, headings, problems
 
 
+_BOARD_CACHE: dict[Path, tuple[tuple[int, int, int, int, int], dict[str, BoardTicket], list[str], list, str]] = {}
+_BOARD_CACHE_LOCK = threading.RLock()
+
+
+def _board_signature(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        getattr(stat, "st_ctime_ns", 0),
+    )
+
+
 def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
     board_path = root / ".saipen" / "BOARD.md"
     if not board_path.is_file():
@@ -544,7 +571,16 @@ def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
         )
         return {}
 
-    enc = encoding_of(board_path)
+    with _BOARD_CACHE_LOCK:
+        sig = _board_signature(board_path)
+        cached = _BOARD_CACHE.get(board_path)
+        if cached is not None and cached[0] == sig:
+            tickets, headings, problems, enc = cached[1], cached[2], cached[3], cached[4]
+        else:
+            enc = encoding_of(board_path)
+            tickets, headings, problems = parse_board_strict(read_doc(board_path))
+            _BOARD_CACHE[board_path] = (sig, tickets, headings, problems, enc)
+
     if enc != "utf-8":
         c.fail(
             "board.encoding",
@@ -553,8 +589,6 @@ def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
             "KNOWLEDGE/traps.md",
             _BOARD_FILE,
         )
-
-    tickets, headings, problems = parse_board_strict(read_doc(board_path))
 
     for line_no, kind, detail in problems:
         if kind == "duplicate":
@@ -950,6 +984,231 @@ def _log_sequence(root: Path) -> tuple[list[Path], Path | None]:
     return segments, active if active.is_file() else None
 
 
+@dataclass
+class _LogRecord:
+    findings: list[Finding]
+    event: int | None = None
+    stamp: datetime.datetime | None = None
+    dated: bool = False
+    line_no: int = 0
+
+
+@dataclass
+class _CachedLogFile:
+    signature: tuple[int, int, int, int, int]
+    records: list[_LogRecord]
+    size: int
+    line_count: int
+    partial: str = ""
+    in_comment: bool = False
+
+
+@dataclass
+class _LogAggregate:
+    findings: list[Finding]
+    future: list[tuple[int, datetime.datetime, str, int]]
+    seen: dict[int, int]
+    prev_event: int | None
+    undated: int
+    active_missing: bool
+
+
+@dataclass
+class _ProjectLogCache:
+    files: dict[Path, _CachedLogFile] = field(default_factory=dict)
+    aggregate: _LogAggregate | None = None
+    file_order: tuple[Path, ...] = ()
+
+
+_LOG_CACHE: dict[Path, _ProjectLogCache] = {}
+_LOG_CACHE_LOCK = threading.RLock()
+
+
+def _log_signature(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        getattr(stat, "st_ctime_ns", 0),
+    )
+
+
+def _parse_log_record(line: str, path: Path, line_no: int, is_active: bool) -> _LogRecord | None:
+    line = line.rstrip()
+    if not line.strip() or line.startswith("#"):
+        return None
+    findings: list[Finding] = []
+    if "�" in line:
+        findings.append(Finding(
+            "log.replacement_char", FAIL,
+            "line carries a U+FFFD replacement character -- text was corrupted somewhere upstream and the repair must be explicit",
+            "RFC § 1.2", path.name, line_no,
+        ))
+    skeleton = _LOG_SKELETON_RE.match(line)
+    if not skeleton:
+        findings.append(Finding(
+            "log.skeleton", FAIL,
+            f"line does not match the Event Graph skeleton `- DD.MM.YY HH:MM [E-###] [parent: E-###] [T-###] VERB: text`: {line[:80]!r}",
+            "RFC § 1.2", path.name, line_no,
+        ))
+        return _LogRecord(findings, line_no=line_no)
+    _, _, ticket_ref, taxonomy, _ = skeleton.groups()
+    if taxonomy not in _LOG_TAXONOMY:
+        findings.append(Finding(
+            "log.taxonomy", WARN,
+            f"verb {taxonomy!r} is not one of {'/'.join(sorted(_LOG_TAXONOMY))} -- non-conformant for new entries",
+            "RFC § 1.2", path.name, line_no,
+        ))
+    if ticket_ref and not _TICKET_REF_RE.match(ticket_ref):
+        findings.append(Finding(
+            "log.ticket_ref", WARN,
+            f"ticket reference {ticket_ref!r} is neither a numeric T-### nor the literal T-none",
+            "RFC § 1.2", path.name, line_no,
+        ))
+    dated = _LOG_ENTRY_RE.match(line)
+    event = int(_LOG_ANY_EVENT_RE.match(line).group(1))
+    stamp = None
+    if not dated:
+        if is_active:
+            findings.append(Finding(
+                "log.timestamp.missing", FAIL,
+                f"E-{event} in the active LOG has no DD.MM.YY HH:MM stamp -- Recovery cannot order what it cannot date",
+                "RFC § 1.2", path.name, line_no,
+            ))
+    else:
+        try:
+            stamp = datetime.datetime.strptime(
+                f"{dated.group(1)} {dated.group(2)}", "%d.%m.%y %H:%M"
+            ).replace(tzinfo=datetime.timezone.utc)
+        except ValueError:
+            pass
+    return _LogRecord(findings, event, stamp, dated is not None, line_no=line_no)
+
+
+def _parse_log_text(
+    text: str,
+    path: Path,
+    is_active: bool,
+    initial_comment: bool = False,
+) -> tuple[list[_LogRecord], str, bool]:
+    parts = text.splitlines(keepends=True)
+    partial = ""
+    if parts and not parts[-1].endswith(("\n", "\r")):
+        partial = parts.pop()
+    records: list[_LogRecord] = []
+    in_comment = initial_comment
+    for line_no, raw in enumerate(parts, 1):
+        line = raw.rstrip()
+        if in_comment:
+            if "-->" in line:
+                in_comment = False
+            continue
+        if line.lstrip().startswith("<!--"):
+            if "-->" not in line:
+                in_comment = True
+            continue
+        record = _parse_log_record(raw, path, line_no, is_active)
+        if record is not None:
+            records.append(record)
+    if partial and not in_comment:
+        record = _parse_log_record(partial, path, len(parts) + 1, is_active)
+        if record is not None:
+            records.append(record)
+    return records, partial, in_comment
+
+
+def _load_log_file(path: Path, is_active: bool, cached: _CachedLogFile | None) -> _CachedLogFile:
+    signature = _log_signature(path)
+    if cached is not None and signature == cached.signature:
+        return cached
+    if (
+        cached is not None
+        and signature[:2] == cached.signature[:2]
+        and signature[2] > cached.size
+        and encoding_of(path) == "utf-8"
+    ):
+        with path.open("rb") as handle:
+            handle.seek(cached.size)
+            appended = handle.read().decode("utf-8", errors="replace")
+        if cached.partial and cached.records:
+            cached.records.pop()
+        records, partial, in_comment = _parse_log_text(
+            cached.partial + appended, path, is_active, cached.in_comment
+        )
+        start = cached.line_count - (1 if cached.partial else 0) + 1
+        for record in records:
+            record.line_no += start - 1
+        cached.records.extend(records)
+        cached.partial = partial
+        cached.in_comment = in_comment
+        cached.line_count += appended.count("\n")
+        cached.size = signature[2]
+        cached.signature = signature
+        return cached
+    text = read_doc(path)
+    records, partial, in_comment = _parse_log_text(text, path, is_active)
+    return _CachedLogFile(
+        signature, records, signature[2], text.count("\n"), partial, in_comment
+    )
+
+
+def _build_log_aggregate(
+    files: tuple[Path, ...], cache: _ProjectLogCache, active: Path | None
+) -> _LogAggregate:
+    findings: list[Finding] = []
+    future: list[tuple[int, datetime.datetime, str, int]] = []
+    seen: dict[int, int] = {}
+    prev_event = None
+    undated = 0
+    active_missing = False
+    for path in files:
+        data = cache.files[path]
+        for record in data.records:
+            findings.extend(record.findings)
+            if record.event is None:
+                continue
+            if not record.dated:
+                undated += 1
+            if path == active and any(f.rule == "log.timestamp.missing" for f in record.findings):
+                active_missing = True
+            if record.stamp is not None:
+                future.append((record.event, record.stamp, path.name, record.line_no))
+            if record.event in seen:
+                findings.append(Finding(
+                    "log.event.duplicate", FAIL,
+                    f"E-{record.event} appears twice (first at line {seen[record.event]}) -- event ids are unique",
+                    "RFC § 1.2", path.name, record.line_no,
+                ))
+            elif prev_event is not None and record.event < prev_event:
+                findings.append(Finding(
+                    "log.event.order", FAIL,
+                    f"E-{record.event} follows E-{prev_event} -- event ids only increase",
+                    "RFC § 1.2", path.name, record.line_no,
+                ))
+            seen[record.event] = record.line_no
+            prev_event = max(prev_event or 0, record.event)
+    return _LogAggregate(
+        findings, future, seen, prev_event, undated, active_missing
+    )
+
+
+def _log_aggregate(root: Path, files: tuple[Path, ...], active: Path | None) -> _LogAggregate:
+    with _LOG_CACHE_LOCK:
+        cache = _LOG_CACHE.setdefault(root, _ProjectLogCache())
+        for path in files:
+            cache.files[path] = _load_log_file(path, path == active, cache.files.get(path))
+        if cache.file_order != files:
+            cache.aggregate = None
+            cache.file_order = files
+        if cache.aggregate is None:
+            cache.aggregate = _build_log_aggregate(files, cache, active)
+        else:
+            cache.aggregate = _build_log_aggregate(files, cache, active)
+        return cache.aggregate
+
+
 def check_log(root: Path, c: _Collector, state: dict[str, str] | None = None) -> None:
     log_path = root / ".saipen" / "LOG.md"
     if not log_path.is_file():
@@ -960,165 +1219,28 @@ def check_log(root: Path, c: _Collector, state: dict[str, str] | None = None) ->
             _LOG_FILE,
         )
         return
-
     enc = encoding_of(log_path)
     if enc != "utf-8":
-        c.fail(
-            "log.encoding",
-            f"LOG.md is {enc}, not plain UTF-8",
-            "KNOWLEDGE/traps.md",
-            _LOG_FILE,
-        )
-
+        c.fail("log.encoding", f"LOG.md is {enc}, not plain UTF-8", "KNOWLEDGE/traps.md", _LOG_FILE)
     segments, active = _log_sequence(root)
-    log_files = segments + ([active] if active is not None else [])
-
+    files = tuple(segments + ([active] if active is not None else []))
+    aggregate = _log_aggregate(root, files, active)
+    c.findings.extend(aggregate.findings)
     now = datetime.datetime.now(datetime.timezone.utc)
-    prev_event = None
-    seen: dict[int, int] = {}
-    undated = 0
-    in_comment = False
-    for path in log_files:
-        is_active = path == active
-        for line_no, raw in enumerate(read_doc(path).splitlines(), 1):
-            line = raw.rstrip()
-            if not line.strip() or line.startswith("#"):
-                continue
-
-            # HTML comments are annotations ABOUT the log, not entries in it, and
-            # demanding the Event Graph skeleton from one is a grader bug, not a
-            # finding. Real case: FastPrompter's LOG carries a 16-line
-            # `<!-- RECOVERY SPLICE ... -->` block explaining that a saitranslate
-            # INIT bootstrap had overwritten BOARD/LOG/STATE -- exactly the kind of
-            # note a human needs, reported as 16 failures for having the wrong
-            # shape. Skipped whole: a `<!--` opener suppresses until its `-->`,
-            # since the body lines carry no marker of their own.
-            if in_comment:
-                if "-->" in line:
-                    in_comment = False
-                continue
-            if line.lstrip().startswith("<!--"):
-                if "-->" not in line:
-                    in_comment = True
-                continue
-
-            if "�" in line:
-                c.fail(
-                    "log.replacement_char",
-                    "line carries a U+FFFD replacement character -- text was "
-                    "corrupted somewhere upstream and the repair must be explicit",
-                    "RFC § 1.2",
-                    path.name,
-                    line_no,
-                )
-
-            skeleton = _LOG_SKELETON_RE.match(line)
-            if not skeleton:
-                c.fail(
-                    "log.skeleton",
-                    f"line does not match the Event Graph skeleton "
-                    f"`- DD.MM.YY HH:MM [E-###] [parent: E-###] [T-###] VERB: "
-                    f"text`: {line[:80]!r}",
-                    "RFC § 1.2",
-                    path.name,
-                    line_no,
-                )
-                continue
-
-            _, _, ticket_ref, taxonomy, _ = skeleton.groups()
-            if taxonomy not in _LOG_TAXONOMY:
-                c.warn(
-                    "log.taxonomy",
-                    f"verb {taxonomy!r} is not one of "
-                    f"{'/'.join(sorted(_LOG_TAXONOMY))} -- non-conformant for new entries",
-                    "RFC § 1.2",
-                    path.name,
-                    line_no,
-                )
-            if ticket_ref and not _TICKET_REF_RE.match(ticket_ref):
-                c.warn(
-                    "log.ticket_ref",
-                    f"ticket reference {ticket_ref!r} is neither a numeric T-### "
-                    f"nor the literal T-none",
-                    "RFC § 1.2",
-                    path.name,
-                    line_no,
-                )
-
-            dated = _LOG_ENTRY_RE.match(line)
-            any_event = _LOG_ANY_EVENT_RE.match(line)
-            event = int(any_event.group(1))
-            if not dated:
-                # CORE § 1.2 makes DATE mandatory. The active log is still the
-                # writer's to get right (FAIL); sealed history is immutable by
-                # append-only, so it can only be reported (WARN).
-                undated += 1
-                if is_active:
-                    c.fail(
-                        "log.timestamp.missing",
-                        f"E-{event} in the active LOG has no DD.MM.YY HH:MM "
-                        f"stamp -- Recovery cannot order what it cannot date",
-                        "RFC § 1.2",
-                        path.name,
-                        line_no,
-                    )
-            else:
-                try:
-                    stamp = datetime.datetime.strptime(
-                        f"{dated.group(1)} {dated.group(2)}", "%d.%m.%y %H:%M"
-                    ).replace(tzinfo=datetime.timezone.utc)
-                except ValueError:
-                    stamp = None
-                # CORE § 1.2's clock tolerance is 5 minutes (tools/validate.py
-                # LOG_CLOCK_SLACK). The old 3-hour bound is exactly what let a
-                # guessed clock -- off by 20-40 minutes -- sail through clean.
-                if (
-                    stamp
-                    and (stamp - now).total_seconds() > protocol.LOG_CLOCK_SLACK_SECONDS
-                ):
-                    c.fail(
-                        "log.timestamp.future",
-                        f"E-{event} is stamped more than "
-                        f"{protocol.LOG_CLOCK_SLACK_SECONDS // 60}m ahead of "
-                        f"real UTC -- a local clock was written where UTC was "
-                        f"required",
-                        "RFC § 1.2",
-                        path.name,
-                        line_no,
-                    )
-            if event in seen:
-                c.fail(
-                    "log.event.duplicate",
-                    f"E-{event} appears twice (first at line {seen[event]}) -- "
-                    f"event ids are unique",
-                    "RFC § 1.2",
-                    path.name,
-                    line_no,
-                )
-            elif prev_event is not None and event < prev_event:
-                c.fail(
-                    "log.event.order",
-                    f"E-{event} follows E-{prev_event} -- event ids only increase",
-                    "RFC § 1.2",
-                    path.name,
-                    line_no,
-                )
-            seen[event] = line_no
-            prev_event = max(prev_event or 0, event)
-
-    if undated and not any(f.rule == "log.timestamp.missing" for f in c.findings):
+    for event, stamp, file_name, line_no in aggregate.future:
+        if (stamp - now).total_seconds() > protocol.LOG_CLOCK_SLACK_SECONDS:
+            c.fail(
+                "log.timestamp.future",
+                f"E-{event} is stamped more than {protocol.LOG_CLOCK_SLACK_SECONDS // 60}m ahead of real UTC -- a local clock was written where UTC was required",
+                "RFC § 1.2", file_name, line_no,
+            )
+    if aggregate.undated and not aggregate.active_missing:
         c.warn(
             "log.timestamp.undated_sealed",
-            f"{undated} sealed LOG entr(y/ies) carry no DD.MM.YY HH:MM stamp -- "
-            f"immutable by append-only; new entries are FAILed instead",
-            "RFC § 1.2",
-            _LOG_FILE,
+            f"{aggregate.undated} sealed LOG entr(y/ies) carry no DD.MM.YY HH:MM stamp -- immutable by append-only; new entries are FAILed instead",
+            "RFC § 1.2", _LOG_FILE,
         )
-
-    # CORE § 1.2/§ 1.5 freshness marker: at the current schema revision, a
-    # state with an event-bearing LOG MUST carry last_event equal to the LOG
-    # tail EXACTLY. Lower = stale state predating its own history; higher =
-    # corrupt, a state carried from a branch whose events were never written.
+    prev_event = aggregate.prev_event
     if state is not None:
         sv = state.get("schema_version")
         try:
@@ -1131,40 +1253,19 @@ def check_log(root: Path, c: _Collector, state: dict[str, str] | None = None) ->
         except (TypeError, ValueError):
             le_int = None
         if sv_int == protocol.STATE_SCHEMA_VERSION and prev_event and le_int is None:
-            c.fail(
-                "state.last_event.missing",
-                f"STATE.md schema_version {protocol.STATE_SCHEMA_VERSION} "
-                f"requires last_event because the LOG tail is E-{prev_event}",
-                "RFC § 1.2",
-                _STATE_FILE,
-            )
+            c.fail("state.last_event.missing", f"STATE.md schema_version {protocol.STATE_SCHEMA_VERSION} requires last_event because the LOG tail is E-{prev_event}", "RFC § 1.2", _STATE_FILE)
         if le_int is not None:
             if le_int < 1:
-                c.fail(
-                    "state.last_event.minimum",
-                    f"last_event is E-{le_int}, but event IDs start at E-1",
-                    "RFC § 1.2",
-                    _STATE_FILE,
-                )
+                c.fail("state.last_event.minimum", f"last_event is E-{le_int}, but event IDs start at E-1", "RFC § 1.2", _STATE_FILE)
+            elif prev_event is None:
+                # PERF-014: STATE claims a last_event but no valid event exists
+                # in the LOG (all lines malformed). Fail deterministically
+                # instead of crashing with TypeError on int > None.
+                c.fail("state.last_event.no_valid_tail", f"last_event is E-{le_int} but no valid event record exists in the LOG -- the tail is unresolvable", "RFC § 1.2", _STATE_FILE)
             elif le_int > prev_event:
-                c.fail(
-                    "state.last_event.ahead",
-                    f"last_event is E-{le_int} but the LOG tail is "
-                    f"E-{prev_event} -- higher than the log means corrupt, or "
-                    f"a STATE carried over from an incompatible branch",
-                    "RFC § 1.2",
-                    _STATE_FILE,
-                )
+                c.fail("state.last_event.ahead", f"last_event is E-{le_int} but the LOG tail is E-{prev_event} -- higher than the log means corrupt, or a STATE carried over from an incompatible branch", "RFC § 1.2", _STATE_FILE)
             elif le_int < prev_event:
-                c.fail(
-                    "state.last_event.stale",
-                    f"last_event is E-{le_int} but the LOG tail is "
-                    f"E-{prev_event} -- lower than the log means this STATE "
-                    f"predates its own history: a checkpoint wrote LOG lines "
-                    f"and did not finish updating STATE",
-                    "RFC § 1.2",
-                    _STATE_FILE,
-                )
+                c.fail("state.last_event.stale", f"last_event is E-{le_int} but the LOG tail is E-{prev_event} -- lower than the log means this STATE predates its own history: a checkpoint wrote LOG lines and did not finish updating STATE", "RFC § 1.2", _STATE_FILE)
 
 
 # --- subSaipens -----------------------------------------------------------

@@ -328,6 +328,12 @@ class Api:
         self._refresh_changed_roots: list[str] = []  # PERF-002
         # PERF-008: in-memory ticket search index, keyed by root.
         self._ticket_index: dict[str, list[dict]] = {}
+        self._verified_roots_cache: dict = {"key": None, "list": [], "set": set()}
+        # PERF-005: per-root JSON serialization cache. Only changed roots
+        # are re-serialized on _write_cache; unchanged rows are copied from
+        # the previous serialization, cutting I/O from O(N) to O(dirty).
+        self._row_json_cache: dict[str, str] = {}
+        self._dirty_roots: set[str] = set()
         # PERF-002: when True, refresh_known() must do a full re-parse (startup,
         # or just after a scan replaced the cache). Between scans the watcher
         # already keeps _projects current, so an idle poll may short-circuit
@@ -379,10 +385,13 @@ class Api:
         # new refresh work or touching the window.
         self._stop_gen = 0
 
-    def _on_file_changed(self, data: dict) -> None:
-        # W2-011: capture generation at entry; if stop() ran concurrently this
-        # callback may still be invoked from an EventBus snapshot. The check in
-        # _do_root_refresh is the hard gate; this captures intent early.
+    def _on_file_changed(self, data: dict, _gen: int = None) -> None:
+        # W2-011: generation is bound at subscription time (via the wrapper
+        # in start()), not re-read at entry. A callback already captured in
+        # EventBus's pre-stop snapshot but delayed until after stop sees the
+        # old generation and aborts.
+        if _gen is not None and self._stop_gen != _gen:
+            return
         gen = self._stop_gen
         root = data["root"]
         changed_file = data.get("file")
@@ -785,15 +794,41 @@ class Api:
         return self.get_projects()
 
     def _write_cache(self) -> None:
+        """Persist the project registry to cache.json.
+
+        PERF-005: only re-serialize roots in _dirty_roots. Unchanged rows
+        are copied from _row_json_cache (a str -> str mapping keyed by root).
+        The file format remains a JSON array for backward compatibility.
+        """
         try:
             import tempfile
 
             with self._lock:
                 snapshot = list(self._projects)
-            # One writer lock + a unique temp name per write (T-124): a shared
-            # <name>.tmp would let two concurrent writes clobber each other's
-            # temp before os.replace, and a crashed first writer would leave
-            # its temp for the second to replace.
+                dirty = set(self._dirty_roots)
+                self._dirty_roots.clear()
+
+            # Re-serialize only changed rows; copy cached JSON for the rest.
+            for proj in snapshot:
+                root = proj["root"]
+                if root in dirty or root not in self._row_json_cache:
+                    self._row_json_cache[root] = json.dumps(
+                        proj, ensure_ascii=False
+                    )
+            # Build the array from cached strings.
+            row_jsons = [
+                self._row_json_cache[proj["root"]]
+                for proj in snapshot
+                if proj["root"] in self._row_json_cache
+            ]
+            # Prune evicted roots from the row cache.
+            live_roots = {proj["root"] for proj in snapshot}
+            for stale in list(self._row_json_cache):
+                if stale not in live_roots:
+                    del self._row_json_cache[stale]
+
+            body = "[" + ",".join(row_jsons) + "]"
+
             with _cache_lock:
                 fd, tmp_name = tempfile.mkstemp(
                     dir=str(self._cache_file.parent), prefix="cache.json."
@@ -801,7 +836,7 @@ class Api:
                 tmp_path = Path(tmp_name)
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        json.dump(snapshot, f)
+                        f.write(body)
                     os.replace(tmp_path, self._cache_file)
                 finally:
                     try:
@@ -1250,12 +1285,6 @@ class Api:
         path = Path(canonical(file_path))
         try:
             if path.exists():
-                text = read_doc(path)
-                # CORE-001: for protocol files, return the canonical version
-                # so the caller can prove they're saving against the same
-                # revision they read. A codec failure is not a green light to
-                # hand back raw text -- that would leak a non-CAS-readable
-                # path whose subsequent save would always be refused as stale.
                 from saipenview.protocol_write import get_coordinator
                 if get_coordinator().is_protocol_file(path):
                     from saipenview import saio
@@ -1276,8 +1305,7 @@ class Api:
                         )
                         return None
                 # W2-017: ordinary (non-protocol) files return the decoded text.
-                # The protocol branch above returns early; this is the ordinary
-                # file return path.
+                text = read_doc(path)
                 return text
         except OSError as e:
             print(
@@ -1461,13 +1489,20 @@ class Api:
                 )
                 return False
         try:
-            # W2-003: ordinary files beneath a verified root must also
+            # CORE-003: ordinary files beneath a verified root must also
             # participate in the per-root ownership transaction so that a
             # live agent cannot be clobbered by a direct editor write.
-            root = get_coordinator().root_for(path)
-            if root:
+            # WriteCoordinator.root_for() is protocol-only; for ordinary
+            # files we find the owning root by canonical containment.
+            path_str = str(path)
+            owning_root = None
+            for vr in self._verified_project_roots():
+                if path_str.startswith(vr + os.sep) or path_str.startswith(vr + "/"):
+                    if owning_root is None or len(vr) > len(owning_root):
+                        owning_root = vr
+            if owning_root:
                 ownership = get_coordinator().ownership
-                if not ownership.begin_app_tx(Path(root)):
+                if not ownership.begin_app_tx(Path(owning_root)):
                     print(
                         f"SAIPENVIEW: write_file_text refused {file_path!r}: "
                         "Core agent is active on this root",
@@ -1483,8 +1518,8 @@ class Api:
                     write_doc(path, content)
                 return True
             finally:
-                if root:
-                    ownership.end_app_tx(Path(root))
+                if owning_root:
+                    ownership.end_app_tx(Path(owning_root))
         except OSError as e:
             print(
                 f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr
@@ -1497,17 +1532,36 @@ class Api:
         Scanned, pinned and hidden roots that genuinely hold a
         ``.saipen/STATE.md``. A scan root alone -- potentially a whole drive --
         is DISCOVERY scope, never file-access scope, so it grants nothing
-        until it is verified to be a project root (T-164)."""
-        roots: list[str] = []
+        until it is verified to be a project root (T-164).
+
+        PERF-009: the verified set is cached and keyed by the registry
+        revision plus pinned/hidden config. Any mutation that could change the
+        set (a scan replace, a file-event row change, a pin toggle) bumps the
+        revision or the config tuple, so repeated root-taking RPCs resolve in
+        O(1) instead of re-canonicalizing and re-statting every project.
+        """
         with self._lock:
-            roots.extend(str(p["root"]) for p in self._projects)
-        roots.extend(self._config.get("pinned_roots") or [])
-        roots.extend(self._config.get("hidden_roots") or [])
+            rev = self._registry_rev
+            projects = [str(p["root"]) for p in self._projects]
+        pinned = tuple(self._config.get("pinned_roots") or [])
+        hidden = tuple(self._config.get("hidden_roots") or [])
+        key = (rev, pinned, hidden)
+        if self._verified_roots_cache["key"] == key:
+            return self._verified_roots_cache["list"]
+        roots: list[str] = []
+        roots.extend(projects)
+        roots.extend(pinned)
+        roots.extend(hidden)
         verified: list[str] = []
         for r in dedupe(roots):
             c = canonical(r)
             if (Path(c) / ".saipen" / "STATE.md").is_file():
                 verified.append(c)
+        self._verified_roots_cache = {
+            "key": key,
+            "list": verified,
+            "set": set(verified),
+        }
         return verified
 
     def _known_roots(self) -> list[str]:
@@ -1529,7 +1583,13 @@ class Api:
             c = canonical(root_str)
         except Exception:  # noqa: BLE001 - any path resolution failure denies
             return None
-        if c not in self._verified_project_roots():
+        self._verified_project_roots()
+        if c not in self._verified_roots_cache["set"]:
+            return None
+        # PERF-009: the cached set is permission scope; the one requested root
+        # still needs a fresh liveness proof so a just-deleted STATE.md is
+        # caught at this boundary without re-statting the whole registry.
+        if not (Path(c) / ".saipen" / "STATE.md").is_file():
             return None
         return c
 
@@ -1827,8 +1887,14 @@ class Api:
 
     def start(self) -> None:
         # W2-022: subscribe to EventBus here, after full construction.
+        # CORE-007: bind the generation at subscription time so a callback
+        # captured by EventBus's pre-stop snapshot sees the old gen and aborts.
         if not self._event_subscribed:
-            event_bus.subscribe("saipen.project_changed", self._on_file_changed)
+            gen = self._stop_gen
+            def _wrapped_file_changed(data, _gen=gen):
+                self._on_file_changed(data, _gen=_gen)
+            self._wrapped_file_changed = _wrapped_file_changed
+            event_bus.subscribe("saipen.project_changed", _wrapped_file_changed)
             self._event_subscribed = True
         self._auto_scan = self._config.get("auto_scan", True)
         if self._auto_scan:
@@ -1845,6 +1911,11 @@ class Api:
         self._stop_gen += 1
         self._process_manager.stop_all()
         self.background_scanner.stop()
+        # W2-008: flush the external-change registry to disk so acknowledged
+        # changes survive shutdown without a race between the last background
+        # write-flush and process exit.
+        from saipenview.external_changes import get_registry
+        get_registry().flush()
         self._watcher.stop()
         # PERF-005: cancel all pending root-refresh timers.
         with self._root_refresh_lock:
@@ -1858,7 +1929,7 @@ class Api:
         # _on_file_changed on later project_changed events. In production the
         # Api lives for the app lifetime, but tests construct many Apis, and a
         # leaked handler made every later watcher event push to a dead window.
-        event_bus.unsubscribe("saipen.project_changed", self._on_file_changed)
+        event_bus.unsubscribe("saipen.project_changed", getattr(self, "_wrapped_file_changed", self._on_file_changed))
 
     def set_auto_scan(self, enabled: bool) -> dict:
         self._auto_scan = enabled

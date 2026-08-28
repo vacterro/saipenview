@@ -281,7 +281,7 @@ def _walk_with_depth_limit(
             if candidate.is_file():
                 yield Path(dirpath)
         # PERF-003: detect linked worktrees in the same pass.
-        if collect_worktrees:
+        if collect_worktrees and ".git" in _filenames:
             git_path = Path(dirpath) / ".git"
             saipen_path = Path(dirpath) / ".saipen"
             if git_path.is_file() and not saipen_path.is_dir():
@@ -465,10 +465,11 @@ def scan(
     _set_scan_progress(pct=0, root="", roots_done=0, roots_total=len(roots))
     projects: list[ProjectStatus] = []
     all_worktrees: list[dict] = []
-    # CORE-004: if any roots were skipped (owned by another scan), the result
-    # is inherently incomplete -- we never saw those projects, so marking
-    # complete=True would let callers treat partial data as authoritative.
-    complete = skipped > 0
+    # CORE-001: only a scan that ran ALL requested roots without skip/
+    # error/timeout is authoritative. Skipped roots were owned by another
+    # scan, so we never saw those projects -- marking complete=True would
+    # let callers treat partial data as authoritative.
+    complete = skipped == 0
     # PERF-006: one cooperative cancellation event per scan() invocation.
     # Workers check it before every directory descent; the timeout paths set
     # it so running walks unwind promptly instead of grinding on after their

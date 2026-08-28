@@ -217,7 +217,7 @@ def _bounded_output_lines(
     length = 0
     overflow = False
     # Completed records waiting to be handed to the caller by the read loop.
-    ready: list[str] = []
+    ready: deque[str] = deque()
 
     def _emit() -> str:
         nonlocal parts, length, overflow
@@ -261,14 +261,14 @@ def _bounded_output_lines(
             if text:
                 _frame(text)
             while ready:
-                yield ready.pop(0)
+                yield ready.popleft()
     # EOF: flush any pending partially-decoded bytes, then emit a trailing
     # record that lacked its final newline (old TextIOWrapper behavior).
     tail = decoder.decode(b"", final=True)
     if tail:
         _frame(tail)
     while ready:
-        yield ready.pop(0)
+        yield ready.popleft()
     if parts or overflow:
         yield _emit()
 
@@ -360,6 +360,9 @@ class AgentProcess:
     _kill_intent: bool = False
     # PERF-009: cached psutil.Process for CPU/memory metrics.
     _psutil_proc: object | None = None  # psutil.Process or None
+    # CORE-002: prevents double-reaper scheduling when two concurrent
+    # _finalize calls both see exit_code=None.
+    _reaper_scheduled: bool = False
 
     def elapsed_seconds(self) -> float:
         """Return seconds since launch (or total if finished)."""
@@ -385,11 +388,14 @@ def _schedule_reaper(registry, ap, status):
                 proc.wait(timeout=interval)
             except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
                 pass
-            if proc.returncode is not None:
-                with registry._lock:
-                    registry._stuck_agents.discard(rkey)
-                registry.ownership.release_agent(Path(root))
-                return
+            if proc.returncode is None:
+                continue  # still waiting
+            # CORE-002: Death proven. Route back through _finalize for the
+            # single terminal commit (exit_code, finished_at, session finish,
+            # ownership release, agent.finished event). Never manually release
+            # ownership here -- _finalize owns that path.
+            registry._finalize(ap)
+            return
             # Still alive. CORE-004: only force-kill when there was an
             # explicit kill/shutdown intent. An output-EOF with no kill
             # intent must NOT trigger a kill -- the agent is simply
@@ -416,6 +422,10 @@ def _schedule_reaper(registry, ap, status):
         with registry._lock:
             registry._stuck_agents.add(rkey)
 
+    with ap._finalize_lock:
+        if ap._reaper_scheduled:
+            return  # CORE-002: prevent double-reaper
+        ap._reaper_scheduled = True
     threading.Thread(target=_delayed_reaper, daemon=True,
                      name="reaper-" + ap.engine.name).start()
 
@@ -655,9 +665,11 @@ class ProcessManager:
         # stdout hit EOF, so the reader thread's tail can run and reach the
         # finalizer before this method does -- and it must still label the run
         # "killed", never "failed" (T-166).
+        # CORE-002: only set _kill_intent here. The terminal "killed" status
+        # is derived in _finalize after proven death, so a still-live
+        # slow-to-die process remains visible to list_running/stop_all.
         with ap._io_lock:
             ap._kill_intent = True
-            ap.status = "killed"
         try:
             ap.process.terminate()
             # Give it 3s to die gracefully, then force kill.
@@ -724,14 +736,11 @@ class ProcessManager:
             status = "done" if exit_code == 0 else "failed"
 
         if exit_code is None:
-            # Death unproven: do NOT finalize, publish, or finish the session.
-            # The caller (kill or _exit_monitor) already set _finalized=True
-            # above only as a speculative guard; re-check and bail out.
-            with ap._finalize_lock:
-                if not ap._finalized:
-                    ap._finalized = True  # claim the slot so no one else finalizes
-            # Schedule a background reaper to wait for proven death before
-            # completing the lifecycle (ownership release, session finish, etc.).
+            # CORE-002: Death unproven. Do NOT set _finalized=True here --
+            # the reaper will route back through _finalize when it proves
+            # death, and _exit_monitor may also reach here on retry. Setting
+            # _finalized now would permanently consume the exactly-once token
+            # before finalization occurs.
             _schedule_reaper(self, ap, status)
             return
 
@@ -795,6 +804,30 @@ class ProcessManager:
                 "elapsed": ap.elapsed_seconds(),
             },
         )
+
+        # PERF-007: compact the terminal entry to release the output deque
+        # (~2-4 MiB), Popen handles, and thread reference.  History is
+        # already persisted in SessionStore.
+        self._compact_terminal(ap)
+
+
+    def _compact_terminal(self, ap: AgentProcess) -> None:
+        """PERF-007: release heavyweight resources from a finalized process.
+
+        After proven terminalization the output deque, Popen handle, reader
+        thread, and psutil cache are no longer needed -- history lives in
+        SessionStore and the process is confirmed dead.  The entry stays in
+        _processes so get_status() and get_output() still resolve (returning
+        cached totals and empty line lists), but the ~2-4 MiB per-process
+        memory footprint drops to near zero.
+        """
+        with ap._io_lock:
+            ap.output_lines.clear()
+            ap._psutil_proc = None
+        ap._reader_thread = None
+        # Release the Popen object so its file descriptors and OS handles
+        # are reclaimed promptly rather than waiting for GC.
+        ap.process = None  # type: ignore[assignment]
 
     def send_input(self, project_root: str, text: str, expected_run_id: str | None = None) -> dict:
         """Send text to a running agent's stdin."""

@@ -4046,7 +4046,7 @@ ${testBadgeHtml}
   const stopBtn = container.querySelector(".stop-agent-btn");
   if (stopBtn) {
     stopBtn.addEventListener("click", () => {
-      window.SaiApi.stop_agent(root).then(res => {
+      window.SaiApi.stop_agent(root, agentStatusCache[root]?.run_id || null).then(res => {
         if (res.ok) showToast("Agent stopped", "info");
         else showToast("Stop failed: " + res.error, "error");
         pollAgentOutput();
@@ -4066,7 +4066,7 @@ ${testBadgeHtml}
     const sendInput = () => {
       const text = chatInput.value;
       if (!text.trim()) return;
-      window.SaiApi.send_agent_input(root, text).then(res => {
+      window.SaiApi.send_agent_input(root, text, agentStatusCache[root]?.run_id || null).then(res => {
         if (res.ok) {
           chatInput.value = "";
           showToast("Sent", "success");
@@ -4091,7 +4091,7 @@ ${testBadgeHtml}
       btn.addEventListener("click", (e) => {
         const cmd = e.target.getAttribute("data-cmd");
         if (cmd) {
-          window.SaiApi.send_agent_input(root, cmd).then(res => {
+          window.SaiApi.send_agent_input(root, cmd, agentStatusCache[root]?.run_id || null).then(res => {
             if (res.ok) showToast("Sent: " + cmd, "success");
             else showToast("Send failed: " + res.error, "error");
           });
@@ -4710,7 +4710,7 @@ function refreshFleetDashboard() {
     tbody.querySelectorAll(".kill-agent-btn").forEach(btn => {
       btn.addEventListener("click", () => {
         const root = btn.getAttribute("data-root");
-        window.SaiApi.stop_agent(root).then(res => {
+        window.SaiApi.stop_agent(root, agentStatusCache[root]?.run_id || null).then(res => {
           if (res.ok) {
             showToast("Agent stopped", "info");
             refreshFleetDashboard();
@@ -4743,7 +4743,7 @@ document.getElementById("killAllAgentsBtn")?.addEventListener("click", () => {
       const running = agents.filter(a => a.status === "running");
       if (running.length === 0) return showToast("No agents to kill", "info");
       
-      let promises = running.map(a => window.SaiApi.stop_agent(a.root));
+      let promises = running.map(a => window.SaiApi.stop_agent(a.root, a.run_id || null));
       Promise.all(promises).then(() => {
         showToast(`Killed ${running.length} agent(s)`, "info");
         refreshFleetDashboard();

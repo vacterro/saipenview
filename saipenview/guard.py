@@ -231,6 +231,24 @@ class SingleInstanceGuard:
         self._thread = threading.Thread(target=listen_loop, daemon=True)
         self._thread.start()
 
+    def release_listener(self) -> None:
+        """Release the TCP listener so another service can bind the port.
+
+        CORE-004: after acquire() proves ownership (named mutex on Windows,
+        or TCP bind on other platforms), the TCP listener is no longer needed
+        for single-instance detection. Releasing it frees the port so the
+        HTTP service can bind the user-specified port without collision.
+        The named mutex (Windows) retains the ownership signal.
+        """
+        if self._server_sock:
+            try:
+                self._server_sock.close()
+            except OSError:
+                pass
+            self._server_sock = None
+        # Stop the accept thread -- ownership is already proven.
+        self._stop_event.set()
+
     def stop(self):
         self._stop_event.set()
         if self._mutex_owned and self._mutex:

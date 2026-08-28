@@ -196,14 +196,18 @@ class MainWindow:
             x = self._window.x
             y = self._window.y
             if w and h:
-                self._api.save_view_config(
-                    {
-                        "window_width": w,
-                        "window_height": h,
-                        "window_x": x,
-                        "window_y": y,
-                    }
-                )
+                candidate = {
+                    "window_width": w,
+                    "window_height": h,
+                    "window_x": x,
+                    "window_y": y,
+                }
+                # PERF-013: unchanged geometry must not trigger a full config
+                # temp-write+replace every 15 s. Compare against the last
+                # successfully persisted geometry and skip identical saves.
+                if candidate != getattr(self, "_last_geometry_persisted", None):
+                    self._api.save_view_config(candidate)
+                    self._last_geometry_persisted = candidate
         except Exception as e:  # noqa: BLE001 - defensive catch for pywebview window operations
             print(f"SAIPENVIEW: window geometry save failed: {e}", file=sys.stderr)
 

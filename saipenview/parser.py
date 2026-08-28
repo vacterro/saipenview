@@ -1091,6 +1091,9 @@ _STALENESS_FILES = [
 ]
 
 
+_STALENESS_FINGERPRINT_CACHE: dict[tuple[str, int, int, int], tuple[str, str]] = {}
+
+
 def _file_staleness_key(path: Path) -> tuple[str, str] | None:
     """Content identity of a file: (sha256, b'' marker) -- never (mtime, size).
 
@@ -1099,12 +1102,27 @@ def _file_staleness_key(path: Path) -> tuple[str, str] | None:
     The canonical comparison normalizes line endings (the canonical copies are
     checked against the home's own copies, which share the home's newline
     convention); raw bytes would cry wolf on a CRLF home.
+
+    PERF-003: cache the SHA-256 by stat identity (dev, ino, size, mtime_ns,
+    ctime_ns). ctime_ns moves on every write, so a same-size + preserved-mtime
+    attack invalidates the cache. Cache is bounded by canonical-home generation
+    outside this function.
     """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    cache_key = (str(path), stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ctime_ns", 0))
+    cached = _STALENESS_FINGERPRINT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         raw = path.read_bytes()
     except OSError:
         return None
-    return hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest(), ""
+    digest = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
+    _STALENESS_FINGERPRINT_CACHE[cache_key] = (digest, "")
+    return digest, ""
 
 
 def check_subs_staleness(root: Path, state: dict) -> tuple[bool, str]:

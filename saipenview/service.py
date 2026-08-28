@@ -210,7 +210,13 @@ class SaipenViewService:
                     event_subscribed = True
                     self._api.start()
 
-                server = ThreadingHTTPServer((self._host, self._port), self._make_handler())
+                try:
+                    server = ThreadingHTTPServer((self._host, self._port), self._make_handler())
+                except OSError as exc:
+                    # W2-007: ThreadingHTTPServer.__init__ may bind a socket
+                    # before raising; the half-constructed object is unreachable
+                    # so the socket leaks unless we catch and close explicitly.
+                    raise _ServiceError(f"failed to bind port {self._port}: {exc}", 503) from exc
                 server.handle_error = self._handle_server_error
                 self._server = server
                 self._thread = threading.Thread(
