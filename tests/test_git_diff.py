@@ -245,3 +245,40 @@ def test_scope_fingerprint_is_stable_until_tree_changes(repo):
     (repo / "untracked.txt").write_text("x\n", encoding="utf-8")
     f3 = _current_state(str(repo))["fingerprint"]
     assert f3 != f1
+
+
+def test_preview_streams_each_tracked_diff_once(repo):
+    from unittest.mock import patch
+
+    (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    (repo / "tracked.txt").write_text("changed again\n", encoding="utf-8")
+
+    from saipenview import git_diff
+
+    original = git_diff._stream_git_diff
+    with patch.object(git_diff, "_stream_git_diff", wraps=original) as stream:
+        result = get_working_diff(str(repo))
+
+    assert result["ok"]
+    assert [call.args[1] for call in stream.call_args_list] == [
+        ["diff", "--cached"],
+        ["diff"],
+    ]
+
+
+def test_large_untracked_preview_uses_bounded_read(repo):
+    from pathlib import Path
+    from unittest.mock import patch
+
+    (repo / "large.bin").write_bytes(b"x" * (3 * 1024 * 1024))
+    from saipenview import git_diff
+
+    with patch.object(
+        Path, "read_bytes", side_effect=AssertionError("whole-file read")
+    ):
+        result = get_working_diff(str(repo))
+
+    assert result["ok"]
+    assert len(result["diff"]) < 3 * 1024 * 1024
+    assert result["fingerprint"] == git_diff._current_state(str(repo))["fingerprint"]

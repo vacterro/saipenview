@@ -326,15 +326,11 @@ class TestRefreshKnown:
             api_with_projects.refresh_known()
             assert mock_load.call_count == 3
 
-    def test_preserves_previous_on_transient_failure(
-        self, api_with_projects, tmp_path
-    ):
+    def test_preserves_previous_on_transient_failure(self, api_with_projects, tmp_path):
         """W2-008: a transient read failure (load_project raises) keeps the
         previous project rows; only a clean absence (load_project returns None
         without raising) drops them."""
-        with patch(
-            "saipenview.api.load_project", side_effect=OSError("disk blip")
-        ):
+        with patch("saipenview.api.load_project", side_effect=OSError("disk blip")):
             result = api_with_projects.refresh_known()
             assert len(result) == 3
 
@@ -400,9 +396,7 @@ class TestRefreshKnown:
         failure (raises) keeps the identical prev rows, so nothing changed and
         the cache stays untouched."""
         with (
-            patch(
-                "saipenview.api.load_project", side_effect=OSError("disk blip")
-            ),
+            patch("saipenview.api.load_project", side_effect=OSError("disk blip")),
             patch.object(api_with_projects, "_write_cache") as mock_cache,
         ):
             api_with_projects.refresh_known()
@@ -494,6 +488,7 @@ class TestGetStatus:
     def test_returns_counts(self, api_with_projects):
         status = api_with_projects.get_status()
         assert status["count"] == 3
+        assert status["revision"] == api_with_projects._registry_rev
 
 
 # ── get_config / get_locales / get_wiki_pages ──
@@ -801,7 +796,6 @@ class TestClipboardCopy:
             assert kwargs.get("timeout") is not None
 
 
-
 class TestStartStop:
     """start/stop lifecycle."""
 
@@ -1099,7 +1093,8 @@ class TestIdlePolling:
         orig_to = api_mod._project_to_dict
         api_mod.load_project = fake_load
         api_mod._project_to_dict = fake_to_dict
-        api._projects = [{
+        api._projects = [
+            {
             "root": "/mock/project",
             "name": "mock",
             "phase": "X",
@@ -1108,13 +1103,23 @@ class TestIdlePolling:
             "conformance": {"verdict": "pass"},
             "git_branch": "",
             "git_dirty": False,
-        }]
+            }
+        ]
         api._has_scanned = True
         api._scanning = False
         api._full_refresh_pending = True  # startup -> one full parse
         yield api, calls
         api_mod.load_project = orig_load
         api_mod._project_to_dict = orig_to
+
+    def test_idle_revision_refresh_returns_metadata(self, idle_api):
+        api, calls = idle_api
+        api.refresh_known()
+        calls["load"] = 0
+        revision = api.get_status()["revision"]
+        result = api.refresh_known(revision)
+        assert result == {"revision": revision, "changed_roots": [], "projects": None}
+        assert calls["load"] == 0
 
     def test_idle_poll_skips_reparse(self, idle_api):
         api, calls = idle_api
@@ -1207,7 +1212,9 @@ class TestSetterResultContracts:
         assert result.get("ok") is not False
 
     def test_snap_hotkey_binding_failure_is_ok_false(self, api):
-        api._on_snap_hotkey_changed = MagicMock(side_effect=[Exception("kbd fail"), None])
+        api._on_snap_hotkey_changed = MagicMock(
+            side_effect=[Exception("kbd fail"), None]
+        )
         api._config["snap_hotkey"] = []
         result = api.set_snap_hotkey(["ctrl+s"])
         assert result.get("ok") is False, result

@@ -267,7 +267,9 @@ class TestJsBridge:
                     mock_refresh.assert_called_once()
                     args, kwargs = mock_refresh.call_args
                     assert args[0] == tricky
-                    assert args[1] == {"STATE.md"} or kwargs.get("changed_files") == {"STATE.md"}
+                    assert args[1] == {"STATE.md"} or kwargs.get("changed_files") == {
+                        "STATE.md"
+                    }
                 assert json.dumps(tricky) in pushed["js"], pushed["js"]
             finally:
                 api.stop()

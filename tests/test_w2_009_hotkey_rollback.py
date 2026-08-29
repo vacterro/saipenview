@@ -1,4 +1,5 @@
 """T-19 / W2-009: HotkeyListener.set_hotkeys strict rollback preserves old state."""
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -28,7 +29,9 @@ def test_strict_rollback_restores_old_combo_not_new():
         # not tried ctrl+b which is the new failing combo.
         added_combos = [str(c) for c in add_calls]
         # ctrl+a scan code is ('ctrl', 30)
-        assert any("('ctrl', 30)" in c for c in added_combos), f"expected ctrl+a in {added_combos}"
+        assert any("('ctrl', 30)" in c for c in added_combos), (
+            f"expected ctrl+a in {added_combos}"
+        )
 
 
 def test_repeated_failed_replacements_preserve_prior_set():

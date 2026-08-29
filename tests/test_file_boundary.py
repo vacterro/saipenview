@@ -162,7 +162,9 @@ class TestWritePreservesEncodingAndNewline:
         read = api.read_file_text(str(f))
         assert isinstance(read, dict) and "edit_version" in read
         assert (
-            api.write_file_text(str(f), "---\nphase: BUILD\n---\n", read["edit_version"])
+            api.write_file_text(
+                str(f), "---\nphase: BUILD\n---\n", read["edit_version"]
+            )
             is True
         )
         assert f.read_bytes() == b"\xef\xbb\xbf" + b"---\nphase: BUILD\n---\n"
@@ -174,7 +176,9 @@ class TestWritePreservesEncodingAndNewline:
         read = api.read_file_text(str(f))
         assert isinstance(read, dict) and "edit_version" in read
         assert (
-            api.write_file_text(str(f), "---\r\nphase: BUILD\r\n---\r\n", read["edit_version"])
+            api.write_file_text(
+                str(f), "---\r\nphase: BUILD\r\n---\r\n", read["edit_version"]
+            )
             is True
         )
         assert f.read_bytes() == b"---\r\nphase: BUILD\r\n---\r\n"
@@ -195,9 +199,11 @@ class TestAtomicWriteFailure:
         seeded = f.read_bytes()  # the conformant seeded bytes (saipen_home added)
         read = api.read_file_text(str(f))
         assert isinstance(read, dict) and "edit_version" in read
-        with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
+        with patch("os.replace", side_effect=OSError("disk full")):
             assert (
-                api.write_file_text(str(f), "---\nphase: BUILD\n---\n", read["edit_version"])
+                api.write_file_text(
+                    str(f), "---\nphase: BUILD\n---\n", read["edit_version"]
+                )
                 is False
             )
         # The original bytes survived; the failed commit left a recoverable
@@ -214,7 +220,7 @@ class TestAtomicWriteFailure:
         f = root / ".saipen" / "STATE.md"
         read = api.read_file_text(str(f))
         assert isinstance(read, dict) and "edit_version" in read
-        with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
+        with patch("os.replace", side_effect=OSError("disk full")):
             api.write_file_text(str(f), "x\n", read["edit_version"])
         # The original file was never replaced.
         assert "phase: DONE" in f.read_text(encoding="utf-8")

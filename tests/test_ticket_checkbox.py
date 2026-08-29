@@ -111,9 +111,7 @@ class TestDoneIsCanonicalFinish:
         )
         state = root / ".saipen" / "STATE.md"
         state.write_text(
-            state.read_text(encoding="utf-8").replace(
-                "last_event: 2", "last_event: 4"
-            ),
+            state.read_text(encoding="utf-8").replace("last_event: 2", "last_event: 4"),
             encoding="utf-8",
         )
         res = move_ticket(root, "T-001", "done")

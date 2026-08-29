@@ -198,6 +198,7 @@ class HotkeyListener:
         # first; this lets rollback read the real prior combos even when
         # set_hotkeys has not yet committed the new set.
         keys = list(hotkeys) if hotkeys is not None else self._hotkeys
+        old_hotkeys = list(self._hotkeys)
         old_removers = list(self._registered)
         temp_removers: list[Callable[[], None]] = []
         first_error: Exception | None = None
@@ -213,31 +214,14 @@ class HotkeyListener:
                     file=sys.stderr,
                 )
                 if strict:
-                    # Rollback all temp registrations
                     for r in temp_removers:
                         try:
                             keyboard.remove_hotkey(r)
                         except KeyError:
                             pass
-                    # Restore old handles using the captured old_removers list,
-                    # NOT self._hotkeys (which set_hotkeys may have already
-                    # overwritten). W2-009.
-                    for r in old_removers:
-                        try:
-                            idx = old_removers.index(r)
-                            old_combo = (
-                                self._hotkeys[idx]
-                                if idx < len(self._hotkeys)
-                                else self._hotkeys[0]
-                            )
-                            remover2 = keyboard.add_hotkey(
-                                to_layout_independent(old_combo),
-                                self._debounced_toggle,
-                            )
-                            self._registered.append(remover2)
-                        except (ValueError, ImportError):
-                            pass
-                    raise first_error
+                    self._hotkeys = old_hotkeys
+                    self._registered = old_removers
+                    raise first_error from None
                 continue
             temp_removers.append(remover)
         # All succeeded (or we're in non-strict mode): swap
@@ -264,9 +248,10 @@ class HotkeyListener:
         # the correct combo from self._hotkeys (which still holds the prior
         # set if start() fails).
         prev_hotkeys = list(self._hotkeys)
+        new_hotkeys = list(hotkeys)
         try:
-            self.start(strict=True, hotkeys=hotkeys)
+            self.start(strict=True, hotkeys=new_hotkeys)
         except Exception:
             self._hotkeys = prev_hotkeys
             raise
-        self._hotkeys = list(hotkeys)
+        self._hotkeys = new_hotkeys

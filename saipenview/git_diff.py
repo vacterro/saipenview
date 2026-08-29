@@ -118,38 +118,76 @@ def status_scope(root: str) -> dict:
 
 
 def _tree_fingerprint(root: str, scope: dict, status_raw: str) -> tuple[str, list[str]]:
-    """Hash the working tree's real mutation evidence.
-
-    Porcelain status alone is insufficient: a tracked file that was already
-    `` M`` keeps the same status line when its content changes, so a preview
-    fingerprint built only from status would not notice the content drift.
-    The hash therefore covers status output, both diffs (staged + unstaged)
-    and the bytes of every untracked file -- any of them moving invalidates
-    the fingerprint (T-162 required test 8).
-
-    Returns (fingerprint, unreadable_files). When unreadable_files is
-    non-empty the caller MUST refuse the preview (CORE-003 fail-closed).
-    """
     h = hashlib.sha256()
     h.update(status_raw.encode("utf-8", "replace"))
     for args in (["diff", "--cached"], ["diff"]):
         try:
-            r = _run_git(root, args)
-            h.update(r.stdout.encode("utf-8", "replace"))
-        except (OSError, subprocess.SubprocessError):
+            _stream_git_diff(root, args, h, 1)
+        except (OSError, subprocess.SubprocessError, GitError):
             pass
     unreadable: list[str] = []
     for path in sorted(scope["untracked"]):
         try:
-            data = Path(root, path).read_bytes()
+            with (Path(root) / path).open("rb") as handle:
+                h.update(path.encode("utf-8", "replace"))
+                h.update(b"\x00")
+                for chunk in iter(lambda: handle.read(64 * 1024), b""):
+                    h.update(chunk)
         except OSError:
             unreadable.append(path)
-            continue
-        h.update(path.encode("utf-8", "replace"))
-        h.update(b"\x00")
-        h.update(data)
     return h.hexdigest(), unreadable
 
+
+def _stream_git_diff(root: str, args: list[str], hasher, cap_bytes: int) -> str:
+    process = subprocess.Popen(
+        ["git", "-C", str(root), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    preview = bytearray()
+    if process.stdout is None:
+        process.kill()
+        process.wait()
+        raise GitError("git diff produced no output stream")
+    try:
+        while chunk := process.stdout.read(64 * 1024):
+            hasher.update(chunk)
+            if len(preview) < cap_bytes:
+                preview.extend(chunk[: cap_bytes - len(preview)])
+        stderr = (
+            process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
+        )
+        returncode = process.wait(timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        process.kill()
+        process.wait()
+        raise
+    if returncode != 0:
+        raise GitError((stderr or "git diff failed").strip())
+    return bytes(preview).decode("utf-8", errors="replace")
+
+
+def _read_untracked(path: Path, hasher, cap_bytes: int) -> tuple[bytes, bool]:
+    preview = bytearray()
+    with path.open("rb") as handle:
+        while chunk := handle.read(64 * 1024):
+            hasher.update(chunk)
+            if len(preview) <= cap_bytes:
+                preview.extend(chunk[: cap_bytes + 1 - len(preview)])
+    truncated = len(preview) > cap_bytes
+    if truncated:
+        del preview[cap_bytes:]
+    return bytes(preview), truncated
+
+
+def _preview_lines(data: bytes, cap_lines: int) -> tuple[list[str], int]:
+    raw_lines = data.split(b"\n", cap_lines)
+    shown = [
+        line.rstrip(b"\r").decode("utf-8", errors="replace")
+        for line in raw_lines[:cap_lines]
+    ]
+    line_count = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+    return shown, line_count
 
 
 def _state_with_preview(
@@ -167,7 +205,9 @@ def _state_with_preview(
     """
     # 1. Status (scope + raw for fingerprint)
     try:
-        status_r = _run_git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        status_r = _run_git(
+            root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+        )
     except (OSError, subprocess.SubprocessError) as e:
         return {"ok": False, "error": str(e)}
     if status_r.returncode != 0:
@@ -189,13 +229,22 @@ def _state_with_preview(
         if "D" in codes:
             deleted.append(first)
     scope = {
-        "staged": staged, "modified": modified, "deleted": deleted,
-        "renamed": renamed, "untracked": untracked,
+        "staged": staged,
+        "modified": modified,
+        "deleted": deleted,
+        "renamed": renamed,
+        "untracked": untracked,
         "counts": {
-            "staged": len(staged), "modified": len(modified),
-            "deleted": len(deleted), "renamed": len(renamed),
+            "staged": len(staged),
+            "modified": len(modified),
+            "deleted": len(deleted),
+            "renamed": len(renamed),
             "untracked": len(untracked),
-            "total": len(staged) + len(modified) + len(deleted) + len(renamed) + len(untracked),
+            "total": len(staged)
+            + len(modified)
+            + len(deleted)
+            + len(renamed)
+            + len(untracked),
         },
     }
 
@@ -205,48 +254,44 @@ def _state_with_preview(
     staged_diff = ""
     unstaged_diff = ""
     try:
-        staged_r = _run_git(root, ["diff", "--cached"])
-        staged_diff = staged_r.stdout
-        h.update(staged_diff.encode("utf-8", "replace"))
-    except (OSError, subprocess.SubprocessError):
-        pass
+        staged_diff = _stream_git_diff(root, ["diff", "--cached"], h, cap_bytes)
+    except (OSError, subprocess.SubprocessError, GitError):
+        staged_diff = ""
     try:
-        unstaged_r = _run_git(root, ["diff"])
-        unstaged_diff = unstaged_r.stdout
-        h.update(unstaged_diff.encode("utf-8", "replace"))
-    except (OSError, subprocess.SubprocessError):
-        pass
+        unstaged_diff = _stream_git_diff(root, ["diff"], h, cap_bytes)
+    except (OSError, subprocess.SubprocessError, GitError):
+        unstaged_diff = ""
 
-    # 3. Untracked files: hash + preview in one read pass each
     unreadable: list[str] = []
     untracked_parts: list[str] = []
     total = 0
     for path in sorted(untracked):
+        if total >= cap_total:
+            untracked_parts.append("... untracked preview truncated ...")
+            break
         p = Path(root) / path
+        h.update(path.encode("utf-8", "replace"))
+        h.update(b"\x00")
         try:
-            data = p.read_bytes()
+            data, truncated = _read_untracked(p, h, cap_bytes)
         except OSError:
             unreadable.append(path)
             continue
-        # Hash for fingerprint
-        h.update(path.encode("utf-8", "replace"))
-        h.update(b"\x00")
-        h.update(data)
-        # Preview rendering (capped)
-        truncated = len(data) > cap_bytes
-        if truncated:
-            data = data[:cap_bytes]
         if b"\x00" in data[:8192]:
-            untracked_parts.append(f"diff --git a/{path} b/{path}\nnew file mode 100644\nBinary file\n")
+            untracked_parts.append(
+                f"diff --git a/{path} b/{path}\nnew file mode 100644\nBinary file\n"
+            )
             total += 1
             continue
-        text = data.decode("utf-8", errors="replace")
-        lines = text.splitlines()
-        if truncated:
-            lines.append(f"... ({cap_bytes} bytes shown, file larger -- truncated)")
-        shown = lines[:cap_lines]
-        if len(lines) > cap_lines:
-            shown.append(f"... ({len(lines) - cap_lines} more lines not shown)")
+        lines, line_count = _preview_lines(data, min(cap_lines, cap_total - total))
+        shown = lines[: min(cap_lines, cap_total - total)]
+        omitted = line_count > len(shown) or truncated
+        if omitted:
+            shown.append(
+                f"... ({cap_bytes} bytes shown, file larger -- truncated)"
+                if truncated
+                else f"... ({line_count - len(shown)} more lines not shown)"
+            )
         body = "\n".join("+" + line for line in shown)
         untracked_parts.append(
             f"diff --git a/{path} b/{path}\n"
@@ -255,8 +300,8 @@ def _state_with_preview(
             f"+++ b/{path}\n"
             f"@@ -0,0 +1,{len(lines)} @@\n{body}"
         )
-        total += len(lines)
-        if total > cap_total:
+        total += len(shown)
+        if omitted or total >= cap_total:
             untracked_parts.append("... untracked preview truncated ...")
             break
 
@@ -296,7 +341,9 @@ def _current_state(root: str) -> dict:
     scope_res = status_scope(root)
     if not scope_res.get("ok"):
         return scope_res
-    fingerprint, unreadable = _tree_fingerprint(root, scope_res["scope"], scope_res["status_raw"])
+    fingerprint, unreadable = _tree_fingerprint(
+        root, scope_res["scope"], scope_res["status_raw"]
+    )
     if unreadable:
         return {
             "ok": False,
@@ -404,9 +451,6 @@ def get_working_diff(
     if not is_git_repo(root):
         return {"ok": False, "error": "Not a git repository"}
     return _state_with_preview(root, untracked_cap_lines, untracked_cap_total)
-
-
-
 
 
 def commit_agent_work(root: str, message: str, fingerprint: str | None = None) -> dict:

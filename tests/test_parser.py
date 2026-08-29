@@ -312,9 +312,7 @@ class TestMoveTicket:
         )
         state = root / ".saipen" / "STATE.md"
         state.write_text(
-            state.read_text(encoding="utf-8").replace(
-                "last_event: 2", "last_event: 4"
-            ),
+            state.read_text(encoding="utf-8").replace("last_event: 2", "last_event: 4"),
             encoding="utf-8",
         )
         result = move_ticket(root, "T-001", "done")
@@ -983,14 +981,23 @@ class TestCheckSubsStaleness:
         (tmp_path / ".git").mkdir()
         mock_res = MagicMock()
         mock_res.returncode = 0
-        mock_res.stdout = "# branch.oid 123456\n# branch.head main\n# branch.upstream origin/main\n"
+        mock_res.stdout = (
+            "# branch.oid 123456\n# branch.head main\n# branch.upstream origin/main\n"
+        )
         with patch("subprocess.run", return_value=mock_res) as mock_run:
             branch, dirty = get_git_status(tmp_path)
             assert branch == "main"
             assert dirty is False
             assert mock_run.call_count == 1
             cmd = mock_run.call_args[0][0]
-            assert cmd == ["git", "-C", str(tmp_path), "status", "--porcelain=v2", "--branch"]
+            assert cmd == [
+                "git",
+                "-C",
+                str(tmp_path),
+                "status",
+                "--porcelain=v2",
+                "--branch",
+            ]
 
     def test_get_git_status_dirty_repo(self, tmp_path):
         """get_git_status parses dirty repo correctly with single command."""

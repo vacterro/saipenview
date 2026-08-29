@@ -63,7 +63,12 @@ def test_refresh_one_project_uses_changed_files_classifier(api: Api, tmp_path: P
     mock_proj.root = tmp_path
     mock_proj.state = {"phase": "PLAN", "task": "none"}
     mock_proj.board = MagicMock()
-    mock_proj.board.counts.return_value = {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
+    mock_proj.board.counts.return_value = {
+        "doing": 0,
+        "todo": 0,
+        "done": 0,
+        "blocked": 0,
+    }
     mock_proj.subs = []
     mock_proj.translate = None
     mock_proj.mtime = 0
@@ -95,6 +100,7 @@ def test_refresh_one_project_uses_changed_files_classifier(api: Api, tmp_path: P
 @pytest.fixture
 def api(tmp_path: Path):
     from unittest.mock import MagicMock
+
     with (
         patch("saipenview.api.config_path") as mock_cfg_path,
         patch("saipenview.api.load_config") as mock_load,
@@ -105,9 +111,15 @@ def api(tmp_path: Path):
         patch("saipenview.protocol_write.get_coordinator") as mock_coord,
     ):
         mock_load.return_value = {
-            "pinned_roots": [], "hidden_roots": [], "sort_order": "smart",
-            "scan_roots": None, "auto_scan": False, "rescan_interval": 30,
-            "scan_depth": 6, "scan_delay_ms": 10, "exclude_dirs": [],
+            "pinned_roots": [],
+            "hidden_roots": [],
+            "sort_order": "smart",
+            "scan_roots": None,
+            "auto_scan": False,
+            "rescan_interval": 30,
+            "scan_depth": 6,
+            "scan_delay_ms": 10,
+            "exclude_dirs": [],
             "agent_output_buffer_size": 5000,
         }
         data_dir = tmp_path / "_data"

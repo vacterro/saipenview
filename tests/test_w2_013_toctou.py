@@ -62,3 +62,14 @@ def test_clean_collect_still_passes_with_no_external_events(project: Path):
 
     res = collect_outbox_entry(project, "saihunt", "HUNT-001")
     assert res["ok"] is True, f"expected success, got: {res}"
+
+
+def test_package_generation_is_acknowledged_conditionally(project: Path):
+    outbox_rel = "extensions/subs/saihunt/kitchen/OUTBOX.md"
+    token = get_registry().record(str(project), outbox_rel, "package-fp")
+
+    res = collect_outbox_entry(project, "saihunt", "HUNT-001")
+
+    assert res["ok"] is True, res
+    assert get_registry().acknowledge(str(project), outbox_rel, token) is False
+    assert get_registry().pending(str(project)) == []

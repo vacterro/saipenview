@@ -211,12 +211,16 @@ class SaipenViewService:
                     self._api.start()
 
                 try:
-                    server = ThreadingHTTPServer((self._host, self._port), self._make_handler())
+                    server = ThreadingHTTPServer(
+                        (self._host, self._port), self._make_handler()
+                    )
                 except OSError as exc:
                     # W2-007: ThreadingHTTPServer.__init__ may bind a socket
                     # before raising; the half-constructed object is unreachable
                     # so the socket leaks unless we catch and close explicitly.
-                    raise _ServiceError(f"failed to bind port {self._port}: {exc}", 503) from exc
+                    raise _ServiceError(
+                        f"failed to bind port {self._port}: {exc}", 503
+                    ) from exc
                 server.handle_error = self._handle_server_error
                 self._server = server
                 self._thread = threading.Thread(
@@ -342,27 +346,35 @@ class SaipenViewService:
                     if (root, file_key) in buf:
                         existing = buf[(root, file_key)]
                         # Preserve external if any coalesced event was external.
-                        merged_origin = "external" if (
+                        merged_origin = (
+                            "external"
+                            if (
                             existing["origin"] == "external" or origin == "external"
-                        ) else origin
+                            )
+                            else origin
+                        )
                         buf[(root, file_key)] = {
                             "origin": merged_origin,
-                            "payload": json.dumps({
+                            "payload": json.dumps(
+                                {
                                 "event": "file.changed",
                                 "root": root,
                                 "file": file_key,
                                 "origin": merged_origin,
-                            }),
+                                }
+                            ),
                         }
                     elif len(buf) < self._SSE_QUEUE_MAX:
                         buf[(root, file_key)] = {
                             "origin": origin,
-                            "payload": json.dumps({
+                            "payload": json.dumps(
+                                {
                                 "event": "file.changed",
                                 "root": root,
                                 "file": file_key,
                                 "origin": origin,
-                            }),
+                                }
+                            ),
                         }
                     else:
                         # CORE-010: per-subscriber overflow -- collapse to exactly
@@ -399,6 +411,7 @@ class SaipenViewService:
         # becomes 400 (client error); after binding, an internal TypeError
         # flows as 500 (server error).
         import inspect
+
         try:
             inspect.signature(fn).bind(*args)
         except TypeError as exc:

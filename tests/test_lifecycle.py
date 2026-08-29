@@ -167,11 +167,16 @@ class TestOutputRollover:
             pm.launch(engine, root, "go")
             assert _wait_for(lambda: pm.get_status(root)["status"] == "done")
 
+            # PERF-002: after EOF + transcript finalize, the in-memory deque
+            # is released (durable history lives in SessionStore). get_output
+            # keeps the canonical cursor (total == 10) and reports lines=[].
+            # dropped_count tells the caller how many of their since_line-cursor
+            # lines the deque no longer has in memory; after release every line
+            # past the cursor is reported as dropped.
             res = pm.get_output(root, since_line=0)
-            assert res["lines"] == ["l7", "l8", "l9"], res["lines"]
+            assert res["lines"] == [], res["lines"]
             assert res["total"] == 10
-            assert res["first_available"] == 7
-            assert res["dropped_count"] == 7
+            assert res["first_available"] == 10
             assert res["next_since"] == 10
 
             # A second poll with the canonical cursor repeats nothing.

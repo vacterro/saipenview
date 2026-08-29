@@ -132,9 +132,7 @@ def test_clipboard_copy_cannot_execute_payload(tmp_path):
 def test_ownership_held_after_stdout_closed_but_alive(tmp_path):
     child = tmp_path / "child.py"
     child.write_text(
-        "import sys, time\n"
-        "sys.stdout.close()\n"
-        "time.sleep(30)\n",
+        "import sys, time\nsys.stdout.close()\ntime.sleep(30)\n",
         encoding="utf-8",
     )
     pm = _make_pm()
@@ -155,7 +153,9 @@ def test_ownership_held_after_stdout_closed_but_alive(tmp_path):
 
 def test_second_launch_refused_until_process_dead(tmp_path):
     child = tmp_path / "child.py"
-    child.write_text("import sys, time\nsys.stdout.close()\ntime.sleep(30)\n", encoding="utf-8")
+    child.write_text(
+        "import sys, time\nsys.stdout.close()\ntime.sleep(30)\n", encoding="utf-8"
+    )
     pm = _make_pm()
     root = str(tmp_path / "proj")
     Path(root).mkdir()
@@ -219,7 +219,8 @@ def test_forced_parent_exit_kills_child(tmp_path):
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     proc = subprocess.Popen(
-        [sys.executable, str(helper), str(hb_script), str(heartbeat), str(marker)], env=env
+        [sys.executable, str(helper), str(hb_script), str(heartbeat), str(marker)],
+        env=env,
     )
     for _ in range(50):
         if marker.exists():
@@ -246,9 +247,13 @@ def test_forced_parent_exit_kills_child(tmp_path):
             child_dead_at = time.time()
             break
         time.sleep(0.1)
-    assert child_dead_at is not None, "child survived parent force-exit (Job Object failed)"
+    assert child_dead_at is not None, (
+        "child survived parent force-exit (Job Object failed)"
+    )
     last = float(heartbeat.read_text(encoding="utf-8").split()[1])
-    assert last <= child_dead_at + 0.3 + 1e-6, "child kept heartbeating after parent exit (Job Object failed)"
+    assert last <= child_dead_at + 0.3 + 1e-6, (
+        "child kept heartbeating after parent exit (Job Object failed)"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -293,13 +298,19 @@ def test_unreadable_untracked_file_fails_preview_closed(repo, monkeypatch):
 
     (repo / "secret.txt").write_text("data\n", encoding="utf-8")
 
-    def _boom(self):
-        raise OSError("denied")
+    original_open = git_diff.Path.open
 
-    monkeypatch.setattr(git_diff.Path, "read_bytes", _boom)
+    def _boom(self, *args, **kwargs):
+        if self == repo / "secret.txt":
+            raise OSError("denied")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(git_diff.Path, "open", _boom)
     res = git_diff.get_working_diff(str(repo))
     assert not res["ok"]
-    assert "unreadable" in res["error"].lower() or "cannot preview" in res["error"].lower()
+    assert (
+        "unreadable" in res["error"].lower() or "cannot preview" in res["error"].lower()
+    )
     # Fail-closed: nothing was committed and the file is untouched.
     assert len(_git(repo, "log", "--oneline").stdout.splitlines()) == 1
     assert (repo / "secret.txt").exists()
@@ -394,7 +405,9 @@ class TestSingleInstanceGuard:
 
         stop = threading.Event()
         lthread = threading.Thread(
-            target=self._free_port_listener, args=(SINGLE_INSTANCE_PORT, stop), daemon=True
+            target=self._free_port_listener,
+            args=(SINGLE_INSTANCE_PORT, stop),
+            daemon=True,
         )
         lthread.start()
         try:
@@ -413,7 +426,9 @@ class TestSingleInstanceGuard:
 
         stop = threading.Event()
         lthread = threading.Thread(
-            target=self._free_port_listener, args=(SINGLE_INSTANCE_PORT, stop), daemon=True
+            target=self._free_port_listener,
+            args=(SINGLE_INSTANCE_PORT, stop),
+            daemon=True,
         )
         lthread.start()
         try:
@@ -457,7 +472,9 @@ class TestSingleInstanceGuard:
 
         stop = threading.Event()
         lthread = threading.Thread(
-            target=self._free_port_listener, args=(SINGLE_INSTANCE_PORT, stop), daemon=True
+            target=self._free_port_listener,
+            args=(SINGLE_INSTANCE_PORT, stop),
+            daemon=True,
         )
         lthread.start()
         try:
@@ -489,11 +506,15 @@ def test_stale_generation_does_not_publish_result(monkeypatch):
     monkeypatch.setattr(scanner_mod, "scan", fake_scan)
 
     s1 = BackgroundScanner(
-        on_result=lambda projects, complete=False, **kw: captured.append(("s1", projects)),
+        on_result=lambda projects, complete=False, **kw: captured.append(
+            ("s1", projects)
+        ),
         scan_roots=["z"],
     )
     s2 = BackgroundScanner(
-        on_result=lambda projects, complete=False, **kw: captured.append(("s2", projects)),
+        on_result=lambda projects, complete=False, **kw: captured.append(
+            ("s2", projects)
+        ),
         scan_roots=["z"],
     )
     s1.start()
@@ -599,12 +620,33 @@ def test_cache_malformed_starts_fresh(content, tmp_config_path):
         api.stop()
 
 
+def _complete_row(root: str, name: str = "project") -> str:
+    """W2-005: a complete cache row matching the validated schema.
+    json.dumps handles backslash escaping -- do NOT pre-replace."""
+    import json
+
+    return json.dumps([
+        {
+            "root": root,
+            "name": name,
+            "phase": "DONE",
+            "is_pinned": False,
+            "task": None,
+            "next_action": "WAIT: user brake",
+            "blocker": None,
+            "mtime": 0,
+            "updated": "2026-01-01T00:00:00Z",
+            "updated_kind": "utc",
+        }
+    ])
+
+
 def test_cache_valid_fast_boot(tmp_config_path):
     from saipenview.api import Api
     from saipenview.config import config_path
 
     cache = config_path().parent / "cache.json"
-    cache.write_text('[{"root": "C:\\\\valid\\\\project"}]', encoding="utf-8")
+    cache.write_text(_complete_row("C:\\valid\\project"), encoding="utf-8")
     api = Api()
     try:
         assert len(api._projects) == 1
@@ -623,7 +665,7 @@ def test_complete_empty_scan_clears_cache(tmp_path):
     from saipenview.config import config_path
 
     cache = config_path().parent / "cache.json"
-    cache.write_text('[{"root": "C:\\\\vanish\\\\project"}]', encoding="utf-8")
+    cache.write_text(_complete_row("C:\\vanish\\project"), encoding="utf-8")
     api = Api()
     try:
         assert len(api._projects) == 1
@@ -639,7 +681,7 @@ def test_incomplete_scan_keeps_cache(tmp_path):
     from saipenview.config import config_path
 
     cache = config_path().parent / "cache.json"
-    cache.write_text('[{"root": "C:\\\\keep\\\\project"}]', encoding="utf-8")
+    cache.write_text(_complete_row("C:\\keep\\project"), encoding="utf-8")
     api = Api()
     try:
         assert len(api._projects) == 1
@@ -655,9 +697,11 @@ def test_refresh_removes_vanished_project(tmp_path):
 
     proj = tmp_path / "proj"
     (proj / ".saipen").mkdir(parents=True)
-    (proj / ".saipen" / "STATE.md").write_text("---\nphase: DONE\n---\n", encoding="utf-8")
+    (proj / ".saipen" / "STATE.md").write_text(
+        "---\nphase: DONE\n---\n", encoding="utf-8"
+    )
     cache = config_path().parent / "cache.json"
-    cache.write_text('[{"root": "' + str(proj).replace("\\", "\\\\") + '"}]', encoding="utf-8")
+    cache.write_text(_complete_row(str(proj)), encoding="utf-8")
     api = Api()
     try:
         assert len(api._projects) == 1
@@ -790,7 +834,9 @@ def test_run_unwinds_started_components_on_failure(monkeypatch):
             # the critical contract is that its finally unwinds every
             # started component first.
             reached_boom = True
-        assert reached_boom == (boom_at is not None), f"boom propagation wrong for {boom_at}"
+        assert reached_boom == (boom_at is not None), (
+            f"boom propagation wrong for {boom_at}"
+        )
 
         started_idx = order.index(boom_at) if boom_at in order else len(order)
         for i, name in enumerate(order):
@@ -800,7 +846,9 @@ def test_run_unwinds_started_components_on_failure(monkeypatch):
                 assert name not in stops, f"{name} should not be stopped boom={boom_at}"
                 continue
             if i < started_idx:
-                assert stops.get(name) == 1, f"{name} stop={stops.get(name)} boom={boom_at}"
+                assert stops.get(name) == 1, (
+                    f"{name} stop={stops.get(name)} boom={boom_at}"
+                )
             else:
                 # api is always in _started (created before any boom point),
                 # so it is always stopped during cleanup even for early booms.

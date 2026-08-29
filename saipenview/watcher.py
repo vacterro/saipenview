@@ -30,13 +30,24 @@ _TRACKED = frozenset({"STATE.md", "BOARD.md", "LOG.md", "OUTBOX.md", "MANIFEST.m
 
 class _SaipenEventHandler(FileSystemEventHandler):
     """Reacts to all four watchdog event kinds, filtering to the protocol
-    files, collapsing bursts into one debounced publish per file."""
+    files, collapsing bursts into one debounced publish per file.
+
+    W2-002: the debounce now counts raw events per (root, file) in the
+    window and publishes that count. The Api compares it against the number
+    of armed self-write registrations for the same file: more raw events
+    than self registrations means an external write landed between app
+    writes (self A -> external B -> self C) -- a signal the final-content
+    fingerprint check alone cannot see. Debounce stays only for the
+    expensive reparse/UI refresh; the event count preserves causal evidence.
+    """
 
     def __init__(self, root: str, debounce_delay: float = DEBOUNCE_DELAY) -> None:
         self.root = root
         self._debounce_delay = debounce_delay
         self._lock = threading.Lock()
         self._timers: dict[str, threading.Timer] = {}
+        # W2-002: raw-event count per file in the current debounce window.
+        self._event_counts: dict[str, int] = {}
         self._disposed = False
 
     def on_modified(self, event) -> None:
@@ -78,6 +89,11 @@ class _SaipenEventHandler(FileSystemEventHandler):
         except ValueError:
             return  # path is outside the watched tree
         if rel.name in _TRACKED:
+            with self._lock:
+                if self._disposed:
+                    return
+                # W2-002: count every raw event for this file in the window.
+                self._event_counts[rel.name] = self._event_counts.get(rel.name, 0) + 1
             self._debounce(str(rel))
 
     def _debounce(self, name: str) -> None:
@@ -101,7 +117,15 @@ class _SaipenEventHandler(FileSystemEventHandler):
             if self._disposed:
                 return
             self._timers.pop(name, None)
-        event_bus.publish("saipen.project_changed", {"root": self.root, "file": name})
+            event_count = self._event_counts.pop(name, 0)
+        event_bus.publish(
+            "saipen.project_changed",
+            {
+                "root": self.root,
+                "file": name,
+                "event_count": event_count,
+            },
+        )
 
     def cancel(self) -> None:
         """Cancel all pending timers -- the callback must never fire after
@@ -111,6 +135,7 @@ class _SaipenEventHandler(FileSystemEventHandler):
             for t in self._timers.values():
                 t.cancel()
             self._timers.clear()
+            self._event_counts.clear()
 
 
 class SaipenWatcher:

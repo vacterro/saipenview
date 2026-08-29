@@ -1,4 +1,6 @@
 """T-7 / CORE-002: _finalize must not commit terminal state before proven death."""
+
+import collections
 import subprocess
 import threading
 import time
@@ -49,6 +51,11 @@ class DummyAgent:
         self._psutil_proc = None
         self._reader_thread = None
         self.status = "running"
+        # W2-004: transcript-deferral fields used by the new _finalize path.
+        self._transcript_lock = threading.Lock()
+        self._transcript_done = False
+        self._transcript_pending = None
+        self.output_lines = collections.deque(maxlen=5000)
 
     def elapsed_seconds(self):
         return 0.0
@@ -65,11 +72,12 @@ def test_finalize_blocks_terminal_when_returncode_none():
     ap.process.returncode = None  # never resolved
     ap.process.delay = 10.0  # wait() will block
 
-    with patch.object(registry, "ownership") as mock_ownership, \
-         patch.object(registry, "sessions") as mock_sessions, \
-         patch("saipenview.runtime.event_bus") as mock_bus, \
-         patch("saipenview.runtime._schedule_reaper") as mock_reaper:
-
+    with (
+        patch.object(registry, "ownership") as mock_ownership,
+        patch.object(registry, "sessions") as mock_sessions,
+        patch("saipenview.runtime.event_bus") as mock_bus,
+        patch("saipenview.runtime._schedule_reaper") as mock_reaper,
+    ):
         registry._finalize(ap)
 
         # No session finish, no event publish, no ownership release.
@@ -92,9 +100,11 @@ def test_finalize_commits_after_proven_death():
     ap = DummyAgent()
     ap.process.returncode = 0  # already dead
 
-    with patch.object(registry, "ownership") as mock_ownership, \
-         patch.object(registry, "sessions") as mock_sessions, \
-         patch("saipenview.runtime.event_bus") as mock_bus:
+    with (
+        patch.object(registry, "ownership") as mock_ownership,
+        patch.object(registry, "sessions") as mock_sessions,
+        patch("saipenview.runtime.event_bus") as mock_bus,
+    ):
         registry._finalize(ap)
 
         assert ap._finalized is True
@@ -128,11 +138,12 @@ def test_kill_sets_intent_no_terminal_without_death():
     # returncode as None, simulating an unkillable process.
     ap.process = DummyProcess(returncode=None, delay=10.0, stay_alive=True)
 
-    with patch("saipenview.runtime._schedule_reaper") as mock_reaper, \
-         patch.object(registry, "ownership") as mock_ownership, \
-         patch.object(registry, "sessions") as mock_sessions, \
-         patch("saipenview.runtime.event_bus") as mock_bus:
-
+    with (
+        patch("saipenview.runtime._schedule_reaper") as mock_reaper,
+        patch.object(registry, "ownership") as mock_ownership,
+        patch.object(registry, "sessions") as mock_sessions,
+        patch("saipenview.runtime.event_bus") as mock_bus,
+    ):
         result = registry.kill(ap.project_root)
 
     # kill() returns ok because it sent the signal; death proof is deferred.

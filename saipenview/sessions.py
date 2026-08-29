@@ -113,20 +113,55 @@ class SessionRecord:
 
     @staticmethod
     def from_dict(d: dict) -> SessionRecord:
+        if not isinstance(d, dict):
+            raise ValueError("session metadata must be an object")
+
+        def string(name: str, default: str = "") -> str:
+            value = d.get(name, default)
+            if not isinstance(value, str):
+                raise ValueError(f"session metadata {name} must be a string")
+            return value
+
+        def optional_string(name: str) -> str | None:
+            value = d.get(name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"session metadata {name} must be a string or null")
+            return value
+
+        def optional_int(name: str) -> int | None:
+            value = d.get(name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int)
+            ):
+                raise ValueError(f"session metadata {name} must be an integer or null")
+            return value
+
+        line_count = d.get("line_count", 0)
+        if (
+            isinstance(line_count, bool)
+            or not isinstance(line_count, int)
+            or line_count < 0
+        ):
+            raise ValueError(
+                "session metadata line_count must be a non-negative integer"
+            )
+        truncated = d.get("truncated", False)
+        if not isinstance(truncated, bool):
+            raise ValueError("session metadata truncated must be boolean")
         return SessionRecord(
-            run_id=d.get("run_id", ""),
-            root=d.get("root", ""),
-            project=d.get("project", ""),
-            engine=d.get("engine", ""),
-            engine_display=d.get("engine_display", d.get("engine", "")),
-            instruction=d.get("instruction", ""),
-            started_at=d.get("started_at", ""),
-            status=d.get("status", "running"),
-            finished_at=d.get("finished_at"),
-            exit_code=d.get("exit_code"),
-            line_count=int(d.get("line_count") or 0),
-            truncated=bool(d.get("truncated")),
-            pid=d.get("pid"),
+            run_id=string("run_id"),
+            root=string("root"),
+            project=string("project"),
+            engine=string("engine"),
+            engine_display=string("engine_display", string("engine")),
+            instruction=string("instruction"),
+            started_at=string("started_at"),
+            status=string("status", "running"),
+            finished_at=optional_string("finished_at"),
+            exit_code=optional_int("exit_code"),
+            line_count=line_count,
+            truncated=truncated,
+            pid=optional_int("pid"),
         )
 
 
@@ -198,9 +233,22 @@ class SessionStore:
                 file=sys.stderr,
             )
             return None
+        entry = _OpenTranscript(record=record, handle=handle)
         with self._lock:
-            self._open[run_id] = _OpenTranscript(record=record, handle=handle)
-        self._write_meta(record)
+            self._open[run_id] = entry
+        if not self._write_meta(record):
+            with self._lock:
+                self._open.pop(run_id, None)
+            with entry.lock:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+            try:
+                (self._dir / f"{run_id}.log").unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
         self._prune(key)
         return record
 
@@ -213,7 +261,9 @@ class SessionStore:
         raw_bytes = line.encode("utf-8", errors="replace")
         if len(raw_bytes) > MAX_OUTPUT_LINE_BYTES:
             # Write as much as fits, plus a truncation marker.
-            truncated = raw_bytes[:MAX_OUTPUT_LINE_BYTES].decode("utf-8", errors="ignore")
+            truncated = raw_bytes[:MAX_OUTPUT_LINE_BYTES].decode(
+                "utf-8", errors="ignore"
+            )
             line = truncated + " [... truncated]"
         with entry.lock:
             if entry.bytes_written >= MAX_TRANSCRIPT_BYTES:
@@ -245,25 +295,35 @@ class SessionStore:
 
     def finish(self, run_id: str, status: str, exit_code: int | None) -> None:
         with self._lock:
-            entry = self._open.pop(run_id, None)
+            entry = self._open.get(run_id)
         if entry is None:
             return
         with entry.lock:
             if entry.handle is not None:
                 try:
                     entry.handle.flush()
+                except OSError:
+                    pass
+            record = SessionRecord.from_dict(entry.record.to_dict())
+            record.status = status
+            record.exit_code = exit_code
+            record.finished_at = datetime.now(timezone.utc).isoformat()
+            # CORE-003: close handle and remove from _open BEFORE metadata
+            # write. A transient disk failure must not leave a dead process
+            # represented as live, leak the transcript handle, or accept
+            # the run as locally open.
+            if entry.handle is not None:
+                try:
                     entry.handle.close()
                 except OSError:
                     pass
                 entry.handle = None
-            entry.record.status = status
-            entry.record.exit_code = exit_code
-            entry.record.finished_at = datetime.now(timezone.utc).isoformat()
-        # Write metadata BEFORE releasing the entry lock so a concurrent
-        # history() call sees a consistent state: either the run is still in
-        # _open (not yet finished) or the disk record is terminal. Writing
-        # atomically prevents corrupt JSON from a mid-write crash.
-        self._write_meta(entry.record)
+            entry.record = record
+            with self._lock:
+                if self._open.get(run_id) is entry:
+                    self._open.pop(run_id, None)
+        # Best-effort metadata write after lifecycle cleanup — never gate on it.
+        self._write_meta(record)
 
     # ---- reading ---------------------------------------------------------
 
@@ -362,7 +422,7 @@ class SessionStore:
             # reason there is no shared index file.
             return None
 
-    def _write_meta(self, record: SessionRecord) -> None:
+    def _write_meta(self, record: SessionRecord) -> bool:
         path = self._dir / f"{record.run_id}.json"
         tmp_path = path.with_suffix(".json.tmp")
         try:
@@ -374,6 +434,7 @@ class SessionStore:
                 json.dumps(record.to_dict(), indent=2), encoding="utf-8", newline="\n"
             )
             tmp_path.replace(path)
+            return True
         except OSError as exc:
             print(
                 f"SAIPENVIEW: cannot write session meta {path}: {exc}", file=sys.stderr
@@ -384,6 +445,7 @@ class SessionStore:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+        return False
 
     def _prune(self, key: str) -> None:
         metas = self._meta_files(key)

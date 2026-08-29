@@ -37,23 +37,32 @@ def _run(handler, event):
         event_bus.unsubscribe("saipen.project_changed", captured.append)
 
 
+def _strip_meta(events):
+    """W2-002: the debounce event now carries an event_count field; tests
+    assert on the semantic {root, file} payload, not the telemetry key."""
+    return [
+        {k: v for k, v in e.items() if k in ("root", "file")} for e in events
+    ]
+
+
 def test_move_away_fires_for_source():
     h = _SaipenEventHandler("/r", debounce_delay=0)
     cap = _run(h, _FakeMove("/r/.saipen/STATE.md", "/r/.saipen/STATE.bak"))
-    assert cap == [{"root": "/r", "file": "STATE.md"}]
+    assert _strip_meta(cap) == [{"root": "/r", "file": "STATE.md"}]
+    assert cap[0]["event_count"] == 1
 
 
 def test_move_in_fires_for_dest():
     h = _SaipenEventHandler("/r", debounce_delay=0)
     cap = _run(h, _FakeMove("/r/.saipen/tmpABC", "/r/.saipen/STATE.md"))
-    assert cap == [{"root": "/r", "file": "STATE.md"}]
+    assert _strip_meta(cap) == [{"root": "/r", "file": "STATE.md"}]
 
 
 def test_move_between_tracked_fires_both():
     h = _SaipenEventHandler("/r", debounce_delay=0)
     cap = _run(h, _FakeMove("/r/.saipen/STATE.md", "/r/.saipen/BOARD.md"))
-    assert {"root": "/r", "file": "STATE.md"} in cap
-    assert {"root": "/r", "file": "BOARD.md"} in cap
+    assert {"root": "/r", "file": "STATE.md"} in _strip_meta(cap)
+    assert {"root": "/r", "file": "BOARD.md"} in _strip_meta(cap)
     assert len(cap) == 2
 
 

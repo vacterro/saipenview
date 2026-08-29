@@ -195,7 +195,7 @@ def write_doc(
                 os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
             except OSError:
                 pass
-        os.replace(tmp, path)
+        tmp.replace(path)
     finally:
         try:
             if tmp.exists():

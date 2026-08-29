@@ -46,7 +46,13 @@ def _run(pm, root, command):
     assert _wait_for(lambda: pm.get_status(str(root))["status"] == "done"), (
         "command did not finish: " + repr(pm.get_output(str(root))["lines"])
     )
-    return pm.get_output(str(root))["lines"]
+    # PERF-002: the in-memory deque is released after EOF + transcript
+    # finalization; the durable transcript is the canonical copy of the output.
+    rec = pm.sessions.history(str(root))[0]
+    raw = (pm.sessions._dir / f"{rec['run_id']}.log").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    return [line for line in raw.split("\n") if line]
 
 
 class TestShellContract:

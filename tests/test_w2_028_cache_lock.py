@@ -24,16 +24,23 @@ from saipenview.api import Api, _cache_lock
 def test_cache_lock_is_module_level():
     """_cache_lock is a module-level Lock, not instance-local."""
     import saipenview.api as api_mod
-    assert hasattr(api_mod, '_cache_lock')
+
+    assert hasattr(api_mod, "_cache_lock")
     assert isinstance(api_mod._cache_lock, type(threading.Lock()))
 
 
 def test_concurrent_writers_to_same_cache_file(tmp_path: Path):
     """Two Api instances writing to same cache file -> final cache is valid."""
     cfg = {
-        "pinned_roots": [], "hidden_roots": [], "sort_order": "smart",
-        "scan_roots": None, "auto_scan": False, "rescan_interval": 30,
-        "scan_depth": 6, "scan_delay_ms": 10, "exclude_dirs": [],
+        "pinned_roots": [],
+        "hidden_roots": [],
+        "sort_order": "smart",
+        "scan_roots": None,
+        "auto_scan": False,
+        "rescan_interval": 30,
+        "scan_depth": 6,
+        "scan_delay_ms": 10,
+        "exclude_dirs": [],
         "agent_output_buffer_size": 5000,
     }
     cache_file = tmp_path / "cache.json"

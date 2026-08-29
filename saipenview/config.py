@@ -173,14 +173,23 @@ def normalize_config(raw: dict) -> dict:
     # --- Search query (freeform string) ---
     cfg["search_query"] = (
         raw.get("search_query", DEFAULTS["search_query"])
-        if isinstance(raw.get("search_query"), str) else DEFAULTS["search_query"]
+        if isinstance(raw.get("search_query"), str)
+        else DEFAULTS["search_query"]
     )
     # --- Boolean keys ---
     for key in (
-        "auto_scan", "compact_mode", "show_hidden", "always_on_top",
-        "frameless", "flash_changes", "show_on_launch",
-        "collapse_hint_acknowledged", "layout_swap", "top_panel_collapsed",
-        "show_agent_panel", "projects_collapsed_by_default",
+        "auto_scan",
+        "compact_mode",
+        "show_hidden",
+        "always_on_top",
+        "frameless",
+        "flash_changes",
+        "show_on_launch",
+        "collapse_hint_acknowledged",
+        "layout_swap",
+        "top_panel_collapsed",
+        "show_agent_panel",
+        "projects_collapsed_by_default",
     ):
         v = raw.get(key)
         if isinstance(v, bool):
@@ -195,8 +204,10 @@ def normalize_config(raw: dict) -> dict:
     v = raw.get("projects_unfolded_tail")
     try:
         v = int(v)
-        if v < 0: v = 0
-        elif v > 50: v = 50
+        if v < 0:
+            v = 0
+        elif v > 50:
+            v = 50
     except (TypeError, ValueError):
         v = DEFAULTS["projects_unfolded_tail"]
     cfg["projects_unfolded_tail"] = v
@@ -209,14 +220,24 @@ def normalize_config(raw: dict) -> dict:
     else:
         cfg["scan_roots"] = DEFAULTS["scan_roots"]
     # --- List keys ---
-    for key in ("hotkeys", "snap_hotkey", "exclude_dirs", "pinned_roots", "hidden_roots"):
+    for key in (
+        "hotkeys",
+        "snap_hotkey",
+        "exclude_dirs",
+        "pinned_roots",
+        "hidden_roots",
+    ):
         v = raw.get(key)
         if key == "snap_hotkey" and isinstance(v, str):
             v = [v]
         if isinstance(v, list) and all(isinstance(x, str) for x in v):
             cfg[key] = v
         else:
-            cfg[key] = list(DEFAULTS[key]) if isinstance(DEFAULTS[key], list) else DEFAULTS[key]
+            cfg[key] = (
+                list(DEFAULTS[key])
+                if isinstance(DEFAULTS[key], list)
+                else DEFAULTS[key]
+            )
     # --- Complex / dict keys ---
     v = raw.get("collapsed_sections")
     cfg["collapsed_sections"] = v if isinstance(v, dict) else {}
@@ -234,7 +255,9 @@ def normalize_config(raw: dict) -> dict:
     # custom_commands: list of {label, command} dicts
     v = raw.get("custom_commands")
     if isinstance(v, list) and all(
-        isinstance(c, dict) and isinstance(c.get("label"), str) and isinstance(c.get("command"), str)
+        isinstance(c, dict)
+        and isinstance(c.get("label"), str)
+        and isinstance(c.get("command"), str)
         for c in v
     ):
         cfg["custom_commands"] = v

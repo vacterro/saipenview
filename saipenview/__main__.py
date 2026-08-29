@@ -19,8 +19,8 @@ from saipenview.paths import canonical, validate_file_path
 
 
 def _run_service(args: argparse.Namespace) -> int:
+    from saipenview.guard import SINGLE_INSTANCE_PORT, SingleInstanceGuard
     from saipenview.service import run_service
-    from saipenview.guard import SingleInstanceGuard, SINGLE_INSTANCE_PORT
 
     # CORE-004: the guard uses a FIXED global port for single-instance
     # detection (named mutex on Windows, TCP on other platforms). After
@@ -29,8 +29,7 @@ def _run_service(args: argparse.Namespace) -> int:
     guard = SingleInstanceGuard(port=SINGLE_INSTANCE_PORT)
     if not guard.acquire():
         print(
-            "SAIPENVIEW: another instance already owns this service port; "
-            "exiting.",
+            "SAIPENVIEW: another instance already owns this service port; exiting.",
             file=sys.stderr,
         )
         return 1

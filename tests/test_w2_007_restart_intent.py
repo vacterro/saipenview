@@ -1,63 +1,50 @@
 """T-17 / W2-007: BackgroundScanner restart intent survives blocked stop."""
-import time
+
+import threading
 from unittest.mock import MagicMock
 
-import pytest
+from saipenview import scanner as sc
+from saipenview.scanner import BackgroundScanner, ScanOutcome
 
 
-@pytest.fixture(autouse=True)
-def _reset_gen():
-    """Reset module-level generation counter so tests are isolated."""
-    import saipenview.scanner as sc
-    sc._current_gen = 0
-    yield
-    sc._current_gen = 0
+def test_restart_waits_for_old_generation_and_starts_once(monkeypatch):
 
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    calls = []
 
-def test_restart_pending_survives_slow_stop():
-    """stop() blocks past 1s grace window -> _restart_pending=True.
-    Immediate start() must launch a fresh worker even though old thread
-    is still alive (its generation is stale so it will exit on next iter).
-    """
-    from saipenview.scanner import BackgroundScanner
-    import saipenview.scanner as sc
+    def fake_scan(*args, **kwargs):
+        event = kwargs["cancel"]
+        calls.append(event)
+        if len(calls) == 1:
+            first_started.set()
+            release_first.wait(timeout=5)
+        else:
+            second_started.set()
+        return ScanOutcome()
 
-    on_result = MagicMock()
-    scanner = BackgroundScanner(on_result=on_result, interval_seconds=60.0)
-
-    # Patch scan to block longer than stop()'s 1s join + start()'s 2s join.
-    real_scan = sc.scan
-
-    def slow_scan(*args, **kwargs):
-        time.sleep(5.0)
-        return real_scan(*args, **kwargs)
-
-    sc.scan = slow_scan
-
-    # Start the scanner so it has a live thread.
+    monkeypatch.setattr(sc, "scan", fake_scan)
+    scanner = BackgroundScanner(on_result=MagicMock(), interval_seconds=60.0)
     scanner.start()
-    assert scanner.is_alive()
+    assert first_started.wait(timeout=5)
 
-    # stop() will set the stop event and try to join with 1s timeout.
-    # The thread is blocked in slow_scan so it won't exit in time.
     scanner.stop()
-    # Restart intent must be recorded.
     assert scanner._restart_pending is True
-    # Old thread is still alive.
-    assert scanner._thread is not None
-    assert scanner._thread.is_alive()
+    old_thread = scanner._thread
+    assert old_thread is not None and old_thread.is_alive()
 
-    # Immediate start(): despite old thread being alive, restart intent
-    # means we must launch a fresh worker, not bail out.
     scanner.start()
+    assert scanner._thread is old_thread
+    assert len(calls) == 1
+    assert calls[0].is_set()
 
-    # A new thread must have been launched and restart flag cleared.
-    assert scanner._thread is not None
-    assert scanner._restart_pending is False
-    # The scanner is alive (new worker running).
-    assert scanner.is_alive()
+    release_first.set()
+    assert second_started.wait(timeout=5)
+    assert len(calls) == 2
+    assert calls[1] is not calls[0]
+    assert calls[1].is_set() is False
 
-    # Cleanup -- let the slow scan finish, then stop.
     scanner.stop()
 
 
@@ -65,8 +52,6 @@ def test_start_without_restart_pending_respects_alive_guard():
     """When no restart was requested (e.g. double-start), start()
     must still respect the alive-boundary and NOT stack a second loop.
     """
-    from saipenview.scanner import BackgroundScanner
-
     on_result = MagicMock()
     scanner = BackgroundScanner(on_result=on_result, interval_seconds=60.0)
     scanner.start()

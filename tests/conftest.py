@@ -38,7 +38,6 @@ def tmp_config_path(tmp_path: Path, monkeypatch) -> Path:
     capture the patched value at import time and are never re-patched.
     """
     from saipenview import config as cfg_mod
-
     fake_dir = tmp_path / "_data"
     fake_dir.mkdir(parents=True, exist_ok=True)
     resolved = fake_dir / "config.json"

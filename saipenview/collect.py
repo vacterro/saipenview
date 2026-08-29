@@ -92,8 +92,9 @@ COLLECT_POLICIES = frozenset({"automatic", "core-review", "explicit"})
 
 # CORE-005: SubSaipen identifier validation. A sub name must be exactly one
 # non-empty path segment -- no separators, no traversal, no absolute/drive/UNC.
-_BAD_SUB_CHARS = frozenset('/\\')
-_BAD_SUB_NAMES = frozenset({'.', '..', ''})
+_BAD_SUB_CHARS = frozenset("/\\")
+_BAD_SUB_NAMES = frozenset({".", "..", ""})
+
 
 def validate_sub_id(name: str) -> str | None:
     """Return None if *name* is a valid SubSaipen identifier, else an error
@@ -107,12 +108,12 @@ def validate_sub_id(name: str) -> str | None:
     # Reject path separators and traversal
     if any(c in name for c in _BAD_SUB_CHARS):
         return f"SubSaipen identifier {name!r} contains path separators"
-    if '..' in name:
+    if ".." in name:
         return f"SubSaipen identifier {name!r} contains traversal"
     # Reject absolute paths and drive letters (C:\, /foo, UNC \\server)
-    if len(name) >= 2 and name[1] == ':':
+    if len(name) >= 2 and name[1] == ":":
         return f"SubSaipen identifier {name!r} looks like an absolute/drive path"
-    if name.startswith('\\\\'):
+    if name.startswith("\\\\"):
         return f"SubSaipen identifier {name!r} looks like a UNC path"
     return None
 
@@ -285,7 +286,9 @@ def check_package(
         )
 
     # OUTBOX identity: canonical preferred, legacy fallback -- same resolution as parser
-    canonical_outbox = root / ".saipen" / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
+    canonical_outbox = (
+        root / ".saipen" / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
+    )
     legacy_outbox = root / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
     if canonical_outbox.is_file():
         outbox_hash = _hash_of(canonical_outbox)

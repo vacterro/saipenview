@@ -203,7 +203,10 @@ class TestLimits:
             data["started_at"] = same
             path.write_text(json.dumps(data), encoding="utf-8")
             # Rewriting bumps mtime; force the intended creation order back.
-            os.utime(path, ns=(1_000_000_000, 1_000_000_000 if rec is first else 2_000_000_000))
+            os.utime(
+                path,
+                ns=(1_000_000_000, 1_000_000_000 if rec is first else 2_000_000_000),
+            )
         assert store.last_run(ROOT)["run_id"] == second.run_id
 
 

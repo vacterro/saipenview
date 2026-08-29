@@ -119,9 +119,7 @@ class TestEntryTailParity:
 
     def test_budget_exhaustion_returns_none_not_partial_truth(self, tmp_path):
         p = tmp_path / "LOG.md"
-        body = "".join(
-            f"- entry {i}\n" + "z" * 2048 + "\n" for i in range(2000)
-        )
+        body = "".join(f"- entry {i}\n" + "z" * 2048 + "\n" for i in range(2000))
         p.write_text(body, encoding="utf-8")
         # Entries are far apart; a tiny budget cannot guarantee the real
         # last-N -- refuse rather than return a wrong tail.
@@ -209,9 +207,7 @@ class TestTranscriptParity:
         res = store.transcript("r2", max_lines=5)
         assert res == _legacy_transcript(log, 5)
 
-    def test_large_file_without_meta_falls_back_to_exact_full_read(
-        self, tmp_path
-    ):
+    def test_large_file_without_meta_falls_back_to_exact_full_read(self, tmp_path):
         store = self._store(tmp_path)
         log = self._write_run(store, "r3", 4000)
         (store._dir / "r3.json").unlink()

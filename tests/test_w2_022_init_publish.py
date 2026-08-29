@@ -31,9 +31,15 @@ def test_init_does_not_subscribe_to_eventbus(tmp_path: Path):
         patch("saipenview.protocol_write.get_coordinator") as mock_coord,
     ):
         mock_load.return_value = {
-            "pinned_roots": [], "hidden_roots": [], "sort_order": "smart",
-            "scan_roots": None, "auto_scan": False, "rescan_interval": 30,
-            "scan_depth": 6, "scan_delay_ms": 10, "exclude_dirs": [],
+            "pinned_roots": [],
+            "hidden_roots": [],
+            "sort_order": "smart",
+            "scan_roots": None,
+            "auto_scan": False,
+            "rescan_interval": 30,
+            "scan_depth": 6,
+            "scan_delay_ms": 10,
+            "exclude_dirs": [],
             "agent_output_buffer_size": 5000,
         }
         data_dir = tmp_path / "_data"
@@ -69,9 +75,15 @@ def test_start_subscribes_to_eventbus(tmp_path: Path):
         patch("saipenview.protocol_write.get_coordinator") as mock_coord,
     ):
         mock_load.return_value = {
-            "pinned_roots": [], "hidden_roots": [], "sort_order": "smart",
-            "scan_roots": None, "auto_scan": False, "rescan_interval": 30,
-            "scan_depth": 6, "scan_delay_ms": 10, "exclude_dirs": [],
+            "pinned_roots": [],
+            "hidden_roots": [],
+            "sort_order": "smart",
+            "scan_roots": None,
+            "auto_scan": False,
+            "rescan_interval": 30,
+            "scan_depth": 6,
+            "scan_delay_ms": 10,
+            "exclude_dirs": [],
             "agent_output_buffer_size": 5000,
         }
         data_dir = tmp_path / "_data"
@@ -103,6 +115,7 @@ def test_start_subscribes_to_eventbus(tmp_path: Path):
 def test_source_has_no_subscribe_in_init():
     """Verify the source code moved subscribe out of __init__."""
     import inspect
+
     init_source = inspect.getsource(Api.__init__)
     assert "event_bus.subscribe" not in init_source, (
         "event_bus.subscribe must not be in __init__"

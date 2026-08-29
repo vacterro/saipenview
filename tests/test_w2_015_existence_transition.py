@@ -33,9 +33,15 @@ def api(tmp_path: Path):
         patch("saipenview.protocol_write.get_coordinator") as mock_coord,
     ):
         mock_load.return_value = {
-            "pinned_roots": [], "hidden_roots": [], "sort_order": "smart",
-            "scan_roots": None, "auto_scan": False, "rescan_interval": 30,
-            "scan_depth": 6, "scan_delay_ms": 10, "exclude_dirs": [],
+            "pinned_roots": [],
+            "hidden_roots": [],
+            "sort_order": "smart",
+            "scan_roots": None,
+            "auto_scan": False,
+            "rescan_interval": 30,
+            "scan_depth": 6,
+            "scan_delay_ms": 10,
+            "exclude_dirs": [],
             "agent_output_buffer_size": 5000,
         }
         data_dir = tmp_path / "_data"
@@ -87,7 +93,11 @@ def test_edit_intent_fails_stale_when_file_disappears():
         if exists_at_entry:
             # Edit intent: check if file disappeared
             if not protocol_file_exists:
-                return {"ok": False, "code": "STALE_STATE", "message": "file disappeared"}
+                return {
+                    "ok": False,
+                    "code": "STALE_STATE",
+                    "message": "file disappeared",
+                }
             return {"ok": True}
         return {"ok": True}  # create path
 
@@ -102,6 +112,7 @@ def test_edit_intent_fails_stale_when_file_disappears():
 def test_write_file_text_snapshot_logic(api: Api, tmp_path: Path):
     """Verify the actual write_file_text uses exists_at_entry snapshot."""
     import inspect
+
     source = inspect.getsource(Api.write_file_text)
     assert "exists_at_entry" in source, "write_file_text must snapshot existence"
     # The planner still calls path.is_file() to detect transitions, but the

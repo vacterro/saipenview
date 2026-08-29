@@ -108,6 +108,24 @@ def test_incremental_append_scales_with_new_bytes_not_history(project):
         conformance._load_log_file = original_load
 
 
+def test_incremental_validation_matches_cold_counters(project):
+    log_path = project / ".saipen" / "LOG.md"
+    _LOG_CACHE.clear()
+    state = parse_frontmatter(read_doc(project / ".saipen" / "STATE.md"))
+
+    check_project(project, state)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("malformed log line\n" * 200)
+    incremental = check_project(project, state)
+
+    _LOG_CACHE.clear()
+    cold = check_project(project, state)
+    assert (incremental.fails, incremental.warns, incremental.verdict) == (
+        cold.fails,
+        cold.warns,
+        cold.verdict,
+    )
+
 
 def test_truncation_invalidates_cache_and_reparses_full(project):
     log_path = project / ".saipen" / "LOG.md"
@@ -118,12 +136,16 @@ def test_truncation_invalidates_cache_and_reparses_full(project):
 
     for i in range(2, 12):
         with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(f"- 28.08.26 00:{i:02d} [E-{i}] [parent: E-{i-1}] RUN: event {i}\n")
+            handle.write(
+                f"- 28.08.26 00:{i:02d} [E-{i}] [parent: E-{i - 1}] RUN: event {i}\n"
+            )
 
     c = _Collector()
     check_log(project, c)
 
-    log_path.write_text("# Log\n\n- 28.08.26 01:00 [E-1] RUN: fresh start\n", encoding="utf-8")
+    log_path.write_text(
+        "# Log\n\n- 28.08.26 01:00 [E-1] RUN: fresh start\n", encoding="utf-8"
+    )
 
     c = _Collector()
     check_log(project, c)
@@ -194,10 +216,18 @@ def test_state_only_change_skips_board_log_reread(project):
 
     conf.parse_board_strict = tracked_parse
     state = {
-        "phase": "BUILD", "task": "T-001", "next_action": "work",
-        "blocker": "none", "agent": "test", "saipen_version": "7", "mode": "full",
-        "updated": "2026-08-28T00:00:00Z", "transition_from": "SCOUT",
-        "schema_version": "3", "last_event": "1", "style_contract": "test",
+        "phase": "BUILD",
+        "task": "T-001",
+        "next_action": "work",
+        "blocker": "none",
+        "agent": "test",
+        "saipen_version": "7",
+        "mode": "full",
+        "updated": "2026-08-28T00:00:00Z",
+        "transition_from": "SCOUT",
+        "schema_version": "3",
+        "last_event": "1",
+        "style_contract": "test",
     }
     try:
         c = _Collector()
@@ -216,6 +246,7 @@ def test_staleness_fingerprint_cache_dedupes(project, tmp_path):
     must reuse the SHA-256 instead of re-hashing.
     """
     from saipenview import parser as p
+
     p._STALENESS_FINGERPRINT_CACHE.clear()
 
     canon = tmp_path / "canon"
@@ -264,12 +295,15 @@ def test_protocol_read_single_pass(project, tmp_path):
 
     reads = []
     orig_read_doc = textio.read_doc
+
     def tracked_read_doc(p):
         reads.append(str(p))
         return orig_read_doc(p)
 
-    with patch.object(textio, "read_doc", tracked_read_doc), \
-         patch("saipenview.protocol_write.get_coordinator") as gc:
+    with (
+        patch.object(textio, "read_doc", tracked_read_doc),
+        patch("saipenview.protocol_write.get_coordinator") as gc,
+    ):
         coord = MagicMock()
         coord.is_protocol_file.return_value = True
         coord.root_for.return_value = root

@@ -91,10 +91,12 @@ def test_external_change_between_read_and_commit_aborts(project):
     # aborts STALE_STATE with zero writes if changed between read and apply.
     coord = get_coordinator()
     board = project / ".saipen" / "BOARD.md"
+
     def transform(t):
         # Simulate an external writer moving the file while we plan
         board.write_text(t + "external", encoding="utf-8")
         return t + "- [ ] T-999 LOST\n"
+
     result = coord.mutate_doc(board, transform, stale_retry=False)
     assert result["ok"] is False
     assert result["code"] == "STALE_STATE", result
@@ -126,6 +128,7 @@ def test_stale_reader_cannot_append_to_a_moved_tail(project):
     assert first["ok"] is True and first["event"] == "E-3"
     # A stale writer still holding the old baseline tries to append.
     coord = get_coordinator()
+
     def transform(t):
         # The test previously checked if it failed by providing the old hash.
         # Now we use the old text directly inside mutate_doc, but mutate_doc
@@ -137,6 +140,7 @@ def test_stale_reader_cannot_append_to_a_moved_tail(project):
         # old mutate_doc is gone.
         log.write_text(t + "external", encoding="utf-8")
         return t + "- 11.08.26 09:25 [E-356] RUN: stale fork\n"
+
     result = coord.mutate_doc(
         log,
         transform,
@@ -238,9 +242,11 @@ def test_failed_write_never_registers(project):
     board = project / ".saipen" / "BOARD.md"
     before = coord.self_writes.consume(str(project), "BOARD.md", "anything")
     assert before is False
+
     def transform(t):
         board.write_text(t + "external", encoding="utf-8")
         return t + "x"
+
     result = coord.mutate_doc(board, transform, stale_retry=False)
     assert result["ok"] is False
     after = coord.self_writes.consume(str(project), "BOARD.md", "anything")

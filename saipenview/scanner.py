@@ -29,10 +29,20 @@ class ScanOutcome:
     interrupted' (complete=False), so the cache can decide whether to
     replace or preserve existing rows.
     PERF-003: worktrees collected during the same traversal as projects.
+    CORE-001: cache authority is per scanned ROOT, not one global boolean.
+    ``completed_roots`` lists the canonical roots this scan authoritatively
+    covered (their result is trustworthy for replace/add/remove); the
+    remaining requested roots are "unresolved" -- missing, skipped by an
+    in-flight scan, or timed out -- and callers must preserve existing rows
+    beneath them.
     """
+
     projects: list[ProjectStatus] = field(default_factory=list)
     worktrees: list[dict] = field(default_factory=list)
     complete: bool = True
+    completed_roots: list[str] = field(default_factory=list)
+    unresolved_roots: list[str] = field(default_factory=list)
+
 
 _scan_errors: collections.deque[dict] = collections.deque(maxlen=20)
 _scan_progress: dict = {"pct": 0, "root": "", "roots_done": 0, "roots_total": 0}
@@ -350,7 +360,10 @@ def _scan_one_root(
     if not root_path.exists() or not root_path.is_dir():
         return projects, worktrees
     for item in _walk_with_depth_limit(
-        root_path, max_depth, delay, extra_excludes,
+        root_path,
+        max_depth,
+        delay,
+        extra_excludes,
         collect_worktrees=collect_worktrees,
         cancel=cancel,
     ):
@@ -390,15 +403,18 @@ def _scan_worker(
     ckey = canonical_key(root)
     try:
         # PERF-006: a worker whose cancellation fired before it started must
-        # not begin any filesystem work -- it still releases its reservation.
+        # not begin any filesystem work -- it still releases its reservation
+        # in the finally block (single owner of roots_done increment).
         if cancel is not None and cancel.is_set():
-            with _progress_lock:
-                _scan_progress["roots_done"] += 1
             return [], []
         _set_scan_progress(root=root)
         projects, worktrees = _scan_one_root(
-            root, max_depth, delay, extra_excludes,
-            collect_worktrees=True, cancel=cancel,
+            root,
+            max_depth,
+            delay,
+            extra_excludes,
+            collect_worktrees=True,
+            cancel=cancel,
         )
         return projects, worktrees
     finally:
@@ -407,7 +423,9 @@ def _scan_worker(
         with _progress_lock:
             _scan_progress["roots_done"] += 1
             total = _scan_progress.get("roots_total", 1) or 1
-            _scan_progress["pct"] = min(99, int(_scan_progress["roots_done"] * 100 / total))
+            _scan_progress["pct"] = min(
+                99, int(_scan_progress["roots_done"] * 100 / total)
+            )
 
 
 def scan(
@@ -495,9 +513,17 @@ def scan(
         both_cancel = internal_cancel
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(roots), 32))
     futures = {
-        pool.submit(_scan_worker, root, max_depth, delay, extra_excludes, both_cancel): root
+        pool.submit(
+            _scan_worker, root, max_depth, delay, extra_excludes, both_cancel
+        ): root
         for root in roots
     }
+    # CORE-001: per-root authority tracking. Every root submitted to a worker
+    # starts as 'in_flight'; on success it moves to 'completed', on hard
+    # failure/timeout it stays 'in_flight' (unresolved). The cache uses these
+    # sets to replace rows beneath completed roots while preserving rows
+    # beneath unresolved ones.
+    completed: set[str] = set()
     try:
         for future in concurrent.futures.as_completed(
             futures, timeout=PER_ROOT_TIMEOUT_SECONDS + 5
@@ -507,6 +533,7 @@ def scan(
                 root_projects, root_worktrees = future.result(timeout=0)
                 projects.extend(root_projects)
                 all_worktrees.extend(root_worktrees)
+                completed.add(canonical_key(root))
             except concurrent.futures.TimeoutError:
                 _push_error(
                     f"scan of {root} exceeded {PER_ROOT_TIMEOUT_SECONDS}s, skipped"
@@ -521,15 +548,24 @@ def scan(
     pending = [f for f in futures if not f.done()]
     if pending:
         complete = False
-        # PERF-006: tell still-running workers to stop cooperatively, drop any
-        # queued-but-not-started work, then keep a bounded grace window so a
-        # mid-run git subprocess can't leave a dead reader thread at process
-        # exit (T-179). Cancellation must never publish partial data as
-        # authoritative -- `complete` above already stays False. Only the
+        # PERF-006: tell still-running workers to stop cooperatively. The
         # INTERNAL event is set here; a caller's cancel Event is never ours
-        # to mutate.
+        # to mutate. Cancellation must never publish partial data as
+        # authoritative -- `complete` above already stays False.
         internal_cancel.set()
-        pool.shutdown(wait=False, cancel_futures=True)
+        # CORE-002: resolve queued-future ownership before shutdown. A queued
+        # future canceled here never runs _scan_worker, so its reservation
+        # would leak forever -- remove it now. A future already running
+        # (cancel() returns False) keeps its reservation and releases it in
+        # _scan_worker's finally.
+        for f in pending:
+            if f.cancel():
+                with _inflight_lock:
+                    _inflight_roots.pop(canonical_key(futures[f]), None)
+        # cancel_futures=False: everything still pending was already handed
+        # to cancel() above; the pool must not cancel additional futures
+        # without matching reservation cleanup.
+        pool.shutdown(wait=False, cancel_futures=False)
         concurrent.futures.wait(pending, timeout=30)
     else:
         pool.shutdown(wait=False)
@@ -545,7 +581,25 @@ def scan(
         if k not in seen:
             seen.add(k)
             deduped.append(p)
-    return ScanOutcome(projects=deduped, worktrees=all_worktrees, complete=complete)
+    # CORE-001: partition the originally requested roots into authoritative
+    # (scanned) and unresolved (missing, skipped, failed) buckets. Skipped
+    # roots are 'fresh' roots that scan() chose not to submit because another
+    # scan owned them. Missing roots come from the upfront existence check.
+    completed_roots = sorted(canonical(r) for r in unique_roots if canonical_key(r) in completed)
+    unresolved = set()
+    for r in missing_roots:
+        unresolved.add(canonical_key(r))
+    for r in unique_roots:
+        if canonical_key(r) not in completed:
+            unresolved.add(canonical_key(r))
+    unresolved_roots = sorted(r for r in unique_roots if canonical_key(r) in unresolved)
+    return ScanOutcome(
+        projects=deduped,
+        worktrees=all_worktrees,
+        complete=complete,
+        completed_roots=completed_roots,
+        unresolved_roots=unresolved_roots,
+    )
 
 
 DEFAULT_RESCAN_SECONDS = 300
@@ -621,29 +675,29 @@ class BackgroundScanner:
         self._on_scan_start = on_scan_start
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        # W2-008: per-instance generation counter so constructing a second
-        # scanner cannot invalidate a running first scanner.
+        self._lifecycle_lock = threading.Lock()
         self._gen_counter = _GenCounter()
         self._gen = self._gen_counter.next()
-        # W2-007: records whether stop() could not cleanly release the thread.
-        # start() must not treat a still-alive stale thread as a reason to bail
-        # when a restart was explicitly requested -- the old thread will exit
-        # on its next generation check and the new one takes over immediately.
         self._restart_pending = False
+        self._restart_queued = False
+        self._restart_reaper: threading.Thread | None = None
 
-    def _do_scan(self) -> None:
+    def _do_scan(
+        self,
+        cancel_event: threading.Event | None = None,
+        generation: int | None = None,
+    ) -> None:
         """Run one scan cycle, publishing results only if the epoch is still current."""
+        event = cancel_event if cancel_event is not None else self._stop_event
+        gen = generation if generation is not None else self._gen
         result = scan(
             self._scan_roots,
             max_depth=self._max_depth,
             delay=self._delay,
             extra_excludes=self._extra_excludes,
-            # PERF-006: the scanner's stop event IS the cooperative walk
-            # cancellation -- stop() must actually stop filesystem work.
-            cancel=self._stop_event,
+            cancel=event,
         )
-        # CORE-010: re-check stop + generation AFTER scan completes.
-        if self._stop_event.is_set() or not self._gen_counter.is_current(self._gen):
+        if event.is_set() or not self._gen_counter.is_current(gen):
             return
         # PERF-001: pass the worktree list alongside the projects so the
         # consumer can skip its own second walk. Backward-compatible: the
@@ -653,78 +707,111 @@ class BackgroundScanner:
             result.projects, complete=result.complete, worktrees=result.worktrees
         )
 
+    def _start_generation_locked(self) -> None:
+        self._restart_pending = False
+        self._restart_queued = False
+        event = threading.Event()
+        generation = self._gen_counter.next()
+        self._stop_event = event
+        self._gen = generation
+        self._thread = threading.Thread(
+            target=self._run_generation,
+            args=(event, generation),
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run_generation(self, event: threading.Event, generation: int) -> None:
+        self._scan_context = (event, generation)
+        try:
+            self._loop()
+        finally:
+            with self._lifecycle_lock:
+                if self._thread is threading.current_thread():
+                    self._restart_reaper = threading.Thread(
+                        target=self._reap_generation,
+                        args=(threading.current_thread(),),
+                        daemon=True,
+                    )
+                    self._restart_reaper.start()
+
+    def _reap_generation(self, thread: threading.Thread) -> None:
+        thread.join()
+        with self._lifecycle_lock:
+            if self._restart_reaper is threading.current_thread():
+                self._restart_reaper = None
+            if self._thread is not thread:
+                return
+            self._thread = None
+            self._restart_pending = False
+            if self._restart_queued:
+                self._start_generation_locked()
+
     def _loop(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                if not self._gen_counter.is_current(self._gen):
+        event, generation = self._scan_context
+        try:
+            while not event.is_set():
+                if not self._gen_counter.is_current(generation):
                     break
-                if self._on_scan_start:
-                    self._on_scan_start()
-                self._do_scan()
-            except (OSError, ValueError) as e:
-                _push_error(f"background scan failed: {e}")
-                print(
-                    f"SAIPENVIEW: BackgroundScanner._loop error: {e}", file=sys.stderr
-                )
-            self._stop_event.wait(self._interval)
+                try:
+                    if self._on_scan_start:
+                        self._on_scan_start()
+                    self._do_scan(event, generation)
+                except (OSError, ValueError) as e:
+                    _push_error(f"background scan failed: {e}")
+                    print(
+                        f"SAIPENVIEW: BackgroundScanner._loop error: {e}",
+                        file=sys.stderr,
+                    )
+                event.wait(self._interval)
+        except (OSError, ValueError) as e:
+            _push_error(f"background scan failed: {e}")
+            print(
+                f"SAIPENVIEW: BackgroundScanner._loop error: {e}",
+                file=sys.stderr,
+            )
 
     def start(self) -> None:
-        t = self._thread
-        if t is not None:
-            if not t.is_alive():
-                self._thread = None  # a finished old generation, safe to reuse
-            else:
-                # PERF-006: the previous coordinator still owns live work and
-                # root reservations. Give it a bounded moment to unwind after
-                # its generation was invalidated; never stack a second loop on
-                # top of it while it lives.
-                t.join(timeout=2)
-                if t.is_alive():
-                    # W2-007: a clean stop was requested (restart_pending) but
-                    # the old worker has not exited within the grace window.
-                    # Do NOT discard the restart intent -- the old thread will
-                    # exit on its next iteration once its generation check fails.
-                    # Start the new one immediately; the old one is now a
-                    # no-op daemon that will terminate on its own.
-                    if self._restart_pending:
-                        self._restart_pending = False
-                    else:
-                        return  # not a restart: respect the alive-boundary guard
+        with self._lifecycle_lock:
+            t = self._thread
+            if t is not None and t.is_alive():
+                if self._restart_pending:
+                    self._restart_pending = False
+                self._restart_queued = True
+                return
+            if t is not None:
                 self._thread = None
-        self._stop_event.clear()
-        # CORE-010: acquire a fresh epoch on start so a previously-stopped
-        # scanner's old generation can never match the current one.
-        self._gen = self._gen_counter.next()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+            self._start_generation_locked()
 
     def rescan_now(self) -> None:
         """Manual rescan participates in the newest-request-wins generation model."""
-        if not self._gen_counter.is_current(self._gen):
+        with self._lifecycle_lock:
+            event = self._stop_event
+            generation = self._gen
+        if not self._gen_counter.is_current(generation):
             return
         if self._on_scan_start:
             self._on_scan_start()
-        self._do_scan()
+        self._do_scan(event, generation)
 
     def stop(self) -> None:
-        self._gen_counter.next()
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1)
-            if not self._thread.is_alive():
-                self._thread = None
-            else:
-                # W2-007: mark that a restart was requested but the old worker
-                # is still alive (blocked scan, slow IO). start() must not drop
-                # this intent -- it will clear the flag and launch a new worker
-                # even if the old one is still running for a few more seconds.
-                self._restart_pending = True
-            # else: keep the reference. The thread still owns live walk work
-            # and inflight root reservations (PERF-006); advertising it gone
-            # would let a replacement scan collide with the very reservations
-            # this worker has not released yet. start()/stop() remain correct:
-            # the stale thread exits via its generation check and the next
-            # start() reaps the reference.
+        with self._lifecycle_lock:
+            self._restart_queued = False
+            event = self._stop_event
+            t = self._thread
+            self._gen_counter.next()
+            event.set()
+        if t is None:
+            return
+        t.join(timeout=1)
+        if not t.is_alive():
+            with self._lifecycle_lock:
+                if self._thread is t:
+                    self._thread = None
+        else:
+            with self._lifecycle_lock:
+                if self._thread is t:
+                    self._restart_pending = True
 
     def is_alive(self) -> bool:
         """True when the coordinator thread exists and has not exited."""

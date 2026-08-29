@@ -439,6 +439,7 @@ class MainWindow:
         one latest-desired-state slot. After completion, if desired changed
         since the request was sent, another push is scheduled automatically.
         """
+
         def _push(gen: int, desired: bool) -> None:
             try:
                 self._window.evaluate_js(
@@ -469,9 +470,7 @@ class MainWindow:
                 self._vis_gen += 1
                 gen = self._vis_gen
                 self._vis_in_flight = True
-                threading.Thread(
-                    target=_push, args=(gen, visible), daemon=True
-                ).start()
+                threading.Thread(target=_push, args=(gen, visible), daemon=True).start()
 
     def show(self) -> None:
         self._window.show()

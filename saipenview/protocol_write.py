@@ -82,10 +82,17 @@ class SelfWriteRegistry:
     consumes a registration only when the file's CURRENT fingerprint matches --
     so a real external edit after our write is still reported as external, and
     a failed write never registers anything.
+
+    W2-002: multiple self-writes within one debounce window each register, so
+    the registry keeps a small live entry list per (root, file) instead of a
+    single last-write. ``count()`` lets the Api compare raw watcher event count
+    against the number of armed self generations: event_count > registration
+    count proves an external write landed between app writes (self A ->
+    external B -> self C), which final-fingerprint matching alone cannot see.
     """
 
     def __init__(self, ttl: float = 5.0) -> None:
-        self._entries: dict[tuple[str, str], tuple[str, float]] = {}
+        self._entries: dict[tuple[str, str], list[tuple[str, float]]] = {}
         self._lock = threading.Lock()
         self._ttl = ttl
 
@@ -93,10 +100,15 @@ class SelfWriteRegistry:
         now = _time.monotonic()
         key_root = canonical_key(root)
         with self._lock:
-            self._entries[(key_root, file_name)] = (fingerprint, now + self._ttl)
+            self._purge_locked(now)
+            entries = self._entries.setdefault((key_root, file_name), [])
+            entries.append((fingerprint, now + self._ttl))
 
-    def consume(self, root: str, file_name: str, fingerprint: str | None = None) -> bool:
-        """True when our own post-write record for (root, file) is consumed.
+    def consume(
+        self, root: str, file_name: str, fingerprint: str | None = None
+    ) -> bool:
+        """True when one of our own post-write records for (root, file) is
+        consumed.
 
         When *fingerprint* is None the caller has already established that a
         live record exists (via ``has_live``) and wants to skip the expensive
@@ -108,16 +120,28 @@ class SelfWriteRegistry:
         with self._lock:
             self._purge_locked(now)
             key = (key_root, file_name)
-            entry = self._entries.get(key)
-            if entry is None:
+            entries = self._entries.get(key)
+            if not entries:
                 return False
-            if entry[1] < now:
-                self._entries.pop(key, None)
-                return False
-            if fingerprint is not None and entry[0] != fingerprint:
-                return False  # external writer landed after ours: report external
-            self._entries.pop(key, None)
-            return True
+            for i, (fp, exp) in enumerate(entries):
+                if exp >= now and (fingerprint is None or fp == fingerprint):
+                    del entries[i]
+                    if not entries:
+                        self._entries.pop(key, None)
+                    return True
+            return False  # fingerprint matched no live registration
+
+    def count(self, root: str, file_name: str) -> int:
+        """W2-002: number of live armed self-write generations for (root, file).
+
+        Used with the watcher's per-window event count to detect external
+        writes that landed between two app writes.
+        """
+        now = _time.monotonic()
+        key_root = canonical_key(root)
+        with self._lock:
+            self._purge_locked(now)
+            return len(self._entries.get((key_root, file_name), ()))
 
     def has_live(self, root: str, file_name: str) -> bool:
         """True when an unexpired self-write record exists for (root, file).
@@ -129,14 +153,19 @@ class SelfWriteRegistry:
         key_root = canonical_key(root)
         with self._lock:
             self._purge_locked(now)
-            key = (key_root, file_name)
-            entry = self._entries.get(key)
-            return entry is not None and entry[1] >= now
+            entries = self._entries.get((key_root, file_name))
+            return bool(entries) and any(exp >= now for _, exp in entries)
 
     def _purge_locked(self, now: float) -> None:
-        stale = [k for k, (_, exp) in self._entries.items() if exp < now]
-        for k in stale:
-            self._entries.pop(k, None)
+        stale_keys = []
+        for key, entries in self._entries.items():
+            live = [(fp, exp) for fp, exp in entries if exp >= now]
+            if live:
+                self._entries[key] = live
+            else:
+                stale_keys.append(key)
+        for key in stale_keys:
+            self._entries.pop(key, None)
 
 
 # The canonical checkpoint set: every protocol mutation's decision world. An
@@ -251,7 +280,9 @@ class WriteCoordinator:
             try:
                 recovery = saio.recovery_status(root)
                 if recovery.get("blocked"):
-                    pending = ", ".join(str(p.get("op_id")) for p in recovery.get("pending", []))
+                    pending = ", ".join(
+                        str(p.get("op_id")) for p in recovery.get("pending", [])
+                    )
                     return {
                         "ok": False,
                         "code": "RECOVERY_REQUIRED",
@@ -271,7 +302,11 @@ class WriteCoordinator:
                         precheck=precheck,
                         verification_policy=verification_policy,
                     )
-                    if result["code"] == "STALE_STATE" and attempt == 0 and max_attempts > 1:
+                    if (
+                        result["code"] == "STALE_STATE"
+                        and attempt == 0
+                        and max_attempts > 1
+                    ):
                         continue
                     if result.get("ok"):
                         self._finalize_success(root, result, planned)
@@ -427,7 +462,10 @@ class WriteCoordinator:
         # The planner returns ONLY a plan or a refusal; APPLY + self-write
         # finalization happen in mutate (one _finalize_success path).
         return self.mutate(
-            root, op_fn, verification_policy=verification_policy, stale_retry=stale_retry
+            root,
+            op_fn,
+            verification_policy=verification_policy,
+            stale_retry=stale_retry,
         )
 
     def recovery_status(self, root: Path) -> dict:

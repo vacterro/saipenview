@@ -5,6 +5,9 @@ let searchQuery = "";
 let selectedRoot = null;
 let rawProjects = [];
 let isScanned = false;
+let registryRevision = null;
+let pendingFileChangedRoots = new Set();
+let fileChangedRefreshScheduled = false;
 let deepSearchMode = false;
 let deepSearchTimer = null;
 let searchItems = [];
@@ -1548,38 +1551,39 @@ function renderDetailPane(detail) {
     });
   });
 
-  // T-127: the user records a manual change they made themselves. The
-  // transaction (board ticket + LOG evidence + git context) runs in the
-  // backend; here we only ask for the description and consume the watcher
-  // event it produces so the unrecorded prompt does not re-appear.
   const recordBtn = document.getElementById("recordManualWorkBtn");
   if (recordBtn) {
     recordBtn.addEventListener("click", () => {
+      const existingIntent = pendingRecordOpId && manualWorkIntents[pendingRecordOpId];
+      const opId = existingIntent && existingIntent.root === detail.root
+        ? pendingRecordOpId
+        : ("mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8));
+      const intent = existingIntent && existingIntent.root === detail.root
+        ? existingIntent
+        : {
+            root: detail.root,
+            ack_tokens: (detail.pending_external_changes || []).map((pc) => [pc.path, pc.token]),
+          };
+      if (intent.ack_tokens === null) {
+        intent.ack_tokens = (detail.pending_external_changes || []).map((pc) => [pc.path, pc.token]);
+      }
+      pendingRecordOpId = opId;
+      manualWorkIntents[opId] = intent;
       const desc = prompt("Describe what you changed manually:");
       if (desc === null || !desc.trim()) return;
-      const opId = pendingRecordOpId || ("mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8));
-      window.SaiApi.record_manual_work(detail.root, desc.trim(), opId).then((res) => {
+      window.SaiApi.record_manual_work(intent.root, desc.trim(), opId, intent.ack_tokens).then((res) => {
         if (res && res.ok) {
+          delete manualWorkIntents[opId];
           pendingRecordOpId = null;
-          // CORE-013: record success conditionally cleared backend pending tokens;
-          // clear legacy single-root flag only on success (failure leaves it intact)
-          if (!detail.pending_external_changes || detail.pending_external_changes.length === 0) {
             unrecordedChangeRoot = null;
-          } else {
-            // pending array will be empty after refresh; keep compatibility
-            unrecordedChangeRoot = null;
-          }
            showToast("Recorded as " + (res.ticket_id || "ticket"), "success");
-           // W2-020: guard detail repaint against late completion on stale root.
-           // A mutation on project A while B is selected must not repaint B's detail.
            const mwGen = _detailGen, mwRoot = selectedRoot;
-           window.SaiApi.get_project_detail(detail.root).then((d) => {
+          window.SaiApi.get_project_detail(intent.root).then((d) => {
              if (_detailGen !== mwGen || selectedRoot !== mwRoot) return;
              if (d) renderDetailPane(d);
            });
         } else {
           showToast("Record failed: " + ((res && (res.error || res.message)) || "unknown"), "error");
-          // Failed record must not clear pending -- leave bar intact
         }
       }).catch(() => showToast("Record failed", "error"));
     });
@@ -2201,18 +2205,26 @@ window.__saipenSetVisible = function (visible) {
 // across projects). A real external edit is always origin=external.
 let unrecordedChangeRoot = null;
 let pendingRecordOpId = null;
+let manualWorkIntents = {};
 
 function showUnrecordedChange(root) {
   unrecordedChangeRoot = root;
-  // A fresh unrecorded external change is a fresh user intent: mint the
-  // operation id now so a retry of THIS intent resumes, while a later
-  // separate change gets its own id.
+  const existingIntent = pendingRecordOpId && manualWorkIntents[pendingRecordOpId];
+  if (!existingIntent || existingIntent.root !== root) {
   pendingRecordOpId = "mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-  // Re-render the detail so the persistent bar appears for the current root.
+    manualWorkIntents[pendingRecordOpId] = { root: root, ack_tokens: null };
+  }
+  const opId = pendingRecordOpId;
   const detailEl = document.getElementById("detailPane");
   if (detailEl && currentDetailRoot === root) {
     window.SaiApi.get_project_detail(root).then((d) => {
-      if (d && currentDetailRoot === root) renderDetailPane(d);
+      if (d && currentDetailRoot === root) {
+        const intent = manualWorkIntents[opId];
+        if (intent && intent.ack_tokens === null) {
+          intent.ack_tokens = (d.pending_external_changes || []).map((pc) => [pc.path, pc.token]);
+        }
+        renderDetailPane(d);
+      }
     }).catch(() => {});
   }
 }
@@ -2228,14 +2240,23 @@ window.onSaipenFileChanged = function(root, fileName, origin) {
   // NOT calling refresh_known() again -- is the one-refresh-per-event rule;
   // a second full re-parse of every project for one file change is the
   // defect T-124 removes.
-  window.SaiApi.get_projects().then(projects => {
-    // PERF-003: a single external edit can arrive as a burst of file-change
-    // notifications; collapse them into one list paint on the next frame
-    // instead of rebuilding the whole list once per event.
+  pendingFileChangedRoots.add(root);
+  if (fileChangedRefreshScheduled) return;
+  fileChangedRefreshScheduled = true;
+  Promise.resolve().then(() => {
+    fileChangedRefreshScheduled = false;
+    const roots = pendingFileChangedRoots;
+    pendingFileChangedRoots = new Set();
+    return window.SaiApi.get_status().then(status => {
+      registryRevision = status.revision;
+      return window.SaiApi.get_projects().then(projects => {
     rawProjects = projects;
-    isScanned = true;
+        isScanned = status.scanned;
     scheduleProjectListRender();
     renderLinkedWorktrees();
+        if (selectedRoot && roots.has(selectedRoot)) loadDetail(selectedRoot);
+      });
+    });
   }).catch(() => {});
 };
 
@@ -2259,32 +2280,32 @@ function scheduleProjectListRender() {
 
 function poll() {
   if (!windowVisible) return;
-  Promise.all([
-    window.SaiApi.get_status(),
-    window.SaiApi.refresh_known(),
-    window.SaiApi.get_changed_roots ? window.SaiApi.get_changed_roots() : Promise.resolve(null),
-  ])
-    .then(([status, projects, changedRoots]) => {
-      // PERF-002: only rebuild sidebar/detail if something actually changed.
-      const hasChanges = changedRoots && changedRoots.length > 0;
-      if (hasChanges || rawProjects.length !== projects.length) {
-        render(projects, status.scanned);
-        renderLinkedWorktrees();
-      } else if (projects) {
-        // Update the data without rebuilding DOM.
-        rawProjects = projects;
-        isScanned = status.scanned;
-        updateFlashSnapshot(rawProjects);
-        // Only reload detail if the selected root changed.
-        if (selectedRoot && changedRoots && changedRoots.includes(selectedRoot)) {
-          loadDetail(selectedRoot);
-        }
-      }
+  window.SaiApi.get_status()
+    .then(status => {
+      const revision = status.revision;
       updateScanIndicator(status.scanning);
-      // T-598/PERF-009: the badge only here; live output follows its own
-      // sub-second ticker (_outputPollTick), not the registry poll.
-      pollAgentsBadge();
+      if (registryRevision !== revision || registryRevision === null) {
+        return window.SaiApi.refresh_known(registryRevision).then(result => {
+          const meta = result && !Array.isArray(result) ? result : null;
+          if (meta && meta.projects === null) {
+            registryRevision = meta.revision;
+            return window.SaiApi.get_changed_roots ? window.SaiApi.get_changed_roots().then(changedRoots => {
+              if (!changedRoots || !changedRoots.length) return;
+              return window.SaiApi.get_projects().then(projects => render(projects, status.scanned));
+            }) : null;
+          }
+          const projects = meta ? meta.projects : result;
+          registryRevision = meta ? meta.revision : revision;
+          return window.SaiApi.get_changed_roots ? window.SaiApi.get_changed_roots().then(changedRoots => {
+            if (changedRoots && changedRoots.length) render(projects, status.scanned);
+            else { rawProjects = projects; isScanned = status.scanned; updateFlashSnapshot(rawProjects); }
+            if (selectedRoot && changedRoots && changedRoots.includes(selectedRoot)) loadDetail(selectedRoot);
+          }) : render(projects, status.scanned);
+        });
+      }
+      return null;
     })
+    .then(() => pollAgentsBadge())
     .catch(() => {
       const statusEl = document.getElementById("status");
       if (statusEl) statusEl.textContent = "poll failed";

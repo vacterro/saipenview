@@ -35,7 +35,9 @@ def test_mutate_doc_rejects_stale_editor_version_before_planning(tmp_path, monke
     coord = WriteCoordinator()
 
     fake_doc = SimpleNamespace(raw_hash="new-hash", text_norm="new bytes")
-    monkeypatch.setattr(saio, "snapshot", lambda _root, _rels: {".saipen/STATE.md": fake_doc})
+    monkeypatch.setattr(
+        saio, "snapshot", lambda _root, _rels: {".saipen/STATE.md": fake_doc}
+    )
     monkeypatch.setattr(
         coord,
         "mutate",

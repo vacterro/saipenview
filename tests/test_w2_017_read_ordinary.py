@@ -29,9 +29,15 @@ def api(tmp_path: Path):
         patch("saipenview.protocol_write.get_coordinator") as mock_coord,
     ):
         mock_load.return_value = {
-            "pinned_roots": [], "hidden_roots": [], "sort_order": "smart",
-            "scan_roots": None, "auto_scan": False, "rescan_interval": 30,
-            "scan_depth": 6, "scan_delay_ms": 10, "exclude_dirs": [],
+            "pinned_roots": [],
+            "hidden_roots": [],
+            "sort_order": "smart",
+            "scan_roots": None,
+            "auto_scan": False,
+            "rescan_interval": 30,
+            "scan_depth": 6,
+            "scan_delay_ms": 10,
+            "exclude_dirs": [],
             "agent_output_buffer_size": 5000,
         }
         data_dir = tmp_path / "_data"
@@ -54,7 +60,9 @@ def api(tmp_path: Path):
 def test_read_ordinary_md_returns_text(api: Api, tmp_path: Path):
     """Allowed .md file returns decoded string, not None."""
     (tmp_path / ".saipen").mkdir()
-    (tmp_path / ".saipen" / "STATE.md").write_text("---\nphase: PLAN\n---\n", encoding="utf-8")
+    (tmp_path / ".saipen" / "STATE.md").write_text(
+        "---\nphase: PLAN\n---\n", encoding="utf-8"
+    )
     api._config["pinned_roots"] = [str(tmp_path)]
     f = tmp_path / "notes.md"
     f.write_text("hello world\n", encoding="utf-8")
@@ -65,7 +73,9 @@ def test_read_ordinary_md_returns_text(api: Api, tmp_path: Path):
 def test_read_ordinary_json_returns_text(api: Api, tmp_path: Path):
     """Allowed .json file returns decoded string, not None."""
     (tmp_path / ".saipen").mkdir()
-    (tmp_path / ".saipen" / "STATE.md").write_text("---\nphase: PLAN\n---\n", encoding="utf-8")
+    (tmp_path / ".saipen" / "STATE.md").write_text(
+        "---\nphase: PLAN\n---\n", encoding="utf-8"
+    )
     api._config["pinned_roots"] = [str(tmp_path)]
     f = tmp_path / "data.json"
     f.write_text('{"key": "value"}\n', encoding="utf-8")
@@ -76,7 +86,9 @@ def test_read_ordinary_json_returns_text(api: Api, tmp_path: Path):
 def test_read_nonexistent_returns_none(api: Api, tmp_path: Path):
     """Non-existent file returns None."""
     (tmp_path / ".saipen").mkdir()
-    (tmp_path / ".saipen" / "STATE.md").write_text("---\nphase: PLAN\n---\n", encoding="utf-8")
+    (tmp_path / ".saipen" / "STATE.md").write_text(
+        "---\nphase: PLAN\n---\n", encoding="utf-8"
+    )
     api._config["pinned_roots"] = [str(tmp_path)]
     result = api.read_file_text(str(tmp_path / "missing.md"))
     assert result is None
@@ -85,6 +97,7 @@ def test_read_nonexistent_returns_none(api: Api, tmp_path: Path):
 def test_read_file_text_source_has_return(api: Api):
     """Verify the source code contains the ordinary-file return path."""
     import inspect
+
     source = inspect.getsource(Api.read_file_text)
     # After the protocol branch, there must be a return text for ordinary files
     assert "return text" in source, "read_file_text must return text for ordinary files"

@@ -186,6 +186,7 @@ def _open_picker(root, main_window):
             pending = _pending_main_window
             _pending_main_window = None
             _open_picker(root, pending)
+
     toplevel.bind("<Escape>", _on_escape)
     toplevel.bind("<Key-1>", lambda e: _on_pick(0, toplevel, main_window, zones))
     toplevel.bind("<Key-2>", lambda e: _on_pick(1, toplevel, main_window, zones))

@@ -60,6 +60,7 @@ def _make_pm() -> ProcessManager:
 
 def _pid_alive(pid: int) -> bool:
     import subprocess
+
     try:
         subprocess.run(
             ["taskkill", "/pid", str(pid), "/fo", "none", "/n"],

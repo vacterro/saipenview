@@ -35,12 +35,11 @@ def test_same_id_different_payload_refused(tmp_path: Path):
     op = "mw-diff-payload"
     first = record_manual_work(root, "original desc", operation_id=op)
     assert first["ok"] is True
-    second = record_manual_work(
-        root, "different desc", operation_id=op
-    )
+    second = record_manual_work(root, "different desc", operation_id=op)
     assert second["code"] == "IDEMPOTENCY_CONFLICT", second
     # Board must have exactly one ticket
     from saipenview.textio import read_doc
+
     board = read_doc(root / ".saipen" / "BOARD.md")
     assert board.count("Manual: original desc") == 1
     assert board.count("Manual: different desc") == 0
@@ -54,20 +53,20 @@ def test_matching_partial_retry_reconstructs_original(tmp_path: Path):
     # writing a partial log entry (no BOARD ticket).
     from saipenview.textio import read_doc
     import re
+
     log_path = root / ".saipen" / "LOG.md"
     log_text = read_doc(log_path)
     # Insert a manual-work LOG line with op_id but no corresponding BOARD ticket
     log_text += (
-        "- 11.08.26 12:00 [E-3] [T-001] [op: " + op
+        "- 11.08.26 12:00 [E-3] [T-001] [op: "
+        + op
         + "] RUN: manual work recorded -- crash-recovery desc\n"
     )
     log_path.write_text(log_text, encoding="utf-8")
     # Update last_event in STATE
     state_path = root / ".saipen" / "STATE.md"
     state_text = read_doc(state_path)
-    state_text = re.sub(
-        r"last_event:\s*\d+", "last_event: 3", state_text
-    )
+    state_text = re.sub(r"last_event:\s*\d+", "last_event: 3", state_text)
     state_path.write_text(state_text, encoding="utf-8")
 
     # Retry with SAME description -> resumes T-001

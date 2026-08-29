@@ -104,18 +104,23 @@ class Finding:
 class Report:
     findings: list[Finding] = field(default_factory=list)
     baseline: str = protocol.BASELINE_VERSION
-    # PERF-006: the row/cache/UI transport never needs every finding -- only
-    # exact counters and a bounded representative set. 100 keeps the worst
-    # damaged project's row small while showing a human plenty of evidence.
+    fails_total: int | None = None
+    warns_total: int | None = None
     MAX_TRANSPORT_FINDINGS = 100
+
+    def __post_init__(self) -> None:
+        if self.fails_total is None:
+            self.fails_total = sum(1 for f in self.findings if f.severity == FAIL)
+        if self.warns_total is None:
+            self.warns_total = sum(1 for f in self.findings if f.severity == WARN)
 
     @property
     def fails(self) -> int:
-        return sum(1 for f in self.findings if f.severity == FAIL)
+        return self.fails_total or 0
 
     @property
     def warns(self) -> int:
-        return sum(1 for f in self.findings if f.severity == WARN)
+        return self.warns_total or 0
 
     @property
     def verdict(self) -> str:
@@ -126,15 +131,16 @@ class Report:
         return "pass"
 
     def to_dict(self) -> dict:
-        total = len(self.findings)
+        total = max(self.fails + self.warns, len(self.findings))
         truncated = total > self.MAX_TRANSPORT_FINDINGS
-        shown = self.findings if not truncated else self.findings[: self.MAX_TRANSPORT_FINDINGS]
         out = {
             "verdict": self.verdict,
             "fails": self.fails,
             "warns": self.warns,
             "baseline": self.baseline,
-            "findings": [f.to_dict() for f in shown],
+            "findings": [
+                f.to_dict() for f in self.findings[: self.MAX_TRANSPORT_FINDINGS]
+            ],
         }
         if truncated:
             out["findings_total"] = total
@@ -142,15 +148,51 @@ class Report:
         return out
 
 
+def _retain_finding(findings: list[Finding], finding: Finding, limit: int) -> None:
+    if len(findings) < limit:
+        findings.append(finding)
+    elif finding.severity == FAIL:
+        for index, retained in enumerate(findings):
+            if retained.severity == WARN:
+                findings[index] = finding
+                break
+
+
 class _Collector:
+    MAX_FINDINGS = Report.MAX_TRANSPORT_FINDINGS
+
     def __init__(self) -> None:
         self.findings: list[Finding] = []
+        self.fails_total = 0
+        self.warns_total = 0
+
+    def add(self, finding: Finding) -> None:
+        if finding.severity == FAIL:
+            self.fails_total += 1
+        elif finding.severity == WARN:
+            self.warns_total += 1
+        _retain_finding(self.findings, finding, self.MAX_FINDINGS)
+
+    def extend(
+        self,
+        findings: list[Finding],
+        fails: int | None = None,
+        warns: int | None = None,
+    ) -> None:
+        if fails is None or warns is None:
+            for finding in findings:
+                self.add(finding)
+            return
+        self.fails_total += fails
+        self.warns_total += warns
+        for finding in findings:
+            _retain_finding(self.findings, finding, self.MAX_FINDINGS)
 
     def fail(self, rule, message, cite, file="", line=0) -> None:
-        self.findings.append(Finding(rule, FAIL, message, cite, file, line))
+        self.add(Finding(rule, FAIL, message, cite, file, line))
 
     def warn(self, rule, message, cite, file="", line=0) -> None:
-        self.findings.append(Finding(rule, WARN, message, cite, file, line))
+        self.add(Finding(rule, WARN, message, cite, file, line))
 
 
 # --- STATE.md -------------------------------------------------------------
@@ -545,7 +587,10 @@ def parse_board_strict(text: str) -> tuple[dict[str, BoardTicket], list[str], li
     return tickets, headings, problems
 
 
-_BOARD_CACHE: dict[Path, tuple[tuple[int, int, int, int, int], dict[str, BoardTicket], list[str], list, str]] = {}
+_BOARD_CACHE: dict[
+    Path,
+    tuple[tuple[int, int, int, int, int], dict[str, BoardTicket], list[str], list, str],
+] = {}
 _BOARD_CACHE_LOCK = threading.RLock()
 
 
@@ -575,7 +620,12 @@ def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
         sig = _board_signature(board_path)
         cached = _BOARD_CACHE.get(board_path)
         if cached is not None and cached[0] == sig:
-            tickets, headings, problems, enc = cached[1], cached[2], cached[3], cached[4]
+            tickets, headings, problems, enc = (
+                cached[1],
+                cached[2],
+                cached[3],
+                cached[4],
+            )
         else:
             enc = encoding_of(board_path)
             tickets, headings, problems = parse_board_strict(read_doc(board_path))
@@ -991,6 +1041,26 @@ class _LogRecord:
     stamp: datetime.datetime | None = None
     dated: bool = False
     line_no: int = 0
+    fails_total: int | None = None
+    warns_total: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.fails_total is None:
+            self.fails_total = sum(
+                1 for finding in self.findings if finding.severity == FAIL
+            )
+        if self.warns_total is None:
+            self.warns_total = sum(
+                1 for finding in self.findings if finding.severity == WARN
+            )
+
+    @property
+    def fails(self) -> int:
+        return self.fails_total or 0
+
+    @property
+    def warns(self) -> int:
+        return self.warns_total or 0
 
 
 @dataclass
@@ -1001,6 +1071,11 @@ class _CachedLogFile:
     line_count: int
     partial: str = ""
     in_comment: bool = False
+    new_records: list[_LogRecord] = field(default_factory=list)
+    # CORE-005: True when the current `partial` produced a _LogRecord.
+    # Used to decide whether the provisional record must be popped before
+    # extending with newly appended bytes.
+    partial_has_record: bool = False
 
 
 @dataclass
@@ -1011,6 +1086,9 @@ class _LogAggregate:
     prev_event: int | None
     undated: int
     active_missing: bool
+    fails: int
+    warns: int
+    active: Path | None = None
 
 
 @dataclass
@@ -1022,6 +1100,34 @@ class _ProjectLogCache:
 
 _LOG_CACHE: dict[Path, _ProjectLogCache] = {}
 _LOG_CACHE_LOCK = threading.RLock()
+
+
+def evict_project_caches(roots: list[str] | None = None) -> None:
+    """PERF-006: drop conformance BOARD/LOG caches.
+
+    With *roots*, only those roots' entries are removed (authoritative registry
+    reconciliation removed the project). Without, the whole process-local cache
+    is cleared (teardown). BOARD/LOG caches are module-global mappings keyed by
+    root path; without eviction a project that disappears or moves leaves its
+    full parsed history resident forever.
+    """
+    from saipenview.parser import _evict_staleness_cache
+
+    if roots is None:
+        with _LOG_CACHE_LOCK:
+            _LOG_CACHE.clear()
+        _BOARD_CACHE.clear()
+        _evict_staleness_cache()
+        return
+    root_set = {str(Path(r)).rstrip("\\/") for r in roots}
+    with _LOG_CACHE_LOCK:
+        for key in list(_LOG_CACHE):
+            if str(key).rstrip("\\/") in root_set:
+                _LOG_CACHE.pop(key, None)
+    for key in list(_BOARD_CACHE):
+        if str(key).rstrip("\\/") in root_set:
+            _BOARD_CACHE.pop(key, None)
+    _evict_staleness_cache(roots)
 
 
 def _log_signature(path: Path) -> tuple[int, int, int, int, int]:
@@ -1092,7 +1198,13 @@ def _parse_log_text(
     path: Path,
     is_active: bool,
     initial_comment: bool = False,
-) -> tuple[list[_LogRecord], str, bool]:
+) -> tuple[list[_LogRecord], str, bool, bool]:
+    """Parse LOG text, returning (records, partial, in_comment, partial_has_record).
+
+    CORE-005: partial_has_record is True when the unterminated last line (no
+    trailing ``\\n``) produced a ``_LogRecord``. Callers use this to decide
+    whether to pop the last cached record before extending with the new parse.
+    """
     parts = text.splitlines(keepends=True)
     partial = ""
     if parts and not parts[-1].endswith(("\n", "\r")):
@@ -1112,14 +1224,29 @@ def _parse_log_text(
         record = _parse_log_record(raw, path, line_no, is_active)
         if record is not None:
             records.append(record)
+    partial_has_record = False
     if partial and not in_comment:
         record = _parse_log_record(partial, path, len(parts) + 1, is_active)
         if record is not None:
             records.append(record)
-    return records, partial, in_comment
+            partial_has_record = True
+    return records, partial, in_comment, partial_has_record
 
 
-def _load_log_file(path: Path, is_active: bool, cached: _CachedLogFile | None) -> _CachedLogFile:
+def _bounded_record_findings(records: list[_LogRecord]) -> None:
+    remaining = Report.MAX_TRANSPORT_FINDINGS
+    for record in records:
+        if remaining <= 0:
+            record.findings.clear()
+            continue
+        if len(record.findings) > remaining:
+            del record.findings[remaining:]
+        remaining -= len(record.findings)
+
+
+def _load_log_file(
+    path: Path, is_active: bool, cached: _CachedLogFile | None
+) -> _CachedLogFile:
     signature = _log_signature(path)
     if cached is not None and signature == cached.signature:
         return cached
@@ -1132,85 +1259,160 @@ def _load_log_file(path: Path, is_active: bool, cached: _CachedLogFile | None) -
         with path.open("rb") as handle:
             handle.seek(cached.size)
             appended = handle.read().decode("utf-8", errors="replace")
-        if cached.partial and cached.records:
-            cached.records.pop()
-        records, partial, in_comment = _parse_log_text(
+        records, partial, in_comment, partial_has_record = _parse_log_text(
             cached.partial + appended, path, is_active, cached.in_comment
         )
-        start = cached.line_count - (1 if cached.partial else 0) + 1
+        start = cached.line_count + 1
         for record in records:
             record.line_no += start - 1
+        # CORE-005: pop only the exact provisional record contributed by the
+        # previous partial. A non-record partial (comment/heading/blank)
+        # must NOT delete the preceding real event; a record-like partial
+        # must still be replaced exactly once when completed by the append.
+        if cached.partial_has_record and cached.records:
+            cached.records.pop()
         cached.records.extend(records)
+        # PERF-001: bound findings only on the NEW records; old records were
+        # already bounded at their load time. The aggregate caps total findings
+        # at MAX_TRANSPORT_FINDINGS regardless.
+        _bounded_record_findings(records)
+        cached.new_records = records
         cached.partial = partial
+        cached.partial_has_record = partial_has_record
         cached.in_comment = in_comment
         cached.line_count += appended.count("\n")
         cached.size = signature[2]
         cached.signature = signature
         return cached
     text = read_doc(path)
-    records, partial, in_comment = _parse_log_text(text, path, is_active)
+    records, partial, in_comment, partial_has_record = _parse_log_text(
+        text, path, is_active
+    )
     return _CachedLogFile(
-        signature, records, signature[2], text.count("\n"), partial, in_comment
+        signature,
+        records,
+        signature[2],
+        text.count("\n"),
+        partial,
+        in_comment,
+        partial_has_record=partial_has_record,
     )
 
 
 def _build_log_aggregate(
     files: tuple[Path, ...], cache: _ProjectLogCache, active: Path | None
 ) -> _LogAggregate:
-    findings: list[Finding] = []
-    future: list[tuple[int, datetime.datetime, str, int]] = []
-    seen: dict[int, int] = {}
-    prev_event = None
-    undated = 0
-    active_missing = False
+    aggregate = _LogAggregate([], [], {}, None, 0, False, 0, 0, active)
     for path in files:
-        data = cache.files[path]
-        for record in data.records:
-            findings.extend(record.findings)
-            if record.event is None:
-                continue
-            if not record.dated:
-                undated += 1
-            if path == active and any(f.rule == "log.timestamp.missing" for f in record.findings):
-                active_missing = True
-            if record.stamp is not None:
-                future.append((record.event, record.stamp, path.name, record.line_no))
-            if record.event in seen:
-                findings.append(Finding(
-                    "log.event.duplicate", FAIL,
-                    f"E-{record.event} appears twice (first at line {seen[record.event]}) -- event ids are unique",
-                    "RFC § 1.2", path.name, record.line_no,
-                ))
-            elif prev_event is not None and record.event < prev_event:
-                findings.append(Finding(
-                    "log.event.order", FAIL,
-                    f"E-{record.event} follows E-{prev_event} -- event ids only increase",
-                    "RFC § 1.2", path.name, record.line_no,
-                ))
-            seen[record.event] = record.line_no
-            prev_event = max(prev_event or 0, record.event)
-    return _LogAggregate(
-        findings, future, seen, prev_event, undated, active_missing
-    )
+        for record in cache.files[path].records:
+            _fold_log_record(aggregate, record, path)
+    aggregate.findings = aggregate.findings[:Report.MAX_TRANSPORT_FINDINGS]
+    return aggregate
+
+
+def _fold_log_record(
+    aggregate: _LogAggregate, record: _LogRecord, path: Path
+) -> None:
+    """PERF-001: fold ONE parsed record into a _LogAggregate.
+
+    Shared by full rebuild (_build_log_aggregate) and the incremental append
+    path (_fold_log_records), so both produce byte-identical semantics:
+    fail/warn totals, bounded findings, duplicate-event detection across
+    append boundaries, ordering, future timestamps, undated accounting and
+    the active-missing flag.
+    """
+    aggregate.fails += record.fails
+    aggregate.warns += record.warns
+    for finding in record.findings:
+        _retain_finding(aggregate.findings, finding, Report.MAX_TRANSPORT_FINDINGS)
+    if record.event is None:
+        return
+    if not record.dated:
+        aggregate.undated += 1
+    if path == aggregate.active and not record.dated:
+        aggregate.active_missing = True
+    if record.stamp is not None:
+        aggregate.future.append(
+            (record.event, record.stamp, path.name, record.line_no)
+        )
+    if record.event in aggregate.seen:
+        finding = Finding(
+            "log.event.duplicate", FAIL,
+            f"E-{record.event} appears twice (first at line {aggregate.seen[record.event]}) -- event ids are unique",
+            "RFC § 1.2", path.name, record.line_no,
+        )
+        aggregate.findings.append(finding)
+        aggregate.fails += 1
+    elif aggregate.prev_event is not None and record.event < aggregate.prev_event:
+        finding = Finding(
+            "log.event.order", FAIL,
+            f"E-{record.event} follows E-{aggregate.prev_event} -- event ids only increase",
+            "RFC § 1.2", path.name, record.line_no,
+        )
+        aggregate.findings.append(finding)
+        aggregate.fails += 1
+    aggregate.seen[record.event] = record.line_no
+    aggregate.prev_event = max(aggregate.prev_event or 0, record.event)
+
+
+def _fold_log_records(
+    aggregate: _LogAggregate, records: list[_LogRecord], path: Path
+) -> None:
+    """PERF-001: fold only newly appended records into an existing aggregate.
+
+    Used when a single active LOG grew by a clean newline-terminated append
+    (no pending partial-record from the previous read): the historical records
+    were already folded, so this is O(new records), not O(total history).
+    """
+    for record in records:
+        _fold_log_record(aggregate, record, path)
+    aggregate.findings = aggregate.findings[:Report.MAX_TRANSPORT_FINDINGS]
 
 
 def _log_aggregate(root: Path, files: tuple[Path, ...], active: Path | None) -> _LogAggregate:
     with _LOG_CACHE_LOCK:
         cache = _LOG_CACHE.setdefault(root, _ProjectLogCache())
-        # PERF-001: track whether any log file actually changed so we can
-        # skip the O(total history) aggregate rebuild when nothing moved.
-        any_changed = False
-        for path in files:
-            prev = cache.files.get(path)
-            cache.files[path] = _load_log_file(path, path == active, prev)
-            if prev is None or prev.signature != cache.files[path].signature:
-                any_changed = True
+        # PERF-001: incremental aggregate. When only clean newline-terminated
+        # appends occurred (no provisional partial-record that was already
+        # folded), fold only the newly parsed records into the existing
+        # aggregate -- O(new records), not O(total history). Any structural
+        # change (new/truncated/replaced segment, file-order rotation, or a
+        # record-like partial that must be popped) forces a full rebuild so
+        # aggregate semantics stay byte-identical.
         if cache.file_order != files:
             cache.aggregate = None
             cache.file_order = files
-            any_changed = True
-        if cache.aggregate is None or any_changed:
+        incremental = cache.aggregate is not None
+        changed_files: list[tuple[Path, bool]] = []
+        for path in files:
+            prev = cache.files.get(path)
+            old_sig = prev.signature if prev is not None else None
+            old_partial_has_record = (
+                prev.partial_has_record if prev is not None else False
+            )
+            cache.files[path] = _load_log_file(path, path == active, prev)
+            new_sig = cache.files[path].signature
+            if prev is None or old_sig != new_sig:
+                # Clean append: same dev/ino, size grew, previous partial was
+                # NOT a record (a popped provisional would already be folded
+                # into the aggregate and invalidate incremental folding).
+                is_clean_append = (
+                    prev is not None
+                    and old_sig[:2] == new_sig[:2]
+                    and new_sig[2] > prev.size
+                    and not old_partial_has_record
+                )
+                if not is_clean_append:
+                    incremental = False
+                changed_files.append((path, is_clean_append))
+        if cache.aggregate is None or not incremental:
             cache.aggregate = _build_log_aggregate(files, cache, active)
+        else:
+            for path, is_clean in changed_files:
+                if is_clean:
+                    _fold_log_records(
+                        cache.aggregate, cache.files[path].new_records, path
+                    )
         return cache.aggregate
 
 
@@ -1226,11 +1428,19 @@ def check_log(root: Path, c: _Collector, state: dict[str, str] | None = None) ->
         return
     enc = encoding_of(log_path)
     if enc != "utf-8":
-        c.fail("log.encoding", f"LOG.md is {enc}, not plain UTF-8", "KNOWLEDGE/traps.md", _LOG_FILE)
+        c.fail(
+            "log.encoding",
+            f"LOG.md is {enc}, not plain UTF-8",
+            "KNOWLEDGE/traps.md",
+            _LOG_FILE,
+        )
     segments, active = _log_sequence(root)
     files = tuple(segments + ([active] if active is not None else []))
     aggregate = _log_aggregate(root, files, active)
-    c.findings.extend(aggregate.findings)
+    if hasattr(c, "extend"):
+        c.extend(aggregate.findings, aggregate.fails, aggregate.warns)
+    else:
+        c.findings.extend(aggregate.findings)
     now = datetime.datetime.now(datetime.timezone.utc)
     for event, stamp, file_name, line_no in aggregate.future:
         if (stamp - now).total_seconds() > protocol.LOG_CLOCK_SLACK_SECONDS:
@@ -1344,4 +1554,4 @@ def check_project(root: Path, state: dict[str, str], subs=None) -> Report:
     # Fails first, then warns; stable within a severity by rule id so the list
     # doesn't reshuffle between refreshes.
     c.findings.sort(key=lambda f: (f.severity != FAIL, f.rule, f.line))
-    return Report(c.findings)
+    return Report(c.findings, fails_total=c.fails_total, warns_total=c.warns_total)

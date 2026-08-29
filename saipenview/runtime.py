@@ -26,6 +26,7 @@ from typing import Literal
 # A Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ensures the OS
 # terminates all processes in the job when the last handle closes.
 
+
 def _close_saipen_job_handle(proc) -> None:
     """W2-033: close the Job Object handle stashed on *proc*, if any.
 
@@ -46,6 +47,7 @@ def _close_saipen_job_handle(proc) -> None:
     try:
         import ctypes
         from ctypes import wintypes
+
         kernel32 = ctypes.windll.kernel32
         HANDLE = wintypes.HANDLE
         kernel32.CloseHandle(HANDLE(job_handle))
@@ -172,6 +174,7 @@ def _assign_job_object(proc: subprocess.Popen) -> None:
     except (OSError, AttributeError, ImportError, ValueError):
         pass
 
+
 from saipenview.engines.base import AgentEngine
 from saipenview.events import event_bus
 from saipenview.paths import canonical_key
@@ -272,6 +275,7 @@ def _bounded_output_lines(
     if parts or overflow:
         yield _emit()
 
+
 # PERF-009: live-output arrival is announced through at most one coalesced
 # "agent.output_available" event per root per interval -- never one event per
 # stdout line. The default production path publishes nothing at all: with no
@@ -355,6 +359,16 @@ class AgentProcess:
     # EOF tail both reach the finalizer; only the first call may act.
     _finalize_lock: threading.Lock = field(default_factory=threading.Lock)
     _finalized: bool = False
+    # W2-004: transcript finalization is separated from process finalization.
+    # If the output reader is still alive when _finalize must commit terminal
+    # status (a descendant inherited the stdout pipe and is keeping it open),
+    # the transcript close is deferred to the reader's EOF path. _transcript_lock
+    # + _transcript_done make that deferred close exactly-once against the
+    # direct _finalize path. _transcript_pending carries the terminal status
+    # until the reader reaches EOF.
+    _transcript_lock: threading.Lock = field(default_factory=threading.Lock)
+    _transcript_done: bool = False
+    _transcript_pending: tuple[str, int | None] | None = None
     # Set by kill() before terminate() so the finalizer labels a deliberate
     # stop as "killed" even when the reader thread's EOF tail gets there first.
     _kill_intent: bool = False
@@ -363,12 +377,12 @@ class AgentProcess:
     # CORE-002: prevents double-reaper scheduling when two concurrent
     # _finalize calls both see exit_code=None.
     _reaper_scheduled: bool = False
+    _rollback: bool = False
 
     def elapsed_seconds(self) -> float:
         """Return seconds since launch (or total if finished)."""
         end = self.finished_at or datetime.now(timezone.utc)
         return (end - self.started_at).total_seconds()
-
 
 
 def _schedule_reaper(registry, ap, status):
@@ -379,9 +393,14 @@ def _schedule_reaper(registry, ap, status):
     """
     reaper_key = registry._key(ap.project_root)
 
-    def _delayed_reaper(proc=ap.process, root=ap.project_root, rkey=reaper_key,
-                        kill_intent=ap._kill_intent,
-                        interval=0.5, max_wait=120.0):
+    def _delayed_reaper(
+        proc=ap.process,
+        root=ap.project_root,
+        rkey=reaper_key,
+        kill_intent=ap._kill_intent,
+        interval=0.5,
+        max_wait=120.0,
+    ):
         elapsed = 0.0
         while elapsed < max_wait:
             try:
@@ -389,11 +408,17 @@ def _schedule_reaper(registry, ap, status):
             except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
                 pass
             if proc.returncode is None:
-                continue  # still waiting
-            # CORE-002: Death proven. Route back through _finalize for the
-            # single terminal commit (exit_code, finished_at, session finish,
-            # ownership release, agent.finished event). Never manually release
-            # ownership here -- _finalize owns that path.
+                if kill_intent:
+                    try:
+                        proc.kill()
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+                with registry._lock:
+                    registry._stuck_agents.add(rkey)
+                elapsed += interval
+                continue
+            with registry._lock:
+                registry._stuck_agents.discard(rkey)
             registry._finalize(ap)
             return
             # Still alive. CORE-004: only force-kill when there was an
@@ -426,8 +451,9 @@ def _schedule_reaper(registry, ap, status):
         if ap._reaper_scheduled:
             return  # CORE-002: prevent double-reaper
         ap._reaper_scheduled = True
-    threading.Thread(target=_delayed_reaper, daemon=True,
-                     name="reaper-" + ap.engine.name).start()
+    threading.Thread(
+        target=_delayed_reaper, daemon=True, name="reaper-" + ap.engine.name
+    ).start()
 
 
 class ProcessManager:
@@ -611,25 +637,32 @@ class ProcessManager:
                 },
             )
 
-            return {"ok": True, "engine": engine.name, "pid": proc.pid, "run_id": ap.run_id}
+            return {
+                "ok": True,
+                "engine": engine.name,
+                "pid": proc.pid,
+                "run_id": ap.run_id,
+            }
         except Exception:  # noqa: BLE001 - reservation must not leak on any path
-            # CORE-003: a post-spawn setup failure (e.g. sessions.start) left a
-            # live child. Reap it BEFORE releasing ownership. If reaping fails
-            # (death unproven, CORE-002), RETAIN the reservation -- a possibly
-            # live agent must not lose exclusive ownership to a second writer.
+            if proc is None:
+                self.ownership.release_agent(Path(project_root))
+                raise
+            ap = locals().get("ap")
+            if ap is not None:
+                ap._rollback = True
+                ap._kill_intent = True
             try:
-                if proc is not None and proc.poll() is None:  # still alive
+                if proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=5)
             except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+                if ap is not None:
+                    _schedule_reaper(self, ap, "killed")
                 raise
-            # W2-012: if we got far enough to insert ap into _processes but then
-            # hit a post-spawn failure (reader/monitor Thread.start, event publish),
-            # the dict still holds a running-entry that blocks every later launch.
-            # Remove it now that death is proven so the next launch sees a clean slate.
-            with self._lock:
-                self._processes.pop(key, None)
-            self.ownership.release_agent(Path(project_root))
+            if ap is not None:
+                self._finalize(ap, requested_status="killed")
+            else:
+                self.ownership.release_agent(Path(project_root))
             raise
 
     def is_stuck(self, project_root: str) -> bool:
@@ -727,6 +760,10 @@ class ProcessManager:
         except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
             pass
 
+        with ap._finalize_lock:
+            if ap._finalized:
+                return
+
         exit_code = ap.process.returncode
         if requested_status is not None:
             status = requested_status
@@ -750,11 +787,12 @@ class ProcessManager:
                 return
             ap._finalized = True
 
-        with ap._io_lock:
-            ap.exit_code = exit_code
-            ap.finished_at = datetime.now(timezone.utc)
-            ap.status = status
-            ap._psutil_proc = None  # PERF-009: release cached handle
+        # W2-004: close the Job Object handle as soon as direct child death
+        # is proven. KILL_ON_JOB_CLOSE terminates contained descendants --
+        # the very objects that can keep the inherited stdout pipe open past
+        # the bounded drain window. Closing early lets the pipe reach EOF
+        # sooner, so late transcript data is less likely to be deferred.
+        _close_saipen_job_handle(ap.process)
 
         # Drain the output reader before closing the transcript: the reader
         # thread may still be appending the tail of stdout when the OS-exit
@@ -763,22 +801,38 @@ class ProcessManager:
         # while already present in the live buffer. T-562's verify surfaced this
         # race once the child entered a Job Object and shifted the timing.
         rt = ap._reader_thread
+        reader_alive = False
         if rt is not None and rt is not threading.current_thread() and rt.is_alive():
             rt.join(timeout=10)
+            reader_alive = rt.is_alive()
 
-        if ap.run_id:
-            self.sessions.finish(ap.run_id, status, exit_code)
+        with ap._io_lock:
+            ap.exit_code = exit_code
+            ap.finished_at = datetime.now(timezone.utc)
+            ap.status = status
+            ap._psutil_proc = None
 
         # PERF-009: a pending availability timer for a finalized run is stale
         # -- cancel it so a dead root never fires a notification afterwards.
         self._output_notifier.cancel(ap.project_root)
 
-        # W2-033: close the Job Object handle exactly once during finalization.
-        # KILL_ON_JOB_CLOSE means the child dies when the last handle closes,
-        # but by this point the child is already dead (returncode is non-None),
-        # so closing here prevents the handle from leaking for the lifetime of
-        # the Popen object (which may outlive this ProcessManager).
-        _close_saipen_job_handle(ap.process)
+        # W2-004: transcript close is separated from process finalization. If
+        # the reader is STILL alive after the bounded join (a descendant
+        # inherited the stdout pipe and is holding it open), defer the
+        # transcript close and metadata to the reader's EOF path -- closing
+        # now would drop the late tail from history. Process lifecycle and
+        # ownership are already terminal; only the transcript waits.
+        if reader_alive:
+            with ap._transcript_lock:
+                ap._transcript_pending = (status, exit_code)
+        else:
+            self._finalize_transcript(ap, status, exit_code)
+
+        rollback = getattr(ap, "_rollback", False)
+        if rollback:
+            with self._lock:
+                if self._processes.get(self._key(ap.project_root)) is ap:
+                    self._processes.pop(self._key(ap.project_root), None)
 
         # CORE-004: only release ownership when process death is PROVEN.
         # If returncode is None the OS hasn't reaped the child yet -- we
@@ -794,42 +848,81 @@ class ProcessManager:
             # later launch/write for it is refused until it truly dies.
             _schedule_reaper(self, ap, status)
 
-        event_bus.publish(
-            "agent.finished",
-            {
-                "root": ap.project_root,
-                "engine": ap.engine.name,
-                "status": status,
-                "exit_code": exit_code,
-                "elapsed": ap.elapsed_seconds(),
-            },
-        )
+        if not rollback:
+            event_bus.publish(
+                "agent.finished",
+                {
+                    "root": ap.project_root,
+                    "engine": ap.engine.name,
+                    "status": status,
+                    "exit_code": exit_code,
+                    "elapsed": ap.elapsed_seconds(),
+                },
+            )
 
-        # PERF-007: compact the terminal entry to release the output deque
-        # (~2-4 MiB), Popen handles, and thread reference.  History is
-        # already persisted in SessionStore.
+    def _finalize_transcript(self, ap: AgentProcess, status: str, exit_code: int | None) -> None:
+        """W2-004: exactly-once transcript close.
+
+        Called directly when the reader reached EOF within the bounded drain,
+        or from the reader's EOF path when the reader outlived the drain
+        window. Never closes the transcript while the reader can still append.
+        """
+        with ap._transcript_lock:
+            if ap._transcript_done:
+                return
+            ap._transcript_done = True
+            ap._transcript_pending = None
+        if ap.run_id:
+            self.sessions.finish(ap.run_id, status, exit_code)
+        # Transcript is durably finalized: now release the output deque,
+        # Popen handle, and reader-thread reference (PERF-002/PERF-007).
         self._compact_terminal(ap)
 
+    def _on_reader_eof(self, ap: AgentProcess) -> None:
+        """W2-004: reader-completion path. The reader reached EOF; if _finalize
+        deferred the transcript close because the reader outlived the drain
+        window, finalize it now -- exactly once, race-safe against the direct
+        _finalize_transcript call."""
+        with ap._transcript_lock:
+            if ap._transcript_done:
+                return
+            pending = ap._transcript_pending
+            if pending is None:
+                return  # _finalize has not deferred -- direct path owns it
+            status, exit_code = pending
+            ap._transcript_done = True
+            ap._transcript_pending = None
+        if ap.run_id:
+            self.sessions.finish(ap.run_id, status, exit_code)
+        self._compact_terminal(ap)
 
     def _compact_terminal(self, ap: AgentProcess) -> None:
-        """PERF-007: release heavyweight resources from a finalized process.
+        """PERF-002/007: release heavyweight resources from a finalized process.
 
-        After proven terminalization the output deque, Popen handle, reader
-        thread, and psutil cache are no longer needed -- history lives in
-        SessionStore and the process is confirmed dead.  The entry stays in
+        Called only AFTER the reader reached EOF and the transcript is durably
+        finalized (via _finalize_transcript or _on_reader_eof) -- never while
+        the reader can still append. The output deque, Popen handle, reader
+        thread, and psutil cache are no longer needed; history lives in
+        SessionStore and the process is confirmed dead. The entry stays in
         _processes so get_status() and get_output() still resolve (returning
         cached totals and empty line lists), but the ~2-4 MiB per-process
         memory footprint drops to near zero.
         """
         with ap._io_lock:
-            ap.output_lines.clear()
             ap._psutil_proc = None
+            # PERF-002: the transcript owns the durable history now; the live
+            # deque is pure memory. Released only here, after reader EOF +
+            # session finalization (W2-004 release boundary). _line_count is
+            # the authoritative total for get_output() -- keep it.
+            ap.output_lines.clear()
         ap._reader_thread = None
         # Release the Popen object so its file descriptors and OS handles
         # are reclaimed promptly rather than waiting for GC.
         ap.process = None  # type: ignore[assignment]
 
-    def send_input(self, project_root: str, text: str, expected_run_id: str | None = None) -> dict:
+    def send_input(
+        self, project_root: str, text: str, expected_run_id: str | None = None
+    ) -> dict:
         """Send text to a running agent's stdin."""
         key = self._key(project_root)
         with self._lock:
@@ -869,7 +962,9 @@ class ProcessManager:
 
         return {"ok": True}
 
-    def get_output(self, project_root: str, since_line: int = 0, expected_run_id: str | None = None) -> dict:
+    def get_output(
+        self, project_root: str, since_line: int = 0, expected_run_id: str | None = None
+    ) -> dict:
         """Return new output lines since a given line number.
 
         Args:
@@ -1009,8 +1104,7 @@ class ProcessManager:
         """
         with self._lock:
             roots = [
-                r for r, ap in self._processes.items()
-                if ap.status in ("running",)
+                r for r, ap in self._processes.items() if ap.status in ("running",)
             ]
         return [{**self.get_status(r), "root": r} for r in roots]
 
@@ -1029,7 +1123,10 @@ class ProcessManager:
         with self._lock:
             roots = [r for r, ap in self._processes.items() if ap.status == "running"]
         for root in roots:
-            self.kill(root)
+            try:
+                self.kill(root)
+            except Exception as exc:  # noqa: BLE001
+                print(f"SAIPENVIEW: stop agent failed: {exc}", file=sys.stderr)
 
     def _exit_monitor(self, ap: AgentProcess) -> None:
         """Wait for the process's real OS exit, then finalize exactly once.
@@ -1094,6 +1191,12 @@ class ProcessManager:
 
         except OSError as exc:
             print(f"SAIPENVIEW: output reader error: {exc}", file=sys.stderr)
+
+        # W2-004: reader reached EOF -- the stream is fully drained. If
+        # _finalize deferred the transcript close because this reader outlived
+        # the bounded drain window (a descendant kept the pipe open), close it
+        # now with the terminal metadata _finalize stored.
+        self._on_reader_eof(ap)
 
         # CORE-004: reaching EOF on the captured output stream is NOT process
         # termination. A valid long-lived agent may close its stdout/stderr and

@@ -45,6 +45,8 @@
     "get_projects",
     "get_scan_error_log",
     "get_scan_errors",
+
+
     "get_scan_progress",
     "get_status",
     "get_theme_tokens",

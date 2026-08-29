@@ -257,6 +257,7 @@ def plan(
     plan_builder = engine(root)["plan"]
     journal = engine(root)["journal"]
     import importlib
+
     paths_mod = importlib.import_module("saipen_engine.paths")
     identity = paths_mod.project_identity(root)
     
@@ -270,7 +271,7 @@ def plan(
             role=role,
             content=encoded_content,
             before_hash=doc.raw_hash,
-            after_hash=after_hash
+            after_hash=after_hash,
         )
         if rel in missing_paths:
             # The canonical journal's sentinel for an ABSENT file is "" -- a

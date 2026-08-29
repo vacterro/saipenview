@@ -81,6 +81,19 @@ def test_new_record_overwrites_same_path(clean_registry):
     assert pending[0].fingerprint == "fp-new"
 
 
+def test_next_token_survives_registry_recreation(clean_registry):
+    reg = clean_registry
+    first = reg.record("/root", "STATE.md", "fp-old")
+
+    reg2 = ExternalChangeRegistry()
+    reg2._set_persist_path(reg._persist_path)
+    second = reg2.record("/root", "STATE.md", "fp-new")
+
+    assert second > first
+    assert reg2.acknowledge("/root", "STATE.md", first) is False
+    assert reg2.acknowledge("/root", "STATE.md", second) is True
+
+
 def test_multiple_roots_all_persisted(clean_registry):
     """Entries for different roots all survive recreation."""
     reg = clean_registry

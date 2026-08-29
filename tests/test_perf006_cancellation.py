@@ -87,9 +87,7 @@ class TestWorkerEntryCancel:
             try:
                 cancel = threading.Event()
                 cancel.set()
-                projects, worktrees = scanner._scan_worker(
-                    root, 4, 0.0, None, cancel
-                )
+                projects, worktrees = scanner._scan_worker(root, 4, 0.0, None, cancel)
                 assert projects == [] and worktrees == []
                 assert calls == [], "cancelled worker must not touch the walk"
             finally:
@@ -134,9 +132,11 @@ class TestScanTimeoutCancelsWorkers:
         # After scan() returns, its internal cancel has fired; the blocked
         # walker must observe it instead of grinding on forever.
         assert _wait_for(
-            lambda: not any(
+            lambda: (
+                not any(
                 t.name.startswith("ThreadPoolExecutor")
                 for t in threading.enumerate()
+                )
             ),
             timeout=10,
         ), "executor workers survived the abandoned scan"

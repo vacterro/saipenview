@@ -47,6 +47,7 @@ def run() -> int:
                     guard.stop()
             except Exception as e:  # noqa: BLE001
                 import sys
+
                 print(f"SAIPENVIEW: cleanup {name} failed: {e}", file=sys.stderr)
 
     try:
@@ -58,9 +59,11 @@ def run() -> int:
             return 0
         # W2-005: guard ownership is registered the instant acquire() returns
         # True, never deferred until after api.start().
-        _started.append("guard")
+        _started.insert(0, "guard")
 
-        tray = build_tray_icon(on_toggle=window.toggle, on_quit=lambda: window.destroy())
+        tray = build_tray_icon(
+            on_toggle=window.toggle, on_quit=lambda: window.destroy()
+        )
         tray_thread = threading.Thread(target=tray.run, daemon=True)
         tray_thread.start()
         _started.append("tray")
@@ -94,4 +97,5 @@ def run() -> int:
     else:
         _cleanup()
     import sys
+
     sys.exit(0)

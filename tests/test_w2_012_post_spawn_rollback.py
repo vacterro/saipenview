@@ -76,6 +76,7 @@ def test_reader_start_failure_clears_process_entry(tmp_path):
             raise RuntimeError("injected reader start failure")
         # Second Thread.start (monitor) succeeds
         import threading
+
         orig_start = threading.Thread.start
         orig_start(self)
 
@@ -85,8 +86,12 @@ def test_reader_start_failure_clears_process_entry(tmp_path):
 
     # Verify: child is dead, process entry removed, ownership released
     time.sleep(0.3)
-    assert pm._processes.get(root) is None, "_processes must be cleaned on post-spawn failure"
-    assert not pm.ownership.agent_owns(Path(root)), "ownership must be released on post-spawn failure"
+    assert pm._processes.get(root) is None, (
+        "_processes must be cleaned on post-spawn failure"
+    )
+    assert not pm.ownership.agent_owns(Path(root)), (
+        "ownership must be released on post-spawn failure"
+    )
 
     # Key invariant: next launch on same root must succeed (not refused as "running")
     result = pm.launch(_FakeEngine([sys.executable, str(child)]), root, "go")
@@ -103,7 +108,9 @@ def test_session_start_failure_clears_process_entry(tmp_path):
     root = str(tmp_path / "proj")
     Path(root).mkdir()
 
-    with patch.object(pm.sessions, "start", side_effect=RuntimeError("injected session boom")):
+    with patch.object(
+        pm.sessions, "start", side_effect=RuntimeError("injected session boom")
+    ):
         with pytest.raises(RuntimeError, match="session boom"):
             pm.launch(_FakeEngine([sys.executable, str(child)]), root, "go")
 

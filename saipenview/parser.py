@@ -126,13 +126,27 @@ def update_state(root: Path, updates: dict[str, str]) -> dict:
     # W2-021: explicit writable-field allowlist. Anything not on this list is
     # silently dropped, never written, never errors the caller with a noisy
     # "unknown field" message that could leak implementation details.
-    _STATE_FIELD_ALLOWLIST = frozenset({
-        "phase", "task", "next_action", "blocker", "agent",
-        "saipen_version", "schema_version", "last_event",
-        "style_contract", "saipen_home", "mode", "updated",
-        "transition_from", "execution_intent", "converge_target",
-        "attempt", "human_note",
-    })
+    _STATE_FIELD_ALLOWLIST = frozenset(
+        {
+            "phase",
+            "task",
+            "next_action",
+            "blocker",
+            "agent",
+            "saipen_version",
+            "schema_version",
+            "last_event",
+            "style_contract",
+            "saipen_home",
+            "mode",
+            "updated",
+            "transition_from",
+            "execution_intent",
+            "converge_target",
+            "attempt",
+            "human_note",
+        }
+    )
 
     # W2-021: sanitize keys and values. Strip unsafe content.
     sanitized: dict[str, str] = {}
@@ -975,6 +989,7 @@ def _validate_manifest_sub_name(name: str) -> bool:
     """CORE-005: reject path traversal, separators, absolute/drive/UNC forms.
     Returns True when the name is safe to use as a sub directory."""
     from saipenview.collect import validate_sub_id
+
     return validate_sub_id(name) is None
 
 
@@ -1091,7 +1106,12 @@ _STALENESS_FILES = [
 ]
 
 
-_STALENESS_FINGERPRINT_CACHE: dict[tuple[str, int, int, int], tuple[str, str]] = {}
+# PERF-006: ONE cached digest per path, not one per stat generation. The old
+# (path,size,mtime_ns,ctime_ns) key grew an entry on every rewrite of the same
+# file (2000 rewrites -> 2000 entries, monotonic for a long-lived GUI). Now the
+# path is the key and the entry is replaced when the stat signature changes, so
+# cardinality follows the live file set, never the edit count.
+_STALENESS_FINGERPRINT_CACHE: dict[str, tuple[tuple[int, int, int, int], str]] = {}
 
 
 def _file_staleness_key(path: Path) -> tuple[str, str] | None:
@@ -1103,26 +1123,40 @@ def _file_staleness_key(path: Path) -> tuple[str, str] | None:
     checked against the home's own copies, which share the home's newline
     convention); raw bytes would cry wolf on a CRLF home.
 
-    PERF-003: cache the SHA-256 by stat identity (dev, ino, size, mtime_ns,
+    PERF-003/006: cache the SHA-256 by stat identity (size, mtime_ns,
     ctime_ns). ctime_ns moves on every write, so a same-size + preserved-mtime
-    attack invalidates the cache. Cache is bounded by canonical-home generation
-    outside this function.
+    attack invalidates the cache. One entry per path, replaced in place.
     """
     try:
         stat = path.stat()
     except OSError:
         return None
-    cache_key = (str(path), stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ctime_ns", 0))
-    cached = _STALENESS_FINGERPRINT_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
+    sig = (stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ctime_ns", 0))
+    cached = _STALENESS_FINGERPRINT_CACHE.get(str(path))
+    if cached is not None and cached[0] == sig:
+        return cached[1], ""
     try:
         raw = path.read_bytes()
     except OSError:
         return None
     digest = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
-    _STALENESS_FINGERPRINT_CACHE[cache_key] = (digest, "")
+    _STALENESS_FINGERPRINT_CACHE[str(path)] = (sig, digest)
     return digest, ""
+
+
+def _evict_staleness_cache(roots: list[str] | None = None) -> None:
+    """PERF-006: drop parser staleness cache entries. When *roots* is given,
+    only entries under those roots are removed (authoritative registry
+    reconciliation); otherwise the whole cache is cleared (teardown)."""
+    if roots is None:
+        _STALENESS_FINGERPRINT_CACHE.clear()
+        return
+    removed = 0
+    for key in list(_STALENESS_FINGERPRINT_CACHE):
+        if any(key.startswith(r.rstrip("\\/") + "\\") or key == r.rstrip("\\/") for r in roots):
+            _STALENESS_FINGERPRINT_CACHE.pop(key, None)
+            removed += 1
+    return
 
 
 def check_subs_staleness(root: Path, state: dict) -> tuple[bool, str]:
@@ -1203,7 +1237,9 @@ def collect_outbox_entry(
     # whichever layout _find_subs_dir found, but the canonical snapshot in
     # op_fn must use the same resolved project-relative path.
     # Prefer the canonical .saipen/ layout when it exists.
-    canonical_outbox = root / ".saipen" / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
+    canonical_outbox = (
+        root / ".saipen" / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
+    )
     legacy_outbox = root / "extensions" / "subs" / sub_name / "kitchen" / "OUTBOX.md"
     if canonical_outbox.is_file():
         outbox_path = canonical_outbox
@@ -1252,16 +1288,26 @@ def collect_outbox_entry(
             # Boundary: unresolved external changes + canonical recovery debt.
             from saipenview.external_changes import get_registry, normalize_rel
 
-            # Registry key is normalized; outbox_rel is the snapshot-identity (canonical or legacy)
-            try:
-                registry_rel = normalize_rel(outbox_rel)
-            except ValueError:
-                registry_rel = outbox_rel
-            unresolved = [
-                c
-                for c in get_registry().unresolved(str(root))
-                if c.rel_path != registry_rel  # the package itself is the subject
+            registry_rel = normalize_rel(
+                outbox_rel[len(".saipen/") :]
+                if outbox_rel.startswith(".saipen/")
+                else outbox_rel
+            )
+            if get_registry().is_degraded():
+                return _refuse_dict(
+                    saio.BOUNDARY_VIOLATION,
+                    "external-change registry is unreadable/corrupt -- "
+                    "cannot prove boundary evidence; collect refused",
+                )
+            pending_external = get_registry().unresolved(str(root))
+            package_pending = [
+                c for c in pending_external if c.rel_path == registry_rel
             ]
+            package_token = package_pending[0].token if package_pending else None
+            proof = dict(proof)
+            proof["package_rel"] = registry_rel
+            proof["package_token"] = package_token
+            unresolved = [c for c in pending_external if c.rel_path != registry_rel]
             if unresolved:
                 return _refuse_dict(
                     saio.BOUNDARY_VIOLATION,
@@ -1482,8 +1528,12 @@ def collect_outbox_entry(
                     },
                     targets,
                     preconditions,
-                    expected={"ticket_id": created_ticket_id, "message": message},
+                    expected={
+                        "ticket_id": created_ticket_id,
+                        "message": "collect committed",
+                    },
                 )
+
                 return operation_plan
 
             def precheck(r: Path):
@@ -1491,9 +1541,12 @@ def collect_outbox_entry(
 
             # The coordinator APPLYs the plan (one _finalize_success path for
             # self-write attribution) and runs the freshness precheck under
-            # the canonical writer lock immediately before the journal is
+            # the canonical OS writer lock immediately before the journal is
             # PREPARED. STALE_STATE re-decides once on a fresh snapshot.
-            return get_coordinator().mutate(root, op_fn, precheck=precheck)
+            result = get_coordinator().mutate(root, op_fn, precheck=precheck)
+            if result.get("ok") and package_token is not None:
+                get_registry().acknowledge(str(root), registry_rel, package_token)
+            return result
 
     except AgentOwnershipError as exc:
         return _refuse_dict("WRITER_BUSY", str(exc))
@@ -1526,12 +1579,33 @@ def _collect_freshness_precheck(root: Path, proof: dict) -> dict | None:
 
     # W2-013: re-validate boundary under writer lock. New external evidence
     # arriving between the initial gate and this point must block the commit.
+    package_rel = proof.get("package_rel")
+    package_token = proof.get("package_token")
+    if get_registry().is_degraded():
+        return _refuse_dict(
+            saio.BOUNDARY_VIOLATION,
+            "external-change registry is unreadable/corrupt -- "
+            "cannot prove boundary evidence; collect refused at commit",
+        )
     unresolved = get_registry().unresolved(str(root))
-    if unresolved:
+    package_entries = [c for c in unresolved if c.rel_path == package_rel]
+    if package_rel and (
+        (package_token is None and package_entries)
+        or (
+            package_token is not None
+            and (len(package_entries) != 1 or package_entries[0].token != package_token)
+        )
+    ):
+        return _refuse_dict(
+            saio.BOUNDARY_VIOLATION,
+            "package external-change generation moved after the gate; collect refused",
+        )
+    other_unresolved = [c for c in unresolved if c.rel_path != package_rel]
+    if other_unresolved:
         return _refuse_dict(
             saio.BOUNDARY_VIOLATION,
             "unexplained external change(s) appeared after the gate; collect refused: "
-            + "; ".join(c.rel_path for c in unresolved[:5]),
+            + "; ".join(c.rel_path for c in other_unresolved[:5]),
         )
 
     try:
@@ -1565,7 +1639,10 @@ def _collect_freshness_precheck(root: Path, proof: dict) -> dict | None:
                 saio.STALE_FRESHNESS, "role charter changed after the gate; zero writes"
             )
     # Use proof's immutable outbox_rel when present; fallback to canonical for old proofs
-    outbox_rel_proof = proof.get("outbox_rel") or f".saipen/extensions/subs/{proof.get('sub_name', '')}/kitchen/OUTBOX.md"
+    outbox_rel_proof = (
+        proof.get("outbox_rel")
+        or f".saipen/extensions/subs/{proof.get('sub_name', '')}/kitchen/OUTBOX.md"
+    )
     for key, rel in (
         ("outbox_hash", outbox_rel_proof),
         ("state_hash", ".saipen/STATE.md"),

@@ -124,9 +124,7 @@ console.log(JSON.stringify(out));
 """
     script = tmp_path / "perf005.js"
     script.write_text(harness, encoding="utf-8")
-    res = subprocess.run(
-        ["node", str(script)], capture_output=True, text=True
-    )
+    res = subprocess.run(["node", str(script)], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
     import json
 
@@ -167,8 +165,6 @@ console.log("ok");
 """
     script = tmp_path / "perf005b.js"
     script.write_text(harness, encoding="utf-8")
-    res = subprocess.run(
-        ["node", str(script)], capture_output=True, text=True
-    )
+    res = subprocess.run(["node", str(script)], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
     assert "ok" in res.stdout

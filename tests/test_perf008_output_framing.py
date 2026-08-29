@@ -170,12 +170,21 @@ class TestRealSubprocess:
                 time.sleep(0.05)
 
             res = pm.get_output(str(tmp_path))
-            lines = res["lines"]
+            # PERF-002: the in-memory deque is released after EOF +
+            # transcript finalization; durable history lives in the session
+            # transcript. Verify the canonical framing via that transcript,
+            # which is the authoritative copy the queue/snapshot path used to
+            # carry in memory.
             assert res["total"] == 3
-            assert lines[0] == "start"
-            assert lines[1].count(" [... truncated]") == 1
-            assert len(lines[1]) == OUTPUT_RECORD_MAX_CHARS + len(" [... truncated]")
-            assert lines[2] == "end"
+            from saipenview.tailio import tail_raw_lines
+            rec = pm.sessions.history(str(tmp_path))[0]
+            tline = (pm.sessions._dir / f"{rec['run_id']}.log")
+            raw = tline.read_text(encoding="utf-8", errors="replace")
+            tlines = raw.splitlines()
+            assert tlines[0] == "start"
+            assert tlines[1].count(" [... truncated]") == 1
+            assert len(tlines[1]) == OUTPUT_RECORD_MAX_CHARS + len(" [... truncated]")
+            assert tlines[2] == "end"
         finally:
             pm.stop_all()
             pm._output_notifier.cancel()
@@ -202,7 +211,13 @@ class TestRealSubprocess:
             while pm.get_status(str(tmp_path))["status"] == "running":
                 assert time.monotonic() < deadline
                 time.sleep(0.05)
-            body = "".join(pm.get_output(str(tmp_path))["lines"])
+            # PERF-002: deque released after EOF + transcript finalize; read
+            # the durable transcript (the same UTF-8 bytes the queue held).
+            rec = pm.sessions.history(str(tmp_path))[0]
+            raw = (pm.sessions._dir / f"{rec['run_id']}.log").read_text(
+                encoding="utf-8", errors="replace"
+            )
+            body = raw.rstrip("\n")
             assert body == "GOT:héllo wörld"
         finally:
             pm.stop_all()

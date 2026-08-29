@@ -179,9 +179,7 @@ class TestCoalescedNotifications:
         finally:
             event_bus.unsubscribe("agent.output_available", notices.append)
 
-    def test_finalization_cancels_pending_notice_of_a_fast_run(
-        self, manager, tmp_path
-    ):
+    def test_finalization_cancels_pending_notice_of_a_fast_run(self, manager, tmp_path):
         """A run that ends inside one interval delivers no availability notice
         -- the terminal event owns the refresh instead."""
         from saipenview.events import event_bus

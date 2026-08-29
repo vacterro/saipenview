@@ -33,10 +33,16 @@ from saipenview.protocol_write import get_coordinator
 
 def _init_repo(root: Path) -> None:
     subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
+    )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    subprocess.run(["git", "-C", str(root), "config", "commit.gpgsign", "false"], check=True)
-    subprocess.run(["git", "-C", str(root), "config", "core.autocrlf", "false"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "commit.gpgsign", "false"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "core.autocrlf", "false"], check=True
+    )
 
 
 def _make_repo(tmp_path: Path) -> Path:
@@ -45,7 +51,9 @@ def _make_repo(tmp_path: Path) -> Path:
     _init_repo(root)
     (root / "tracked.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
-    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "initial"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-q", "-m", "initial"], check=True
+    )
     return root
 
 
@@ -69,9 +77,19 @@ def _smart_mock(repo: Path, sleep_sec: float = 0.3):
     def mock_run(root: str, args: list[str]):
         entered.set()
         if args[0] in ("status", "diff", "rev-parse"):
-            return real_git(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8")
+            return real_git(
+                ["git", "-C", str(repo), *args],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
         time.sleep(sleep_sec)
-        return real_git(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8")
+        return real_git(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
 
     return mock_run, entered
 
@@ -119,7 +137,9 @@ class TestGitMutationOwnershipTx:
         assert r["ok"] is True
 
         # Reset to base, then make another change for revert.
-        subprocess.run(["git", "-C", str(repo), "reset", "--hard", "HEAD~1"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "reset", "--hard", "HEAD~1"], check=True
+        )
         (repo / "tracked.txt").write_text("ch2\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
         fp2 = get_working_diff(root)
@@ -190,13 +210,17 @@ class TestGitMutationOwnershipTx:
             if args[0] in ("status", "diff", "rev-parse"):
                 return subprocess.run(
                     ["git", "-C", str(repo), *args],
-                    capture_output=True, text=True, encoding="utf-8",
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
                 )
             tx_entered.set()
             time.sleep(0.3)
             return subprocess.run(
                 ["git", "-C", str(repo), *args],
-                capture_output=True, text=True, encoding="utf-8",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
             )
 
         def try_reserve():
