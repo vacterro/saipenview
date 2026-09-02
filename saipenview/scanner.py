@@ -2,6 +2,7 @@
 
 import collections
 import concurrent.futures
+import inspect
 import os
 import string
 import sys
@@ -428,6 +429,194 @@ def _scan_worker(
             )
 
 
+def _lexical_root_key(root: str) -> str:
+    """Cheap scheduling identity used before filesystem-touching preflight."""
+    return os.path.normcase(os.path.normpath(os.fspath(root))).rstrip("\\/")
+
+
+def _scan_root_task(
+    raw_root: str,
+    max_depth: int,
+    delay: float,
+    extra_excludes: set[str] | None,
+    cancel: threading.Event,
+) -> dict:
+    """Preflight and scan one raw root inside its bounded worker.
+
+    PERF-002: the root is reserved by its lexical key BEFORE any
+    filesystem-touching canonical()/exists() preflight. If the same
+    lexical root is already in flight (from a previous cycle whose worker
+    timed out), this one returns SKIPPED immediately -- the previous
+    worker is still alive and will eventually complete. After canonical
+    resolution the reservation is upgraded to the canonical key; alias
+    deduplication (two raw roots resolving to the same canonical path) is
+    also handled atomically.
+    """
+    lexical = _lexical_root_key(raw_root)
+    if cancel.is_set():
+        return {"root": lexical, "status": "unresolved", "projects": [], "worktrees": []}
+    # PERF-002: reserve by lexical key BEFORE any filesystem I/O. A
+    # blocked canonical() will not prevent the reservation, so a later
+    # scan cycle sees the root is already in flight and skips submitting
+    # a duplicate worker. The reservation persists until the worker exits
+    # (not until the coordinator times out), so timed-out roots stay
+    # quarantined.
+    with _inflight_lock:
+        if lexical in _inflight_roots:
+            _push_error(
+                f"scan root {raw_root} already in flight, skipping duplicate"
+            )
+            return {
+                "root": raw_root,
+                "key": lexical,
+                "status": "skipped",
+                "projects": [],
+                "worktrees": [],
+            }
+        _inflight_roots[lexical] = "running"
+    # The canonical key that will be popped on exit; starts as lexical.
+    _current_key = lexical
+    try:
+        if cancel.is_set():
+            return {"root": lexical, "status": "unresolved", "projects": [], "worktrees": []}
+        try:
+            resolved = canonical(raw_root)
+            key = canonical_key(resolved)
+            if not Path(resolved).exists() or not Path(resolved).is_dir():
+                _push_error(f"scan root missing, quarantined until it returns: {resolved}")
+                return {
+                    "root": resolved,
+                    "key": key,
+                    "status": "unresolved",
+                    "projects": [],
+                    "worktrees": [],
+                }
+        except (OSError, ValueError) as exc:
+            _push_error(f"scan root preflight failed for {raw_root}: {exc}")
+            return {
+                "root": lexical,
+                "key": lexical,
+                "status": "unresolved",
+                "projects": [],
+                "worktrees": [],
+            }
+        # Upgrade reservation from lexical to canonical key if they differ.
+        if key != lexical:
+            with _inflight_lock:
+                _inflight_roots.pop(lexical, None)
+                if key in _inflight_roots:
+                    return {
+                        "root": resolved,
+                        "key": key,
+                        "status": "skipped",
+                        "projects": [],
+                        "worktrees": [],
+                    }
+                _inflight_roots[key] = "running"
+            _current_key = key
+        if cancel.is_set():
+            return {"root": resolved, "key": key, "status": "unresolved", "projects": [], "worktrees": []}
+        projects, worktrees = _scan_one_root(
+            resolved,
+            max_depth,
+            delay,
+            extra_excludes,
+            collect_worktrees=True,
+            cancel=cancel,
+        )
+        return {
+            "root": resolved,
+            "key": key,
+            "status": "completed",
+            "projects": projects,
+            "worktrees": worktrees,
+        }
+    except (OSError, TypeError, ValueError) as exc:
+        _push_error(f"scan of {resolved} failed: {exc}")
+        return {"root": resolved, "key": key, "status": "unresolved", "projects": [], "worktrees": []}
+    finally:
+        with _inflight_lock:
+            _inflight_roots.pop(_current_key, None)
+        with _progress_lock:
+            _scan_progress["roots_done"] += 1
+            total = _scan_progress.get("roots_total", 1) or 1
+            _scan_progress["pct"] = min(99, int(_scan_progress["roots_done"] * 100 / total))
+
+
+# PERF-001/002: shared bounded executor pool. Reused across scan cycles
+# so timed-out workers do not create unbounded thread accumulation.
+# PERF-001: when a scan times out, its pool is quarantined -- the next
+# scan creates a fresh pool instead of reusing capacity poisoned by
+# non-cooperative stuck workers.  The old pool's remaining futures still
+# decrement counters through the per-future callback, so refcounts
+# remain correct across generations.
+_SHARED_POOL_MAX = 32
+_SHARED_POOL_LOCK = threading.Lock()
+_SHARED_POOL: concurrent.futures.ThreadPoolExecutor | None = None
+_SHARED_POOL_USERS = 0
+_SHARED_POOL_FUTURES = 0
+_SHARED_POOL_STALE = False  # PERF-001: set when timed-out futures exist
+_QUARANTINED_FUTURES = 0
+
+
+def _get_shared_pool(
+    n_workers: int,
+) -> concurrent.futures.ThreadPoolExecutor | None:
+    global _SHARED_POOL, _SHARED_POOL_USERS, _SHARED_POOL_STALE
+    with _SHARED_POOL_LOCK:
+        available = _SHARED_POOL_MAX - _QUARANTINED_FUTURES
+        if available <= 0:
+            return None
+        if _SHARED_POOL is None or _SHARED_POOL_STALE:
+            old_pool = _SHARED_POOL
+            _SHARED_POOL_STALE = False
+            if old_pool is not None:
+                old_pool.shutdown(wait=False)
+            _SHARED_POOL = concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(max(n_workers, 1), available)
+            )
+        _SHARED_POOL_USERS += 1
+        return _SHARED_POOL
+
+
+def _release_shared_pool() -> None:
+    global _SHARED_POOL, _SHARED_POOL_USERS
+    pool = None
+    with _SHARED_POOL_LOCK:
+        _SHARED_POOL_USERS -= 1
+        if _SHARED_POOL_USERS == 0 and _SHARED_POOL_FUTURES == 0:
+            pool = _SHARED_POOL
+            _SHARED_POOL = None
+    if pool is not None:
+        pool.shutdown(wait=False)
+
+
+def _track_shared_future(future: concurrent.futures.Future) -> None:
+    global _SHARED_POOL_FUTURES
+    with _SHARED_POOL_LOCK:
+        _SHARED_POOL_FUTURES += 1
+    # PERF-001: capture the owning pool so this callback always
+    # decrements the correct generation, even if _SHARED_POOL has
+    # been replaced by a fresh pool before this future completes.
+    owning_pool = _SHARED_POOL
+
+    def done(_future, _pool=owning_pool) -> None:
+        global _SHARED_POOL, _SHARED_POOL_FUTURES
+        pool_to_check = None
+        with _SHARED_POOL_LOCK:
+            _SHARED_POOL_FUTURES -= 1
+            if _SHARED_POOL_USERS == 0 and _SHARED_POOL_FUTURES == 0:
+                pool_to_check = _SHARED_POOL
+                _SHARED_POOL = None
+        # PERF-001: only shut down if the pool we captured is still the
+        # live one.  A replaced (quarantined) pool is abandoned and will
+        # be garbage-collected once its remaining futures complete.
+        if pool_to_check is not None and pool_to_check is _pool:
+            pool_to_check.shutdown(wait=False)
+
+    future.add_done_callback(done)
+
+
 def scan(
     scan_roots: list[str] | None = None,
     max_depth: int = MAX_SCAN_DEPTH,
@@ -440,166 +629,119 @@ def scan(
     CORE-011: returns a ScanOutcome with complete/partial status.
     CORE-010: when cancel is set, returns immediately with zero roots.
     """
+    global _QUARANTINED_FUTURES
     if cancel is not None and cancel.is_set():
         _set_scan_progress(pct=0, root="", roots_done=0, roots_total=0)
         return ScanOutcome(projects=[], complete=True)
     raw_roots = scan_roots if scan_roots is not None else _auto_roots()
-    # Canonical forms: absolute, case-normalised, symlink-resolved, drive
-    # roots carry a single trailing separator (T-138 layer 1).
-    roots = [canonical(r) for r in raw_roots]
-    # W2-009 / T-138 layer 2: a missing drive/root is surfaced, never silently
-    # dropped from the scan set -- and it stays in the set, so when the drive
-    # returns the next scan picks it up again automatically.
-    # Track missing roots so we can force the outcome to incomplete: a
-    # temporarily offline drive must not be treated as authoritative empty.
-    missing_roots: list[str] = []
-    for r in roots:
-        if not Path(r).exists():
-            _push_error(f"scan root missing, quarantined until it returns: {r}")
-            missing_roots.append(r)
-    # Deduplicate roots by canonical key before parallel submission -- same
-    # path scanned twice wastes a thread and can race on _scan_progress.
-    seen_roots: set[str] = set()
-    unique_roots: list[str] = []
-    for r in roots:
-        key = canonical_key(r)
-        if key not in seen_roots:
-            seen_roots.add(key)
-            unique_roots.append(r)
-    # CORE-005: reserve canonical roots atomically BEFORE submitting workers so
-    # two concurrent scans cannot both enqueue a worker for the same root, and a
-    # root already owned by another scan is skipped (not duplicated). Only the
-    # owner releases the reservation (in _scan_worker's finally).
-    with _inflight_lock:
-        fresh_roots = [
-            r for r in unique_roots if canonical_key(r) not in _inflight_roots
-        ]
-        for r in fresh_roots:
-            _inflight_roots[canonical_key(r)] = "running"
-    skipped = len(unique_roots) - len(fresh_roots)
-    roots = fresh_roots
-    if not roots:
-        # Every requested root is owned by an in-flight scan: this scan is NOT
-        # authoritative. Return incomplete so callers preserve the existing
-        # cache instead of wiping it with a complete-empty result (CORE-005).
-        _set_scan_progress(pct=100, root="", roots_done=skipped, roots_total=skipped)
-        return ScanOutcome(projects=[], complete=(skipped == 0))
-    _set_scan_progress(pct=0, root="", roots_done=0, roots_total=len(roots))
-    projects: list[ProjectStatus] = []
-    all_worktrees: list[dict] = []
-    # CORE-001: only a scan that ran ALL requested roots without skip/
-    # error/timeout is authoritative. Skipped roots were owned by another
-    # scan, so we never saw those projects -- marking complete=True would
-    # let callers treat partial data as authoritative.
-    # W2-009: missing roots are also non-authoritative -- the scan cannot
-    # guarantee it saw all projects when a configured root was unreachable.
-    complete = skipped == 0 and not missing_roots
-    # PERF-006: one cooperative cancellation event per scan() invocation.
-    # Workers check it before every directory descent; the timeout paths set
-    # it so running walks unwind promptly instead of grinding on after their
-    # owner is gone (ThreadPoolExecutor workers are NOT daemon threads).
+    # PERF-002: raw roots enter workers immediately. canonical() and existence
+    # probing may touch a disconnected drive, so neither may run serially on
+    # the coordinator before healthy roots can start.
+    _set_scan_progress(pct=0, root="", roots_done=0, roots_total=len(raw_roots))
     internal_cancel = threading.Event()
     if cancel is not None:
-        # Honor either the caller's event or this scan's own timeout path.
         class _EitherEvent:
             def is_set(self) -> bool:
                 return cancel.is_set() or internal_cancel.is_set()
 
-            def set(self) -> None:
-                internal_cancel.set()
-
         both_cancel = _EitherEvent()  # type: ignore[assignment]
     else:
         both_cancel = internal_cancel
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(roots), 32))
+    # PERF-002: reuse the shared bounded executor instead of creating a
+    # fresh pool per cycle whose running workers were abandoned on timeout.
+    pool = _get_shared_pool(len(raw_roots))
+    if pool is None:
+        _push_error("scan pool capacity exhausted, all roots skipped")
+        return ScanOutcome(
+            projects=[], worktrees=[], complete=False,
+            completed_roots=[], unresolved_roots=[_lexical_root_key(r) for r in raw_roots],
+        )
     futures = {
         pool.submit(
-            _scan_worker, root, max_depth, delay, extra_excludes, both_cancel
-        ): root
-        for root in roots
+            _scan_root_task, raw, max_depth, delay, extra_excludes, both_cancel
+        ): raw
+        for raw in raw_roots
     }
-    # CORE-001: per-root authority tracking. Every root submitted to a worker
-    # starts as 'in_flight'; on success it moves to 'completed', on hard
-    # failure/timeout it stays 'in_flight' (unresolved). The cache uses these
-    # sets to replace rows beneath completed roots while preserving rows
-    # beneath unresolved ones.
-    completed: set[str] = set()
+    for future in futures:
+        _track_shared_future(future)
+    projects: list[ProjectStatus] = []
+    all_worktrees: list[dict] = []
+    completed: dict[str, str] = {}
+    unresolved: dict[str, str] = {}
+    complete = True
     try:
         for future in concurrent.futures.as_completed(
-            futures, timeout=PER_ROOT_TIMEOUT_SECONDS + 5
+            futures, timeout=max(float(PER_ROOT_TIMEOUT_SECONDS), 0.01)
         ):
-            root = futures[future]
+            raw = futures[future]
+            lexical = _lexical_root_key(raw)
             try:
-                root_projects, root_worktrees = future.result(timeout=0)
-                projects.extend(root_projects)
-                all_worktrees.extend(root_worktrees)
-                completed.add(canonical_key(root))
-            except concurrent.futures.TimeoutError:
-                _push_error(
-                    f"scan of {root} exceeded {PER_ROOT_TIMEOUT_SECONDS}s, skipped"
-                )
+                result = future.result(timeout=0)
+            except (OSError, ValueError) as exc:
+                _push_error(f"scan of {raw} failed: {exc}")
+                unresolved[lexical] = lexical
                 complete = False
-            except OSError as e:
-                _push_error(f"scan of {root} failed: {e}")
+                continue
+            root = result.get("root", lexical)
+            key = result.get("key", lexical)
+            if result.get("status") == "completed":
+                completed[key] = root
+                projects.extend(result.get("projects", []))
+                all_worktrees.extend(result.get("worktrees", []))
+            else:
+                unresolved[key] = root
                 complete = False
     except concurrent.futures.TimeoutError:
         _push_error("overall scan timeout reached, some roots skipped")
         complete = False
-    pending = [f for f in futures if not f.done()]
+    pending = [future for future in futures if not future.done()]
     if pending:
         complete = False
-        # PERF-006: tell still-running workers to stop cooperatively. The
-        # INTERNAL event is set here; a caller's cancel Event is never ours
-        # to mutate. Cancellation must never publish partial data as
-        # authoritative -- `complete` above already stays False.
         internal_cancel.set()
-        # CORE-002: resolve queued-future ownership before shutdown. A queued
-        # future canceled here never runs _scan_worker, so its reservation
-        # would leak forever -- remove it now. A future already running
-        # (cancel() returns False) keeps its reservation and releases it in
-        # _scan_worker's finally.
-        for f in pending:
-            if f.cancel():
-                with _inflight_lock:
-                    _inflight_roots.pop(canonical_key(futures[f]), None)
-        # cancel_futures=False: everything still pending was already handed
-        # to cancel() above; the pool must not cancel additional futures
-        # without matching reservation cleanup.
-        pool.shutdown(wait=False, cancel_futures=False)
-        concurrent.futures.wait(pending, timeout=30)
-    else:
-        pool.shutdown(wait=False)
+        for future in pending:
+            raw = futures[future]
+            if future.cancel():
+                unresolved[_lexical_root_key(raw)] = _lexical_root_key(raw)
+            else:
+                unresolved[_lexical_root_key(raw)] = _lexical_root_key(raw)
+                # PERF-001: running non-cooperative future = quarantined
+                with _SHARED_POOL_LOCK:
+                    _QUARANTINED_FUTURES += 1
+                def _quarantine_cleanup(_f, _id=id(future)):
+                    global _QUARANTINED_FUTURES
+                    with _SHARED_POOL_LOCK:
+                        _QUARANTINED_FUTURES = max(0, _QUARANTINED_FUTURES - 1)
+                future.add_done_callback(_quarantine_cleanup)
+        # PERF-001: quarantine this pool generation -- its non-cooperative
+        # workers occupy capacity that must not block healthy roots in
+        # the next scan.  _get_shared_pool will create a fresh pool.
+        with _SHARED_POOL_LOCK:
+            _SHARED_POOL_STALE = True
     _set_scan_progress(
-        pct=100, root="", roots_done=_scan_progress.get("roots_total", 0)
+        pct=100, root="", roots_done=len(raw_roots), roots_total=len(raw_roots)
     )
     seen = set()
     deduped = []
-    for p in projects:
-        if _is_garbage_root(p.root):
+    for project in projects:
+        if _is_garbage_root(project.root):
             continue
-        k = canonical_key(str(p.root))
-        if k not in seen:
-            seen.add(k)
-            deduped.append(p)
-    # CORE-001: partition the originally requested roots into authoritative
-    # (scanned) and unresolved (missing, skipped, failed) buckets. Skipped
-    # roots are 'fresh' roots that scan() chose not to submit because another
-    # scan owned them. Missing roots come from the upfront existence check.
-    completed_roots = sorted(canonical(r) for r in unique_roots if canonical_key(r) in completed)
-    unresolved = set()
-    for r in missing_roots:
-        unresolved.add(canonical_key(r))
-    for r in unique_roots:
-        if canonical_key(r) not in completed:
-            unresolved.add(canonical_key(r))
-    unresolved_roots = sorted(r for r in unique_roots if canonical_key(r) in unresolved)
-    return ScanOutcome(
+        key = canonical_key(str(project.root))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(project)
+    completed_roots = sorted(set(completed.values()))
+    unresolved_roots = sorted(set(unresolved.values()))
+    if unresolved_roots:
+        complete = False
+    outcome = ScanOutcome(
         projects=deduped,
         worktrees=all_worktrees,
         complete=complete,
         completed_roots=completed_roots,
         unresolved_roots=unresolved_roots,
     )
+    _release_shared_pool()
+    return outcome
 
 
 DEFAULT_RESCAN_SECONDS = 300
@@ -665,6 +807,7 @@ class BackgroundScanner:
         delay: float = SCAN_INTER_DIR_DELAY,
         extra_excludes: set[str] | None = None,
         on_scan_start: Callable[[], None] | None = None,
+        epoch_source: Callable[[], int] | None = None,
     ):
         self._on_result = on_result
         self._scan_roots = scan_roots
@@ -673,6 +816,11 @@ class BackgroundScanner:
         self._delay = delay
         self._extra_excludes = extra_excludes
         self._on_scan_start = on_scan_start
+        # W2-001: every _do_scan captures the api's current scan epoch at
+        # request start so a newer manual rescan can supersede this in-flight
+        # publication. None means the on_result callback does not accept
+        # epoch (legacy behaviour preserved).
+        self._epoch_source = epoch_source
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lifecycle_lock = threading.Lock()
@@ -690,6 +838,11 @@ class BackgroundScanner:
         """Run one scan cycle, publishing results only if the epoch is still current."""
         event = cancel_event if cancel_event is not None else self._stop_event
         gen = generation if generation is not None else self._gen
+        # W2-001: capture the api scan epoch at REQUEST START, before the
+        # filesystem work. A newer manual rescan bumps the epoch while this
+        # scan runs; when it finishes, _set_cache rejects its stale epoch so
+        # the older result can never roll back the manual one.
+        request_epoch = self._epoch_source() if self._epoch_source is not None else None
         result = scan(
             self._scan_roots,
             max_depth=self._max_depth,
@@ -703,9 +856,35 @@ class BackgroundScanner:
         # consumer can skip its own second walk. Backward-compatible: the
         # worktrees travel as a keyword, and a ScanOutcome-aware consumer (the
         # Api cache) also receives them inside the projects object.
-        self._on_result(
-            result.projects, complete=result.complete, worktrees=result.worktrees
-        )
+        callback_kwargs = {
+            "complete": result.complete,
+            "worktrees": result.worktrees,
+            "completed_roots": result.completed_roots,
+            "unresolved_roots": result.unresolved_roots,
+        }
+        if request_epoch is not None:
+            callback_kwargs["epoch"] = request_epoch
+        # Preserve consumers that intentionally implement the original
+        # list-only callback. New consumers receive full provenance; old
+        # consumers remain valid without catching a TypeError raised inside
+        # their own callback body.
+        try:
+            parameters = inspect.signature(self._on_result).parameters
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            if accepts_kwargs:
+                supported_kwargs = callback_kwargs
+            else:
+                supported_kwargs = {
+                    name: value
+                    for name, value in callback_kwargs.items()
+                    if name in parameters
+                }
+        except (TypeError, ValueError):
+            supported_kwargs = callback_kwargs
+        self._on_result(result.projects, **supported_kwargs)
 
     def _start_generation_locked(self) -> None:
         self._restart_pending = False

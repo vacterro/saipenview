@@ -129,17 +129,29 @@ class TestScanTimeoutCancelsWorkers:
         outcome = scan(roots, delay=0.0)
         assert outcome.complete is False, "timeout must never look authoritative"
 
-        # After scan() returns, its internal cancel has fired; the blocked
-        # walker must observe it instead of grinding on forever.
-        assert _wait_for(
-            lambda: (
-                not any(
-                t.name.startswith("ThreadPoolExecutor")
-                for t in threading.enumerate()
-                )
-            ),
-            timeout=10,
-        ), "executor workers survived the abandoned scan"
+        # PERF-002: the shared bounded executor pool stays alive across
+        # cycles (its workers are bounded, not per-cycle leaks). The
+        # contract is no non-daemon-worker GROWTH per cycle, not zero
+        # threads. After several timed-out scans the executor thread count
+        # must stay within the shared pool's bound, never accumulate.
+        before = sum(
+            1
+            for t in threading.enumerate()
+            if t.name.startswith("ThreadPoolExecutor")
+        )
+        for _ in range(3):
+            scan(roots, delay=0.0)
+        after = sum(
+            1
+            for t in threading.enumerate()
+            if t.name.startswith("ThreadPoolExecutor")
+        )
+        assert after <= scanner._SHARED_POOL_MAX, (
+            f"executor threads exceeded shared pool bound: {after}"
+        )
+        assert after <= before + 1, (
+            f"executor threads grew across cycles: {before} -> {after}"
+        )
 
 
 class TestBackgroundScannerStopHonesty:
@@ -230,3 +242,101 @@ class TestPreflightCancelStillWorks:
         outcome = scan([str(tmp_path)], cancel=cancel)
         assert outcome.projects == []
         assert outcome.complete is True
+
+
+class TestPerf001Quarantine:
+    def test_one_hung_root_does_not_poison_healthy_roots(self, tmp_path, monkeypatch):
+        """PERF-001: a timed-out non-cooperative root must not prevent healthy
+        roots from executing in the next scan cycle.  The hung root's pool
+        generation is quarantined; the next scan gets a fresh pool."""
+        import saipenview.scanner as scanner_mod
+        from pathlib import Path
+
+        hung = tmp_path / "hung"
+        hung.mkdir()
+        (hung / ".saipen").mkdir()
+        healthy = [tmp_path / f"h{i}" for i in range(3)]
+        for h in healthy:
+            h.mkdir()
+            (h / ".saipen").mkdir()
+
+        release = threading.Event()
+        real_walk = scanner_mod._walk_with_depth_limit
+
+        def blocking_walk(root_path, *args, **kwargs):
+            if Path(root_path).name == "hung":
+                assert release.wait(timeout=30), "hung root never released"
+                return
+            yield from real_walk(root_path, *args, **kwargs)
+
+        monkeypatch.setattr(scanner_mod, "_walk_with_depth_limit", blocking_walk)
+        monkeypatch.setattr(scanner_mod, "PER_ROOT_TIMEOUT_SECONDS", 0.5)
+
+        # First scan: hung root blocks, healthy roots finish.
+        roots = [str(hung)] + [str(h) for h in healthy]
+        outcome1 = scanner_mod.scan(roots, delay=0.0)
+        assert not outcome1.complete, "first scan with hung root must be incomplete"
+        assert len(outcome1.unresolved_roots) == 1, "hung root should be unresolved"
+
+        # Release the hung root so its future completes and quarantine
+        # accounting drains for the next test.
+        release.set()
+
+        # Second scan: healthy roots only; fresh pool must let them run.
+        outcome2 = scanner_mod.scan([str(h) for h in healthy], delay=0.0)
+        assert outcome2.complete, f"second scan with only healthy roots must be complete: {outcome2}"
+        assert len(outcome2.completed_roots) == 3, f"all 3 healthy roots should be scanned: {outcome2.completed_roots}"
+
+    def test_quarantine_budget_exhaustion_returns_degraded(self, tmp_path, monkeypatch):
+        """PERF-001: when _QUARANTINED_FUTURES reaches _SHARED_POOL_MAX,
+        scan returns an explicit incomplete/degraded outcome."""
+        import saipenview.scanner as scanner_mod
+
+        real = scanner_mod._QUARANTINED_FUTURES
+        try:
+            with scanner_mod._SHARED_POOL_LOCK:
+                scanner_mod._QUARANTINED_FUTURES = scanner_mod._SHARED_POOL_MAX
+            outcome = scanner_mod.scan([str(tmp_path)], delay=0.0)
+            assert not outcome.complete, "degraded scan must be incomplete"
+            assert len(outcome.unresolved_roots) == 1
+        finally:
+            with scanner_mod._SHARED_POOL_LOCK:
+                scanner_mod._QUARANTINED_FUTURES = real
+
+    def test_preserves_inflight_duplicate_quarantine(self, tmp_path, monkeypatch):
+        """PERF-001: inflight-root quarantine still prevents duplicate workers."""
+        import saipenview.scanner as scanner_mod
+
+        blocked = tmp_path / "blocked"
+        blocked.mkdir()
+        (blocked / ".saipen").mkdir()
+
+        entered = threading.Event()
+        release = threading.Event()
+        real_canonical = scanner_mod.canonical
+
+        def blocking_canonical(path):
+            entered.set()
+            assert release.wait(timeout=10), "canonical never released"
+            return real_canonical(path)
+
+        monkeypatch.setattr(scanner_mod, "canonical", blocking_canonical)
+
+        results = {}
+
+        def worker():
+            results["out1"] = scanner_mod._scan_root_task(
+                str(blocked), 6, 0.0, set(), threading.Event()
+            )
+
+        t = threading.Thread(target=worker)
+        t.start()
+        assert entered.wait(timeout=5), "first worker never reached canonical()"
+        out2 = scanner_mod._scan_root_task(
+            str(blocked), 6, 0.0, set(), threading.Event()
+        )
+        assert out2.get("status") == "skipped", out2
+        release.set()
+        t.join(timeout=10)
+        assert "out1" in results
+        assert results["out1"].get("status") == "completed", results["out1"]
