@@ -156,3 +156,94 @@ def test_kill_sets_intent_no_terminal_without_death():
     assert mock_ownership.release_agent.call_count == 0
     # A reaper was scheduled to wait for proven death.
     mock_reaper.assert_called_once()
+
+
+def test_finalize_concurrent_callers_no_crash_exactly_once():
+    """W2-002: two concurrent _finalize callers (kill + exit-monitor paths)
+    racing through the guard. Exactly one commit (session finish, ownership
+    release, agent.finished publish); the loser uses its captured local
+    ``proc`` and never dereferences the cleared ``ap.process`` after the
+    winner compacts. A barrier forces both threads past the same pre-commit
+    window, so any regression in the stable-proc capture crashes here."""
+    from saipenview.runtime import ProcessManager
+
+    registry = ProcessManager()
+    ap = DummyAgent()
+    ap.process = DummyProcess(returncode=0, delay=0.0)
+    barrier = threading.Barrier(2)
+
+    errors: list[BaseException] = []
+
+    def caller(requested_status):
+        try:
+            barrier.wait(timeout=5)
+        except threading.BrokenBarrierError:
+            pass
+        try:
+            registry._finalize(ap, requested_status)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    with (
+        patch.object(registry, "ownership") as mock_ownership,
+        patch.object(registry, "sessions") as mock_sessions,
+        patch("saipenview.runtime.event_bus") as mock_bus,
+    ):
+        t_a = threading.Thread(target=caller, args=("killed",))
+        t_b = threading.Thread(target=caller, args=(None,))
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=10)
+        t_b.join(timeout=10)
+
+    assert not errors, f"concurrent finalizers raised: {errors}"
+    assert ap._finalized is True
+    assert ap.process is None
+    assert mock_sessions.finish.call_count == 1, (
+        f"expected exactly one session finish, got {mock_sessions.finish.call_count}"
+    )
+    assert mock_ownership.release_agent.call_count == 1, (
+        f"expected exactly one ownership release, got {mock_ownership.release_agent.call_count}"
+    )
+    assert mock_bus.publish.call_count == 1, (
+        f"expected exactly one agent.finished publish, got {mock_bus.publish.call_count}"
+    )
+
+
+def test_exit_monitor_after_compact_no_crash():
+    """W2-002: _exit_monitor must capture a stable proc reference. If a
+    concurrent kill won finalization and compacted ap.process = None before
+    the monitor's wait(), the monitor must not dereference the cleared
+    field."""
+    from saipenview.runtime import ProcessManager
+
+    registry = ProcessManager()
+    ap = DummyAgent()
+    ap.process = DummyProcess(returncode=0, delay=0.0)
+    ap.process = None  # compact already happened
+
+    # Should return without exception and without touching ap.process.
+    registry._exit_monitor(ap)
+
+
+def test_kill_after_compact_no_crash():
+    """W2-002: kill() must capture a stable proc reference. If the reader
+    thread already finalized + compacted ap.process = None before kill()
+    runs, kill() must not dereference the cleared field."""
+    from saipenview.runtime import ProcessManager
+
+    registry = ProcessManager()
+    ap = DummyAgent()
+    registry._processes[registry._key(ap.project_root)] = ap
+    ap.process = None  # compact already happened
+    ap._kill_intent = True  # a prior finalizer recorded intent
+
+    with (
+        patch.object(registry, "ownership") as mock_ownership,
+        patch.object(registry, "sessions") as mock_sessions,
+        patch("saipenview.runtime.event_bus") as mock_bus,
+    ):
+        result = registry.kill(ap.project_root)
+
+    assert result == {"ok": True}, result
+    assert ap._kill_intent is True

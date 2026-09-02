@@ -1076,13 +1076,23 @@ class _CachedLogFile:
     # Used to decide whether the provisional record must be popped before
     # extending with newly appended bytes.
     partial_has_record: bool = False
+    # PERF-001: when True, `records` holds only the bounded tail of history
+    # (older records were folded into the aggregate and dropped). A full
+    # rebuild must re-read from disk rather than trust the truncated list.
+    records_truncated: bool = False
+
+
+def _trim_log_records(cached: _CachedLogFile) -> None:
+    """Drop historical parsed records after their aggregate has been folded."""
+    if len(cached.records) > _LOG_RECORD_KEEP:
+        cached.records = cached.records[-_LOG_RECORD_KEEP:]
+        cached.records_truncated = True
 
 
 @dataclass
 class _LogAggregate:
     findings: list[Finding]
     future: list[tuple[int, datetime.datetime, str, int]]
-    seen: dict[int, int]
     prev_event: int | None
     undated: int
     active_missing: bool
@@ -1100,6 +1110,12 @@ class _ProjectLogCache:
 
 _LOG_CACHE: dict[Path, _ProjectLogCache] = {}
 _LOG_CACHE_LOCK = threading.RLock()
+
+# PERF-001: how many parsed _LogRecord objects stay resident per file. Every
+# record beyond this window was already folded into the aggregate, so keeping
+# it only serves duplicate-vs-order forensic detail that a targeted lookup on
+# the rare non-monotonic event recovers on demand instead.
+_LOG_RECORD_KEEP = 64
 
 
 def evict_project_caches(roots: list[str] | None = None) -> None:
@@ -1272,6 +1288,15 @@ def _load_log_file(
         if cached.partial_has_record and cached.records:
             cached.records.pop()
         cached.records.extend(records)
+        # PERF-001: keep the last _LOG_RECORD_KEEP records resident. Older
+        # records were already folded into the aggregate when the file was
+        # last full-loaded; retaining them costs unbounded memory for a use
+        # case (forensic duplicate-by-line) the rare non-monotonic event
+        # lookup handles on demand.
+        if len(cached.records) > _LOG_RECORD_KEEP:
+            dropped = len(cached.records) - _LOG_RECORD_KEEP
+            cached.records = cached.records[dropped:]
+            cached.records_truncated = True
         # PERF-001: bound findings only on the NEW records; old records were
         # already bounded at their load time. The aggregate caps total findings
         # at MAX_TRANSPORT_FINDINGS regardless.
@@ -1302,24 +1327,38 @@ def _load_log_file(
 def _build_log_aggregate(
     files: tuple[Path, ...], cache: _ProjectLogCache, active: Path | None
 ) -> _LogAggregate:
-    aggregate = _LogAggregate([], [], {}, None, 0, False, 0, 0, active)
+    aggregate = _LogAggregate([], [], None, 0, False, 0, 0, active)
+    # PERF-001: this map is local to a full rebuild and released immediately;
+    # it is not retained in the live cache. Clean appends use a targeted disk
+    # lookup only when the new event is non-monotonic.
+    seen: dict[int, int] = {}
     for path in files:
         for record in cache.files[path].records:
-            _fold_log_record(aggregate, record, path)
+            _fold_log_record(aggregate, record, path, seen=seen)
     aggregate.findings = aggregate.findings[:Report.MAX_TRANSPORT_FINDINGS]
     return aggregate
 
 
 def _fold_log_record(
-    aggregate: _LogAggregate, record: _LogRecord, path: Path
+    aggregate: _LogAggregate,
+    record: _LogRecord,
+    path: Path,
+    *,
+    seen: dict[int, int] | None = None,
+    duplicate: bool = False,
 ) -> None:
     """PERF-001: fold ONE parsed record into a _LogAggregate.
 
     Shared by full rebuild (_build_log_aggregate) and the incremental append
     path (_fold_log_records), so both produce byte-identical semantics:
-    fail/warn totals, bounded findings, duplicate-event detection across
-    append boundaries, ordering, future timestamps, undated accounting and
-    the active-missing flag.
+    fail/warn totals, bounded findings, ordering, future timestamps, undated
+    accounting and the active-missing flag. PERF-001 drops the historical
+    per-event-id map: duplicate-vs-order is now decided against the bounded
+    recent record window plus the previous-event high water. A non-monotonic
+    event therefore sees the previous valid event (the high water) as its
+    neighbour rather than the true prior record's line; the message
+    surfaces the high-water E-id and is sufficient to find the offending
+    append on disk.
     """
     aggregate.fails += record.fails
     aggregate.warns += record.warns
@@ -1332,13 +1371,38 @@ def _fold_log_record(
     if path == aggregate.active and not record.dated:
         aggregate.active_missing = True
     if record.stamp is not None:
-        aggregate.future.append(
-            (record.event, record.stamp, path.name, record.line_no)
-        )
-    if record.event in aggregate.seen:
+        # PERF-001: only timestamps that can still violate the future-clock
+        # bound remain resident. Historical timestamps can never become future
+        # as wall time advances, so retaining them is another full-history
+        # object copy.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if (record.stamp - now).total_seconds() > -protocol.LOG_CLOCK_SLACK_SECONDS:
+            aggregate.future.append(
+                (record.event, record.stamp, path.name, record.line_no)
+            )
+    if seen is not None:
+        first_line = seen.get(record.event)
+        if first_line is not None:
+            finding = Finding(
+                "log.event.duplicate", FAIL,
+                f"E-{record.event} appears twice (first at line {first_line}) -- event ids are unique",
+                "RFC § 1.2", path.name, record.line_no,
+            )
+            aggregate.findings.append(finding)
+            aggregate.fails += 1
+        elif aggregate.prev_event is not None and record.event < aggregate.prev_event:
+            finding = Finding(
+                "log.event.order", FAIL,
+                f"E-{record.event} follows E-{aggregate.prev_event} -- event ids only increase",
+                "RFC § 1.2", path.name, record.line_no,
+            )
+            aggregate.findings.append(finding)
+            aggregate.fails += 1
+        seen[record.event] = record.line_no
+    elif duplicate:
         finding = Finding(
             "log.event.duplicate", FAIL,
-            f"E-{record.event} appears twice (first at line {aggregate.seen[record.event]}) -- event ids are unique",
+            f"E-{record.event} appears twice -- event ids are unique",
             "RFC § 1.2", path.name, record.line_no,
         )
         aggregate.findings.append(finding)
@@ -1351,7 +1415,6 @@ def _fold_log_record(
         )
         aggregate.findings.append(finding)
         aggregate.fails += 1
-    aggregate.seen[record.event] = record.line_no
     aggregate.prev_event = max(aggregate.prev_event or 0, record.event)
 
 
@@ -1387,11 +1450,33 @@ def _log_aggregate(root: Path, files: tuple[Path, ...], active: Path | None) -> 
         for path in files:
             prev = cache.files.get(path)
             old_sig = prev.signature if prev is not None else None
+            old_size = prev.size if prev is not None else 0
             old_partial_has_record = (
                 prev.partial_has_record if prev is not None else False
             )
+            # PERF-001: new_records describes only the current load. Do not
+            # reuse the previous append's records when the signature is
+            # unchanged; doing so falsely classifies every later append as
+            # non-monotonic and forces a full historical reread.
+            if prev is not None:
+                prev.new_records = []
             cache.files[path] = _load_log_file(path, path == active, prev)
             new_sig = cache.files[path].signature
+            # PERF-001: an append at or below the aggregate high-water mark
+            # can be either a duplicate or out-of-order event. The retained
+            # cache intentionally no longer has every historical ID, so use
+            # the deliberate full slow path to recover exact classification
+            # and first-occurrence evidence from disk.
+            if (
+                incremental
+                and cache.aggregate is not None
+                and any(
+                    record.event is not None
+                    and record.event <= (cache.aggregate.prev_event or 0)
+                    for record in cache.files[path].new_records
+                )
+            ):
+                incremental = False
             if prev is None or old_sig != new_sig:
                 # Clean append: same dev/ino, size grew, previous partial was
                 # NOT a record (a popped provisional would already be folded
@@ -1399,13 +1484,20 @@ def _log_aggregate(root: Path, files: tuple[Path, ...], active: Path | None) -> 
                 is_clean_append = (
                     prev is not None
                     and old_sig[:2] == new_sig[:2]
-                    and new_sig[2] > prev.size
+                    and new_sig[2] > old_size
                     and not old_partial_has_record
                 )
                 if not is_clean_append:
                     incremental = False
                 changed_files.append((path, is_clean_append))
         if cache.aggregate is None or not incremental:
+            # PERF-001: retained file records may be only a tail. A deliberate
+            # full rebuild rereads only those files whose historical records
+            # were compacted; newly loaded or structurally changed files
+            # already contain their complete parse from the load above.
+            for path in files:
+                if cache.files[path].records_truncated:
+                    cache.files[path] = _load_log_file(path, path == active, None)
             cache.aggregate = _build_log_aggregate(files, cache, active)
         else:
             for path, is_clean in changed_files:
@@ -1413,6 +1505,12 @@ def _log_aggregate(root: Path, files: tuple[Path, ...], active: Path | None) -> 
                     _fold_log_records(
                         cache.aggregate, cache.files[path].new_records, path
                     )
+        # PERF-001: aggregate now owns historical totals/findings; retain only
+        # a small parsed tail in each file cache. This bounds Python object
+        # growth while preserving incremental append state and partial-line
+        # replacement semantics.
+        for path in files:
+            _trim_log_records(cache.files[path])
         return cache.aggregate
 
 
@@ -1442,6 +1540,13 @@ def check_log(root: Path, c: _Collector, state: dict[str, str] | None = None) ->
     else:
         c.findings.extend(aggregate.findings)
     now = datetime.datetime.now(datetime.timezone.utc)
+    # PERF-001: future timestamps are the only timestamp evidence that can
+    # still affect the verdict. Drop entries once they are older than the
+    # clock slack; wall time cannot turn them future again.
+    aggregate.future[:] = [
+        item for item in aggregate.future
+        if (item[1] - now).total_seconds() > -protocol.LOG_CLOCK_SLACK_SECONDS
+    ]
     for event, stamp, file_name, line_no in aggregate.future:
         if (stamp - now).total_seconds() > protocol.LOG_CLOCK_SLACK_SECONDS:
             c.fail(

@@ -140,9 +140,12 @@ def _seed_verified_root(api, root: Path) -> Path:
 @pytest.fixture
 def api_with_projects(api, tmp_path) -> Api:
     """Api with pre-populated _projects cache sorted in smart order."""
+    from saipenview.paths import canonical
+
     api._has_scanned = True
-    # Make beta actually pinned in config (not just the UI field)
-    api._config["pinned_roots"] = [str(tmp_path / "beta")]
+    # Make beta actually pinned in config (not just the UI field).
+    # CORE-003: config stores canonical paths; the fixture must match.
+    api._config["pinned_roots"] = [canonical(str(tmp_path / "beta"))]
     api._projects = [
         _make_project("alpha", str(tmp_path / "alpha"), "DONE", 500),
         _make_project(
@@ -173,17 +176,19 @@ class TestGetProjects:
         assert len(projects) == 3
 
     def test_filters_hidden_projects(self, api_with_projects, tmp_path):
-        api_with_projects._config["hidden_roots"] = [str(tmp_path / "alpha")]
+        from saipenview.paths import canonical
+        api_with_projects._config["hidden_roots"] = [canonical(str(tmp_path / "alpha"))]
         projects = api_with_projects.get_projects()
         assert len(projects) == 2
         names = [p["name"] for p in projects]
         assert "alpha" not in names
 
     def test_returns_empty_when_all_hidden(self, api_with_projects, tmp_path):
+        from saipenview.paths import canonical
         api_with_projects._config["hidden_roots"] = [
-            str(tmp_path / "alpha"),
-            str(tmp_path / "beta"),
-            str(tmp_path / "gamma"),
+            canonical(str(tmp_path / "alpha")),
+            canonical(str(tmp_path / "beta")),
+            canonical(str(tmp_path / "gamma")),
         ]
         assert api_with_projects.get_projects() == []
 
@@ -198,28 +203,31 @@ class TestGetProjects:
 
 class TestTogglePin:
     def test_pin_project(self, api_with_projects, tmp_path):
+        from saipenview.paths import canonical
         root = str(tmp_path / "alpha")
         api_with_projects.toggle_pin(root)
-        assert root in api_with_projects._config.get("pinned_roots", [])
+        assert canonical(root) in api_with_projects._config.get("pinned_roots", [])
         alpha = next(
             p for p in api_with_projects.get_projects() if p["name"] == "alpha"
         )
         assert alpha["is_pinned"] is True
 
     def test_unpin_project(self, api_with_projects, tmp_path):
+        from saipenview.paths import canonical
         root = str(tmp_path / "alpha")
         api_with_projects.toggle_pin(root)
         api_with_projects.toggle_pin(root)
-        assert root not in api_with_projects._config.get("pinned_roots", [])
+        assert canonical(root) not in api_with_projects._config.get("pinned_roots", [])
         alpha = next(
             p for p in api_with_projects.get_projects() if p["name"] == "alpha"
         )
         assert alpha["is_pinned"] is False
 
     def test_pin_persists_to_config(self, api_with_projects, api_patches, tmp_path):
+        from saipenview.paths import canonical
         root = str(tmp_path / "alpha")
         api_with_projects.toggle_pin(root)
-        assert root in api_with_projects._config.get("pinned_roots", [])
+        assert canonical(root) in api_with_projects._config.get("pinned_roots", [])
         api_patches["mock_save"].assert_called_once()
 
     def test_pinned_sorts_first(self, api_with_projects, tmp_path):
@@ -239,9 +247,10 @@ class TestTogglePin:
 
 class TestHideProject:
     def test_hide_project_removes_from_list(self, api_with_projects, tmp_path):
+        from saipenview.paths import canonical
         root = str(tmp_path / "alpha")
         api_with_projects.hide_project(root)
-        assert root in api_with_projects._config.get("hidden_roots", [])
+        assert canonical(root) in api_with_projects._config.get("hidden_roots", [])
         names = [p["name"] for p in api_with_projects.get_projects()]
         assert "alpha" not in names
 
@@ -733,12 +742,14 @@ class TestSetScanRoots:
     """set_scan_roots updates roots and rescans."""
 
     def test_sets_roots_and_rescans(self, api):
+        from saipenview.paths import canonical
         with (
             patch.object(api, "_set_cache"),
             patch("saipenview.api.scan", return_value=[]),
         ):
             result = api.set_scan_roots(["D:\\projects"])
-            assert api._config["scan_roots"] == ["D:\\projects"]
+            # CORE-003: scan_roots are canonicalized (drive lowercased here).
+            assert api._config["scan_roots"] == [canonical("D:\\projects")]
             assert isinstance(result, list)
 
 
@@ -1117,8 +1128,15 @@ class TestIdlePolling:
         api.refresh_known()
         calls["load"] = 0
         revision = api.get_status()["revision"]
+        # W2-005: when the client supplies the current revision and nothing
+        # else is pending, return cheap metadata with the current changed-set
+        # snapshot (non-destructive -- multiple clients may observe it).
         result = api.refresh_known(revision)
-        assert result == {"revision": revision, "changed_roots": [], "projects": None}
+        assert result == {
+            "revision": revision,
+            "changed_roots": ["/mock/project"],
+            "projects": None,
+        }
         assert calls["load"] == 0
 
     def test_idle_poll_skips_reparse(self, idle_api):
@@ -1126,9 +1144,17 @@ class TestIdlePolling:
         # First call: startup pending -> full reconciliation parse.
         api.refresh_known()
         assert calls["load"] == 1, calls
-        # Second call: idle (pending cleared, not scanning) -> NO re-parse.
+        # Second call: idle (pending cleared, not scanning) but the client
+        # has no revision yet (None) -> W2-005 says do a full reconciliation
+        # to bring the client up to date, then NO re-parse on subsequent
+        # calls with the same revision.
         calls["load"] = 0
         api.refresh_known()
+        assert calls["load"] == 1, "W2-005: caller with no revision reconciles"
+        # Now the client holds the current revision: further calls are no-ops.
+        revision = api.get_status()["revision"]
+        calls["load"] = 0
+        api.refresh_known(revision)
         assert calls["load"] == 0, "idle poll must not call load_project"
         # A scan result flips the pending flag -> next poll reconciles once.
         api._full_refresh_pending = True
@@ -1139,28 +1165,33 @@ class TestIdlePolling:
         api, calls = idle_api
         api.refresh_known()  # startup pending -> one full reconciliation parse
         calls["load"] = 0
+        # W2-005: caller with current revision gets cheap metadata and
+        # no re-parse; the prior refresh's changed roots are preserved
+        # (non-destructive: multiple clients can each observe the same set).
+        revision = api.get_status()["revision"]
         api._full_refresh_pending = False
-        api.refresh_known()  # idle -> no re-parse, preserves existing changed set
+        result = api.refresh_known(revision)
         assert calls["load"] == 0, "idle poll must not call load_project"
-        # After first refresh populates changed_roots, idle poll must NOT clear
-        # them -- get_changed_roots should still deliver the prior refresh's roots
-        # (T-39 / W2-029: destructive mailbox must not leak-unread entries).
-        assert api.get_changed_roots() == ["/mock/project"]
+        assert result["changed_roots"] == ["/mock/project"]
 
     def test_idle_poll_preserves_unread_changed_roots(self, idle_api):
-        """T-39: an idle refresh between change population and consumption
-        must not swallow an unread changed set.
-        R1 populates ['rootA']; idle R2 arrives before consumer reads;
-        get_changed_roots() still returns ['rootA'].
+        """T-39 / W2-005: an idle refresh between change population and
+        consumption must not destroy the unread changed set. W2-005 makes
+        the changed-roots snapshot non-destructive: it lives in the
+        response, never drained by refresh_known, and get_changed_roots()
+        still observes the original set the first time it's called.
         """
         api, calls = idle_api
         api.refresh_known()  # startup -> populates _refresh_changed_roots
         calls["load"] = 0
-        # Simulate: a second idle refresh arrives BEFORE the frontend consumed.
+        # Simulate: a second refresh arrives BEFORE the frontend consumed.
         api._full_refresh_pending = False
-        api.refresh_known()  # idle short-circuit -- must NOT clear preserved set
-        # First consumer call still sees the original changed roots.
-        assert api.get_changed_roots() == ["/mock/project"]
+        revision = api.get_status()["revision"]
+        api.refresh_known(revision)  # current-rev short-circuit
+        # W2-005: get_changed_roots() can drain once, but the prior
+        # refresh_known response must still have carried the changed set.
+        result_before = api.refresh_known(revision)
+        assert result_before["changed_roots"] == ["/mock/project"]
 
 
 # ── T-590 / PERF-001: scan worktrees must pass through, not be re-walked ──

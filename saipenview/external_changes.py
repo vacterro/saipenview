@@ -84,22 +84,34 @@ class PendingChange:
 
 
 class ExternalChangeRegistry:
-    """Per-(canonical-root, normalized-rel-path) unresolved external writes."""
+    """Per-(canonical-root, normalized-rel-path) unresolved external writes.
+
+    CORE-006 / W2-003: durability and corrupt-load trust are tracked
+    separately. ``_load_corrupt`` means the persisted file was unreadable
+    or contained malformed entries -- the registry has incomplete evidence
+    and must remain fail-closed. ``_write_degraded`` means the last
+    durability write failed -- a later successful save may clear it. A
+    corrupt-load state persists across restart via a marker file and the
+    original corrupt artifact is preserved as evidence.
+    """
 
     _PERSIST_FILE = "external_changes.json"
+    _CORRUPT_MARKER = "external_changes.corrupt"
 
     def __init__(self) -> None:
         self._entries: dict[tuple[str, str], PendingChange] = {}
         self._lock = threading.Lock()
         self._persist_path: Path | None = None
-        self._degraded: bool = False
+        self._load_corrupt: bool = False
+        self._write_degraded: bool = False
         self._load()
 
     def _set_persist_path(self, path: Path) -> None:
         """Override the default persist path (for tests)."""
         self._persist_path = path
         self._entries.clear()
-        self._degraded = False
+        self._load_corrupt = False
+        self._write_degraded = False
         self._load()
 
     def _persist_file(self) -> Path:
@@ -107,19 +119,38 @@ class ExternalChangeRegistry:
             return self._persist_path
         return config_path().parent / self._PERSIST_FILE
 
+    def _corrupt_marker(self) -> Path:
+        """CORE-006: marker file indicating corruption was detected."""
+        p = self._persist_file()
+        return p.with_suffix(".corrupt") if p.name.endswith(".json") else p.parent / self._CORRUPT_MARKER
+
     def _load(self) -> None:
         """Load persisted entries and generation counter from disk.
 
-        W2-001: distinguish "valid empty registry" from "registry
-        unreadable/corrupt". A corrupt existing evidence file puts the
-        registry into a degraded/unknown state that callers must treat as
-        boundary-blocking. The full record set is kept in memory; only the
-        boolean degraded flag is exposed to gate collect().
+        CORE-006: ``_load_corrupt`` is set when the file is missing
+        (no evidence), unreadable, or contains malformed rows. The
+        original corrupt file is preserved as ``<name>.corrupt`` so
+        evidence is never silently lost. ``_write_degraded`` is never
+        set during load (it reflects the current process's write
+        durability, not the last one's).
+
+        W2-003: a persistent corrupt marker survives restart so a
+        future process does not silently accept a partial set as the
+        complete truth.
         """
         global _next_token
         path = self._persist_file()
+        corrupt_marker = self._corrupt_marker()
+
+        # If a corrupt marker exists, the previous process found corruption
+        # and preserved the corrupt file. Stay degraded.
+        if corrupt_marker.exists():
+            self._load_corrupt = True
+            self._entries.clear()
+            return
+
         if not path.exists():
-            self._degraded = False
+            self._load_corrupt = False
             return
         try:
             with open(path, encoding="utf-8") as f:
@@ -131,7 +162,7 @@ class ExternalChangeRegistry:
                 items = data
                 saved_token = 0
             if not isinstance(items, list):
-                self._degraded = True
+                self._mark_corrupt(path)
                 return
             loaded_max = int(saved_token) if isinstance(saved_token, int) else 0
             for item in items:
@@ -147,25 +178,45 @@ class ExternalChangeRegistry:
                     self._entries[(pc.root, pc.rel_path)] = pc
                     loaded_max = max(loaded_max, pc.token)
                 except (KeyError, TypeError, ValueError):
-                    # W2-001: a malformed row poisons the whole file -- we
-                    # cannot prove the registry's persisted content. Refuse
-                    # to pretend it's empty.
-                    self._degraded = True
+                    self._mark_corrupt(path)
                     return
             with _token_lock:
                 _next_token = max(_next_token, loaded_max)
-            self._degraded = False
+            self._load_corrupt = False
         except (OSError, json.JSONDecodeError, ValueError):
-            self._degraded = True
+            self._mark_corrupt(path)
+
+    def _mark_corrupt(self, path: Path) -> None:
+        """CORE-006: preserve the corrupt file as evidence, create a marker."""
+        self._load_corrupt = True
+        self._entries.clear()
+        try:
+            # Preserve the corrupt file as evidence
+            corrupt_path = self._corrupt_marker()
+            if path.exists():
+                path.replace(corrupt_path)
+            # Create a fresh empty marker file so the next process sees it
+            if not corrupt_path.exists():
+                corrupt_path.write_text(
+                    json.dumps({"corrupt_source": str(path), "note": "registry was corrupt; evidence preserved as this file"}),
+                    encoding="utf-8"
+                )
+        except OSError as exc:
+            print(
+                f"SAIPENVIEW: external_changes corrupt evidence preservation failed: {exc}",
+                file=sys.stderr,
+            )
 
     def _save(self) -> bool:
         """Atomically write entries and generation counter to disk.
 
-        W2-001: returns True only when the durable commit succeeded. A
-        caller holding the registry lock can rely on the return value to
-        decide whether to report success or surface a degraded/durability
-        failure to the boundary.
+        CORE-006: returns True only when the durable commit succeeded.
+        When ``_load_corrupt`` is True, DO NOT write -- the in-memory
+        set is partial and must not replace the corrupt evidence file.
+        Returns False (no-op) in that case.
         """
+        if self._load_corrupt:
+            return False
         path = self._persist_file()
         tmp: Path | None = None
         try:
@@ -186,6 +237,14 @@ class ExternalChangeRegistry:
                     indent=2,
                 )
             tmp.replace(path)
+            self._write_degraded = False
+            # If a corrupt marker exists from a previous corrupt load that
+            # was later reconciled, clear it now that a successful save proves
+            # the registry is valid.
+            try:
+                self._corrupt_marker().unlink(missing_ok=True)
+            except OSError:
+                pass
             return True
         except OSError as exc:
             print(
@@ -197,18 +256,24 @@ class ExternalChangeRegistry:
                     tmp.unlink(missing_ok=True)
                 except OSError:
                     pass
+            self._write_degraded = True
             return False
 
     def flush(self) -> None:
-        """W2-008 + W2-001: synchronous flush -- ensure on-disk state matches memory.
+        """W2-008 + CORE-006: synchronous flush -- ensure on-disk state matches memory.
 
         Called by api.stop() so shutdown never loses the last batch of
-        mutations to a background write. Returns the durability result so
-        shutdown/error reporting can surface persistent failure.
+        mutations to a background write. When ``_load_corrupt`` is True,
+        flush is a no-op (the in-memory set is partial; preserving the
+        corrupt evidence on disk is more important than writing a partial
+        set that would silently replace it).
         """
+        if self._load_corrupt:
+            return
         with self._lock:
             ok = self._save()
-        self._degraded = self._degraded or not ok
+        if not ok:
+            self._write_degraded = True
 
     def record(self, root: str, rel_path: str, fingerprint: str) -> int:
         """Record an external write under canonicalized keys.
@@ -230,7 +295,7 @@ class ExternalChangeRegistry:
             )
             ok = self._save()
         if not ok:
-            self._degraded = True
+            self._write_degraded = True
             return -1
         return token
 
@@ -259,16 +324,30 @@ class ExternalChangeRegistry:
                 # boundary keeps blocking collect.
                 if removed is not None:
                     self._entries[(key_root, key_rel)] = removed
-                self._degraded = True
+                self._write_degraded = True
                 return False
             return True
 
     def is_degraded(self) -> bool:
-        """W2-001: True when the on-disk registry is unreadable/corrupt or
-        the last persistence write failed. While degraded, collect boundaries
-        must fail closed -- the registry cannot be trusted to enumerate
-        unresolved external changes."""
-        return self._degraded
+        """CORE-006: True when either trust condition is unresolved.
+
+        ``_load_corrupt`` -- persisted evidence was unreadable/malformed and
+        may be incomplete; stays fail-closed until an evidence-safe
+        reconciliation. ``_write_degraded`` -- the last durability write
+        failed; a later successful full save clears it (the whole in-memory
+        registry was rewritten durably). While either is True, collect
+        boundaries must fail closed -- the registry cannot be trusted to
+        enumerate unresolved external changes.
+        """
+        return self._load_corrupt or self._write_degraded
+
+    def load_untrusted(self) -> bool:
+        """CORE-006: True only when the persisted evidence was corrupt.
+
+        Distinct from ``is_degraded`` so callers can distinguish the two
+        trust failures where the distinction matters.
+        """
+        return self._load_corrupt
 
     def pending(self, root: str | None = None) -> list[PendingChange]:
         with self._lock:

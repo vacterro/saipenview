@@ -216,7 +216,7 @@ def normalize_config(raw: dict) -> dict:
     if v is None:
         cfg["scan_roots"] = None
     elif isinstance(v, list) and all(isinstance(x, str) for x in v):
-        cfg["scan_roots"] = v
+        cfg["scan_roots"] = dedupe(v)
     else:
         cfg["scan_roots"] = DEFAULTS["scan_roots"]
     # --- List keys ---
@@ -266,6 +266,15 @@ def normalize_config(raw: dict) -> dict:
     # Canonical normalizer: unknown keys are NOT preserved. load_config and
     # save_config already strip to known keys on disk; normalizing inline keeps
     # the in-memory config free of stray keys that could mask typos.
+    # CORE-003: canonicalize path fields as part of the ONE normalization step.
+    # Reused from load_config, save_config and _mutate_config so the same
+    # canonical form is used for persistence, live assignment and comparison.
+    if isinstance(cfg.get("scan_roots"), list):
+        cfg["scan_roots"] = dedupe(cfg["scan_roots"])
+    for key in ("pinned_roots", "hidden_roots"):
+        cfg[key] = dedupe(cfg.get(key))
+    if cfg.get("selected_root"):
+        cfg["selected_root"] = canonical(cfg["selected_root"])
     return cfg
 
 
@@ -283,17 +292,10 @@ def load_config() -> dict:
             stored = {}
         if isinstance(stored, dict):
             cfg.update({k: v for k, v in stored.items() if k in DEFAULTS})
-    # Normalize all known keys with type/range/closed-enum validation
+    # Normalize all known keys with type/range/closed-enum validation and
+    # path canonicalization (CORE-003: one canonical step, shared with
+    # save_config and _mutate_config so live/disk semantics cannot drift).
     cfg = normalize_config(cfg)
-    # Path canonicalization (T-138 layer 1): every persisted path is stored
-    # once, in canonical form, so a comparison later never has to wonder about
-    # slash/case/duplication drift.
-    if isinstance(cfg.get("scan_roots"), list):
-        cfg["scan_roots"] = dedupe(cfg["scan_roots"])
-    for key in ("pinned_roots", "hidden_roots"):
-        cfg[key] = dedupe(cfg.get(key))
-    if cfg.get("selected_root"):
-        cfg["selected_root"] = canonical(cfg["selected_root"])
     return cfg
 
 
@@ -305,20 +307,12 @@ def save_config(cfg: dict) -> None:
         path = config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         # Normalize before saving: every setter -> candidate -> normalize ->
-        # persist ensures the disk file is always valid (CORE-012).
+        # persist ensures the disk file is always valid (CORE-012). CORE-003:
+        # normalize_config is the ONE canonical step (including path
+        # canonicalization), so the persisted bytes match the live candidate.
         # Strip unknown keys so the persisted file only carries known config.
         known = {k: v for k, v in cfg.items() if k in DEFAULTS}
         merged = normalize_config(known)
-        # Canonicalize path fields on save too, so a hand-edited config or a
-        # browser-typed path that slipped past a setter is cleaned on write.
-        # An explicit empty scan_roots list stays an empty list (scan nothing);
-        # None stays None (auto).
-        if isinstance(merged.get("scan_roots"), list):
-            merged["scan_roots"] = dedupe(merged["scan_roots"])
-        for key in ("pinned_roots", "hidden_roots"):
-            merged[key] = dedupe(merged.get(key))
-        if merged.get("selected_root"):
-            merged["selected_root"] = canonical(merged["selected_root"])
         # Atomic write (unique temp + replace) -- W2-010: the temp name must be
         # unique per writer so two concurrent processes cannot collide on the
         # same .tmp path (one os.replace succeeds, the other gets

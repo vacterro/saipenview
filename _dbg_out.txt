@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "V:\___VAC\__K\__CODE\_PY\_SAIPENVIEW\_dbg_job.py", line 9, in <module>
-    from ctypes import wintypes, ctypes
-ImportError: cannot import name 'ctypes' from 'ctypes' (C:\Users\vac34\AppData\Local\Programs\Python\Python311\Lib\ctypes\__init__.py)

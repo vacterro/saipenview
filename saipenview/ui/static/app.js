@@ -2248,13 +2248,20 @@ window.onSaipenFileChanged = function(root, fileName, origin) {
     const roots = pendingFileChangedRoots;
     pendingFileChangedRoots = new Set();
     return window.SaiApi.get_status().then(status => {
-      registryRevision = status.revision;
+      // CORE-003: never acknowledge a revision before the projects it
+      // describes are on screen. Advancing registryRevision here would let a
+      // failed/lost get_projects() consume the new revision while the UI still
+      // shows the old model, making the next poll skip refresh_known forever.
       return window.SaiApi.get_projects().then(projects => {
-    rawProjects = projects;
+        rawProjects = projects;
         isScanned = status.scanned;
-    scheduleProjectListRender();
-    renderLinkedWorktrees();
+        scheduleProjectListRender();
+        renderLinkedWorktrees();
         if (selectedRoot && roots.has(selectedRoot)) loadDetail(selectedRoot);
+        // Only after the authoritative model is committed may the revision
+        // advance; a rejection above leaves the old revision so the next poll
+        // observes the mismatch and recovers via refresh_known().
+        registryRevision = status.revision;
       });
     });
   }).catch(() => {});
@@ -2278,8 +2285,19 @@ function scheduleProjectListRender() {
   });
 }
 
+// PERF-005: single-flight main poll. The chain
+// get_status -> refresh_known can take longer than POLL_MS when a refresh
+// reparses the registry, so without a guard every interval launched another
+// independent chain that duplicated parsing work and raced on revision
+// application. With the guard, at most one chain is in flight; a subsequent
+// tick while one is still running is skipped and the steady cadence resumes
+// once the outstanding chain settles.
+let _pollInFlight = false;
+
 function poll() {
   if (!windowVisible) return;
+  if (_pollInFlight) return;
+  _pollInFlight = true;
   window.SaiApi.get_status()
     .then(status => {
       const revision = status.revision;
@@ -2287,20 +2305,29 @@ function poll() {
       if (registryRevision !== revision || registryRevision === null) {
         return window.SaiApi.refresh_known(registryRevision).then(result => {
           const meta = result && !Array.isArray(result) ? result : null;
-          if (meta && meta.projects === null) {
-            registryRevision = meta.revision;
-            return window.SaiApi.get_changed_roots ? window.SaiApi.get_changed_roots().then(changedRoots => {
-              if (!changedRoots || !changedRoots.length) return;
-              return window.SaiApi.get_projects().then(projects => render(projects, status.scanned));
-            }) : null;
+          const projects =
+            meta && meta.projects !== null && meta.projects !== undefined
+              ? meta.projects
+              : (Array.isArray(result) ? result : null);
+          // W2-005: apply/render the authoritative response FIRST, then
+          // advance registryRevision. Never commit the new revision before
+          // the state it describes is on screen -- a lost/retried response
+          // would otherwise make the next poll skip the refresh forever.
+          if (projects !== null) {
+            render(projects, status.scanned);
           }
-          const projects = meta ? meta.projects : result;
           registryRevision = meta ? meta.revision : revision;
-          return window.SaiApi.get_changed_roots ? window.SaiApi.get_changed_roots().then(changedRoots => {
-            if (changedRoots && changedRoots.length) render(projects, status.scanned);
-            else { rawProjects = projects; isScanned = status.scanned; updateFlashSnapshot(rawProjects); }
-            if (selectedRoot && changedRoots && changedRoots.includes(selectedRoot)) loadDetail(selectedRoot);
-          }) : render(projects, status.scanned);
+          // Non-destructive changed-root snapshot (compat): refresh the
+          // selected detail when its root moved. Correctness no longer
+          // depends on draining get_changed_roots().
+          if (
+            meta &&
+            selectedRoot &&
+            Array.isArray(meta.changed_roots) &&
+            meta.changed_roots.indexOf(selectedRoot) !== -1
+          ) {
+            loadDetail(selectedRoot);
+          }
         });
       }
       return null;
@@ -2309,7 +2336,8 @@ function poll() {
     .catch(() => {
       const statusEl = document.getElementById("status");
       if (statusEl) statusEl.textContent = "poll failed";
-    });
+    })
+    .then(() => { _pollInFlight = false; });
   updateErrorBadge();
 }
 
@@ -4392,12 +4420,14 @@ function loadAgentRun(root, runId) {
 // stays on the slow registry poll; the live console below has its own
 // sub-second single-flight loop.
 function pollAgentsBadge() {
-  window.SaiApi.list_running_agents().then(agents => {
+  // PERF-004: use the lightweight count endpoint instead of
+  // list_running_agents which invokes psutil per running agent.
+  window.SaiApi.running_agent_count().then(count => {
     const badge = document.getElementById("runningAgentsBadge");
     if (badge) {
-      if (agents && agents.length > 0) {
+      if (count && count > 0) {
         badge.style.display = "inline-flex";
-        badge.textContent = "🤖 " + agents.length;
+        badge.textContent = "🤖 " + count;
       } else {
         badge.style.display = "none";
       }

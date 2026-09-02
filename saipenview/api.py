@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
@@ -36,6 +37,7 @@ from saipenview.parser import (
     load_log_tail,
     load_project,
     parse_board,
+    parse_frontmatter,
     update_state,
 )
 from saipenview.paths import canonical, dedupe, validate_file_path
@@ -52,6 +54,14 @@ from saipenview.scanner import (
 )
 from saipenview.textio import read_doc, read_doc_meta, write_doc
 from saipenview.watcher import SaipenWatcher
+
+
+def _canonical_or(root_str: str) -> str:
+    """Canonical path for membership checks; preserve raw value on failure."""
+    try:
+        return canonical(root_str)
+    except (OSError, ValueError):
+        return root_str
 
 _OUTBOX_STATUS_ORDER = {"ready": 0, "blocked": 1, "draft": 2, "stale": 3, "reviewed": 4}
 
@@ -234,11 +244,84 @@ def _project_sort_key(x: dict, order: str = "smart") -> tuple:
     )
 
 
+def _is_top_level_log_change(fname: str) -> bool:
+    """True only for the exact top-level ``.saipen/LOG.md`` change.
+
+    Watcher keys are full ``.saipen``-relative posix paths. A nested
+    SubSaipen/saitranslate LOG arrives as e.g. ``extensions/subs/<id>/LOG.md``
+    or ``saitranslate/LOG.md`` and must NOT take the parent project's
+    top-level LOG fast path -- it affects only the owning component and must
+    fall through to a full project reload (CORE-002).
+    """
+    if not isinstance(fname, str) or not fname:
+        return False
+    norm = fname.replace("\\", "/")
+    return norm.lower() == "log.md"
+
+
+# CORE-004: one canonical cache-row validator for BOTH the legacy cache.json
+# rows and the per-root sidecar records. A row that cannot satisfy the sort/
+# render consumers must be quarantined as cache corruption, never enter
+# ``_projects`` (where ``_project_sort_key`` would crash on its missing
+# fields and turn disposable cache state into an application-startup failure).
+_CACHE_REQUIRED_FIELDS: tuple[str, ...] = (
+    "root", "name", "phase", "is_pinned", "task",
+    "next_action", "blocker", "mtime", "updated",
+    "updated_kind",
+)
+
+
+def _valid_cache_row(row: object) -> bool:
+    """True when *row* can safely feed ``_project_sort_key`` and the UI.
+
+    Matches the structural contract the legacy loader enforces: every
+    required field present, ``root`` a non-empty string, ``is_pinned`` a
+    bool. A row missing any field is quarantined by the caller, never loaded.
+    """
+    if not isinstance(row, dict):
+        return False
+    if not all(k in row for k in _CACHE_REQUIRED_FIELDS):
+        return False
+    if not isinstance(row.get("root"), str) or not row["root"]:
+        return False
+    if not isinstance(row.get("is_pinned"), bool):
+        return False
+    if not isinstance(row.get("name"), str) or not isinstance(row.get("phase"), str):
+        return False
+    return True
+
+
+def _read_state_for_log_check(root: Path) -> dict[str, str] | None:
+    """Parse the project's STATE frontmatter for the STATE-aware LOG checks.
+
+    ``check_log(root, c, state)`` enforces the ``state.last_event.*``
+    invariants only when ``state`` is supplied; a missing or unreadable
+    STATE invalidates those cross-checks, so this returns None and the caller
+    falls through to a full reload rather than silently downgrading (CORE-001).
+    """
+    try:
+        state_path = Path(root) / ".saipen" / "STATE.md"
+        if not state_path.is_file():
+            return None
+        from saipenview.textio import read_doc
+
+        return parse_frontmatter(read_doc(state_path))
+    except (OSError, ValueError):
+        return None
+
+
 def _project_to_dict(
     project: ProjectStatus, pinned_roots: set[str] | None = None
 ) -> dict:
     root_str = str(project.root)
-    is_pinned = bool(pinned_roots and root_str in pinned_roots)
+    # CORE-003: pinned_roots are stored in canonical form (lowercase, resolved);
+    # rows still carry the path as discovered. Membership uses canonical keys
+    # so `V:\proj` and `v:\proj` agree on the pin state. canonical() resolves
+    # once per row; callers should already pass a canonical `pinned_roots` set.
+    is_pinned = bool(
+        pinned_roots
+        and _canonical_or(root_str) in pinned_roots
+    )
     # Graded on every row, not only on the detail pane. A project that is
     # illegal is illegal from the list -- if the verdict only appeared once you
     # clicked in, the one project you never click is the one that stays broken.
@@ -331,6 +414,10 @@ class Api:
         self._on_snap_hotkey_changed = None
         self._on_quit = None
         self._cache_file = config_path().parent / "cache.json"
+        # PERF-004: per-root durable records overlay legacy monolithic
+        # cache.json. The legacy file remains readable for migration and
+        # compatibility; changed roots are written to a sibling sidecar
+        # directory derived from current _cache_file.
         if self._cache_file.exists():
             try:
                 with open(self._cache_file, encoding="utf-8") as f:
@@ -346,16 +433,13 @@ class Api:
                 # consumers — not just a string "root". A row missing
                 # is_pinned, name, or phase would crash later in
                 # sorting/rendering before a fresh scan repairs it.
-                _REQUIRED_CACHE_FIELDS: tuple[str, ...] = (
-                    "root", "name", "phase", "is_pinned", "task",
-                    "next_action", "blocker", "mtime", "updated",
-                    "updated_kind",
-                )
+                # CORE-004: identical validation for legacy rows and sidecar
+                # records; centralize in _valid_cache_row so a malformed row
+                # can never escape the legacy path, the sidecar path, or any
+                # future cache input.
                 valid_rows = []
                 for p in candidate:
-                    if isinstance(p, dict) and all(
-                        k in p for k in _REQUIRED_CACHE_FIELDS
-                    ):
+                    if _valid_cache_row(p):
                         valid_rows.append(p)
                     else:
                         raise ValueError("cache contains an invalid project entry")
@@ -371,6 +455,7 @@ class Api:
 
         self._linked_worktrees: list[dict] = []
         self._refresh_changed_roots: list[str] = []  # PERF-002
+        self._load_cache_records()
         self._last_cache_snapshot = {p["root"]: p for p in self._projects}
         # PERF-008: in-memory ticket search index, keyed by root.
         self._ticket_index: dict[str, list[dict]] = {}
@@ -386,6 +471,13 @@ class Api:
         # already keeps _projects current, so an idle poll may short-circuit
         # and skip the re-parse entirely.
         self._full_refresh_pending = True
+        # W2-001: monotonic scan epoch. Every scan request, regardless of
+        # origin (manual rescan / set_scan_roots / browse_folder / periodic
+        # BackgroundScanner), captures the current epoch at request start
+        # and only commits via _set_cache if its captured epoch still
+        # matches. A newer request bumps the epoch, so any older in-flight
+        # publication is rejected before mutating the registry.
+        self._scan_epoch = 0
         # W2-007: registry revision. Bumped on every _projects mutation so a
         # refresh_known that reparsed outside the lock can detect a concurrent
         # _set_cache / file-event change and merge instead of clobbering.
@@ -404,6 +496,7 @@ class Api:
             delay=self._config.get("scan_delay_ms", 10) / 1000.0,
             extra_excludes=set(self._config.get("exclude_dirs", [])),
             on_scan_start=lambda: self._set_scanning(True),
+            epoch_source=lambda: self._scan_epoch,
         )
 
         # The watcher belongs to the Api/project registry, not the
@@ -541,14 +634,23 @@ class Api:
 
     @staticmethod
     def _file_affects_index(fname: str) -> bool:
-        """A change to this .saipen artifact moves the ticket index."""
-        low = fname.lower()
-        return (
-            "ticket" in low
-            or low.startswith("state")
-            or "board" in low
-            or "outbox" in low
-            or "manifest" in low
+        """A change to this .saipen artifact moves the ticket index.
+
+        CORE-002: nested SubSaipen/saitranslate protocol files arrive as full
+        ``.saipen``-relative posix paths (``extensions/subs/<id>/BOARD.md``,
+        ``extensions/subs/<id>/LOG.md``, ``saitranslate/LOG.md``). They are
+        parsed inputs (``load_project`` reads sub boards/log tails), so a
+        change to any tracked basename anywhere in the tree affects the row.
+        """
+        low = fname.replace("\\", "/").lower()
+        base = low.rsplit("/", 1)[-1]
+        return base in (
+            "state.md",
+            "board.md",
+            "log.md",
+            "outbox.md",
+            "manifest.md",
+            "ticket.md",
         )
 
     @staticmethod
@@ -575,12 +677,72 @@ class Api:
         ticket index, so both the index rebuild and the cache pickle+disk write
         are skipped -- no full re-parse of the ticket tree on every log line.
         """
+        # CORE-001 / CORE-002: when every changed file is the exact top-level
+        # ``LOG.md``, regrading this one project coherently is enough. Nested
+        # LOG files (``extensions/subs/<id>/LOG.md``, ``saitranslate/LOG.md``)
+        # do NOT match ``_is_top_level_log_change`` and therefore fall through
+        # to the full reload below -- a nested event must rebuild the
+        # affected SubSaipen/translate log_tail, not the parent LOG.
+        log_only_fast_path = bool(
+            changed_files
+            and all(_is_top_level_log_change(name) for name in changed_files)
+        )
+        if log_only_fast_path:
+            # CORE-001: a coherent regrade requires current STATE for the
+            # ``state.last_event.*`` invariants and current SubSaipen/translation
+            # for ``check_subs``. A missing/unreadable STATE invalidates the
+            # STATE-aware contract; fall through to the full reload rather than
+            # silently downgrading.
+            log_state = _read_state_for_log_check(Path(root))
+            if log_state is None:
+                log_only_fast_path = False
+
         pinned_set = set(self._config.get("pinned_roots") or [])
         try:
             proj = load_project(Path(root), with_git=False)
         except (OSError, subprocess.SubprocessError) as e:
             print(f"SAIPENVIEW: targeted refresh({root}) failed: {e}", file=sys.stderr)
             return
+
+        # CORE-001: a top-level LOG-only change is regraded coherently here,
+        # not by splicing the previous transport JSON. `check_project` runs
+        # the same STATE-aware contract (check_state, check_board, check_cross,
+        # check_log with current STATE, check_subs) as a cold grade, so
+        # verdict, exact fail/warn counts, retained findings, `findings_total`
+        # and `findings_truncated` are derived together from current bytes.
+        # The row's non-LOG fields are untouched; the LOG change cannot alter
+        # them. Nested LOG paths never reach here (log_only_fast_path is
+        # False for them), so nested component state is always rebuilt by the
+        # full reload below (CORE-002).
+        if log_only_fast_path:
+            if proj is None:
+                pass
+            else:
+                try:
+                    report = check_project(proj.root, proj.state, proj.subs).to_dict()
+                except Exception as e:  # noqa: BLE001 - a grader must never break the refresh
+                    print(
+                        f"SAIPENVIEW: targeted LOG refresh({root}) failed: {e}",
+                        file=sys.stderr,
+                    )
+                    return
+                with self._lock:
+                    current = next(
+                        (p for p in self._projects if p["root"] == root), None
+                    )
+                    if current is None:
+                        return
+                    replacement = dict(current)
+                    replacement["conformance"] = report
+                    replacement_list = [
+                        replacement if p["root"] == root else p
+                        for p in self._projects
+                    ]
+                    replacement_list.sort(
+                        key=lambda x: _project_sort_key(x, self._sort_order())
+                    )
+                    self._replace_projects_locked(replacement_list)
+                return
 
         # Phase 1: decide + mutate in-memory state under the lock.
         vanished = False
@@ -622,8 +784,10 @@ class Api:
             if not affects_cache:
                 return
         if affects_index:
-            # PERF-008: rebuild the ticket index for this root.
-            self._build_ticket_index(root)
+            # PERF-003: rebuild the ticket index for this root from the
+            # already-parsed Board, skipping BOARD file I/O.
+            pre_built = self._tickets_from_board(proj.board) if proj else None
+            self._build_ticket_index(root, pre_built=pre_built)
         if affects_cache:
             self._write_cache()
 
@@ -631,7 +795,10 @@ class Api:
         """Reconcile the watcher's watch set with the known projects (T-124)."""
         with self._lock:
             roots = [p["root"] for p in self._projects]
-        self._watcher.sync(roots)
+            scan_roots = list(self._config.get("scan_roots") or [])
+        # PERF-001: schedule by scan root (O(K) watchdog emitters) when scan
+        # roots are configured; fallback to per-project topology otherwise.
+        self._watcher.sync(roots, scan_roots)
 
     def _set_scanning(self, val: bool) -> None:
         with self._lock:
@@ -661,6 +828,7 @@ class Api:
             **self._scan_kwargs(),
             interval_seconds=self._config["rescan_interval"],
             on_scan_start=lambda: self._set_scanning(True),
+            epoch_source=lambda: self._scan_epoch,
         )
         if self._auto_scan:
             self.background_scanner.start()
@@ -700,6 +868,9 @@ class Api:
         force: bool = False,
         complete: bool = True,
         worktrees=None,
+        completed_roots=None,
+        unresolved_roots=None,
+        epoch: int | None = None,
     ) -> None:
         """Update the project cache from a scan result.
 
@@ -710,7 +881,17 @@ class Api:
         PERF-001/PERF-003: prefers worktrees passed through from the scan
         (ScanOutcome or the ``worktrees`` kwarg) so the linked-worktree walk
         is never done twice.
+
+        W2-001: *epoch* is the scan-request epoch captured at request start.
+        Only the newest still-authoritative request may publish; an older
+        in-flight scan that finished after a newer manual rescan carries a
+        stale epoch and is rejected here before any registry mutation.
         """
+        # W2-001: reject a publication from a superseded scan request BEFORE
+        # touching the registry. Authority is assigned at request start, so a
+        # slower older scan can never roll back a newer manual result.
+        if epoch is not None and epoch != self._scan_epoch:
+            return
         from saipenview.scanner import ScanOutcome
 
         completed_roots = []
@@ -723,6 +904,8 @@ class Api:
             unresolved_roots = getattr(projects, "unresolved_roots", []) or []
         else:
             project_list = projects
+            completed_roots = completed_roots or []
+            unresolved_roots = unresolved_roots or []
         pinned_set = set(self._config.get("pinned_roots") or [])
         # CORE-006: keep EVERY verified known project in the internal registry
         # regardless of visibility. Hidden roots are filtered only at the
@@ -795,17 +978,47 @@ class Api:
         # Fall back to a standalone walk only for non-scan callers.
         if worktrees is not None:
             with self._lock:
-                self._linked_worktrees = worktrees
+                if complete or not (completed_roots or unresolved_roots):
+                    self._linked_worktrees = list(worktrees)
+                else:
+                    effective_roots = [canonical(r) for r in completed_roots + unresolved_roots]
+                    unresolved_set = {canonical(r) for r in unresolved_roots}
+
+                    def _worktree_root_scope(item):
+                        return canonical(item.get("root", "")) if isinstance(item, dict) else ""
+
+                    def _in_scope(item, scan_root):
+                        item_root = _worktree_root_scope(item)
+                        try:
+                            return Path(item_root).is_relative_to(Path(scan_root)) or item_root == scan_root
+                        except (OSError, ValueError):
+                            return False
+
+                    preserved = []
+                    for item in self._linked_worktrees:
+                        matches = [r for r in effective_roots if _in_scope(item, r)]
+                        if not matches or canonical(max(matches, key=lambda r: len(Path(r).parts))) in unresolved_set:
+                            preserved.append(item)
+                    merged = {_worktree_root_scope(item): item for item in preserved}
+                    merged.update({_worktree_root_scope(item): item for item in worktrees})
+                    self._linked_worktrees = list(merged.values())
         else:
             self._scan_linked_worktrees()
         # Atomic write (temp + replace) via the shared helper -- a crash mid
         # plain write left truncated JSON that __init__'s json.load choked on.
         self._write_cache()
-        # PERF-008: rebuild ticket index for all current roots.
+        # PERF-003: rebuild ticket index for all current roots.  When the
+        # scan provided full ProjectStatus objects, extract indexes from the
+        # already-parsed Board data instead of re-reading BOARD files.
+        pre_built_indexes: dict[str, list[dict]] = {}
+        if project_list:
+            for p in project_list:
+                root_key = str(p.root)
+                pre_built_indexes[root_key] = self._tickets_from_board(p.board)
         with self._lock:
             roots = [p["root"] for p in self._projects]
         for r in roots:
-            self._build_ticket_index(r)
+            self._build_ticket_index(r, pre_built=pre_built_indexes.get(r))
         # PERF-006: a project removed authoritatively must not leave its
         # BOARD/LOG/staleness cache resident. Compute removed roots from the
         # old registry (captured before the replacement above) against the new.
@@ -822,16 +1035,20 @@ class Api:
                 evict_project_caches(removed)
         # Watch exactly what we know about (T-124).
         self._sync_watcher()
-        # PERF-002: a scan just replaced the cache with freshly-discovered
-        # roots; the next idle short-circuit must do one reconciliation parse
-        # so newly-found roots get their ticket index built here (in
-        # refresh_known), not only in the scanner path.
-        self._full_refresh_pending = True
+        # PERF-003: ScanOutcome rows were parsed by scanner._scan_one_root
+        # and their ticket indexes were built above. They are authoritative
+        # for this publication; forcing refresh_known() to reparse every row
+        # would duplicate the scan work. Keep the pending flag only for
+        # constructor startup, where rows came from durable cache rather than
+        # a fresh scan.
+        with self._lock:
+            self._full_refresh_pending = False
 
     def get_projects(self) -> list[dict]:
         hidden_set = set(self._config.get("hidden_roots") or [])
         with self._lock:
-            return [p for p in self._projects if p["root"] not in hidden_set]
+            # CORE-003: hidden_roots are canonical; rows carry raw paths.
+            return [p for p in self._projects if _canonical_or(p["root"]) not in hidden_set]
 
     def refresh_known(self, known_revision: int | None = None) -> list[dict] | dict:
         """Re-read the .saipen/ files of roots we ALREADY know about.
@@ -860,19 +1077,24 @@ class Api:
             self._full_refresh_pending = False
             prev_by_root = {p["root"]: p for p in self._projects}
             rev0 = self._registry_rev
-        if not full_refresh_was_pending and not self._scanning:
-            # Idle (no scan, no startup reconciliation pending): the watcher
-            # already maintains _projects, so skip the re-parse entirely
-            # (PERF-002 win). Do NOT clear _refresh_changed_roots here -- an
-            # unconsumed changed-set from a prior refresh_known must survive
-            # until get_changed_roots() explicitly drains it (T-39/W2-029).
+        # W2-005: when the caller supplied a stale known_revision, do one
+        # full reconciliation so the response carries everything needed to
+        # advance to the current revision. The idle short-circuit below only
+        # fires when the caller has no revision to compare (None) and no
+        # scan/startup is pending.
+        if (
+            not full_refresh_was_pending
+            and not self._scanning
+            and known_revision is not None
+            and known_revision == self._registry_rev
+        ):
             with self._lock:
                 result = {
                     "revision": self._registry_rev,
-                    "changed_roots": [],
+                    "changed_roots": list(self._refresh_changed_roots),
                     "projects": None,
                 }
-            return result if known_revision is not None else self.get_projects()
+            return result
         for attempt in range(3):
             if attempt > 0:
                 with self._lock:
@@ -966,6 +1188,135 @@ class Api:
             }
         return projects
 
+    def _cache_records_path(self) -> Path:
+        # Keep sidecar name separate from cache.json.* temporary-file patterns;
+        # shared-cache cleanup tools treat those names as atomic-write debris.
+        return self._cache_file.with_name(self._cache_file.stem + "_records")
+
+    def _cache_record_path(self, root: str) -> Path:
+        digest = hashlib.sha256(_canonical_or(root).encode("utf-8")).hexdigest()
+        return self._cache_records_path() / f"{digest}.json"
+
+    def _cache_tombstone_path(self, root: str) -> Path:
+        # W2-003: legacy. Tombstones were a second durable file per root and
+        # competed with the record file, so no operation ordering was
+        # crash-atomic (a crash could resurrect a deliberately removed
+        # project). Deletion is now an explicit state inside the single
+        # digest-named JSON file; this path remains only for reading/migrating
+        # pre-existing `.deleted` files.
+        digest = hashlib.sha256(_canonical_or(root).encode("utf-8")).hexdigest()
+        return self._cache_records_path() / f"{digest}.deleted"
+
+    _CACHE_DELETED_MARKER = "__saipen_deleted__"
+
+    def _load_cache_records(self) -> None:
+        """Load dirty-granular records over legacy cache.json.
+
+        W2-003: each canonical root has exactly ONE durable authority -- the
+        digest-named ``<digest>.json`` file whose payload is either the
+        complete validated row or the deleted marker
+        ``{"__saipen_deleted__": true}``. The file is written to a unique
+        same-directory temp and committed with ``os.replace``, so after any
+        crash the on-disk state is either the complete pre-transition state or
+        the complete post-transition state -- never a mixture. Deletion and
+        recreation are therefore both crash-atomic.
+
+        Legacy two-file state (record + ``.deleted`` tombstone, both written
+        by older versions) is migrated deterministically: a ``.deleted`` file
+        drops its row unless a newer record file wins by mtime. Those legacy
+        files are never written again.
+        """
+        try:
+            records_dir = self._cache_records_path()
+            if not records_dir.is_dir():
+                return
+            # A manually rewritten legacy cache.json is a fresh complete
+            # snapshot; stale sidecar records from an older cache generation
+            # must not override it. Sidecar writes update their directory mtime
+            # after the legacy migration base was created.
+            if self._cache_file.is_file():
+                try:
+                    # CORE-004: > (strictly newer) so sidecars still load when
+                    # cache.json and records_dir share the same mtime tick
+                    # (Windows fast creation). A manual rewrite of cache.json
+                    # produces a strictly newer mtime.
+                    if self._cache_file.stat().st_mtime_ns > records_dir.stat().st_mtime_ns:
+                        return
+                except (OSError, TypeError):
+                    return
+            by_root = {row["root"]: row for row in self._projects}
+
+            # PERF-002: single-pass parse -- each sidecar is read and
+            # JSON-parsed exactly once.  Parsed rows are stored in a
+            # digest-keyed index for O(1) lookup; legacy tombstone
+            # comparison uses the same pre-computed digest instead of
+            # re-hashing every root on every deletion.
+            parsed: dict[str, dict] = {}  # digest -> validated row
+            dropped_digests: set[str] = set()
+            for record in records_dir.glob("*.json"):
+                try:
+                    row = json.loads(record.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if (
+                    isinstance(row, dict)
+                    and row.get(self._CACHE_DELETED_MARKER) is True
+                ):
+                    dropped_digests.add(record.stem)
+                    continue
+                if not _valid_cache_row(row):
+                    continue
+                digest = hashlib.sha256(
+                    _canonical_or(row["root"]).encode("utf-8")
+                ).hexdigest()
+                if record.stem != digest:
+                    continue
+                parsed[record.stem] = row
+
+            # Legacy `.deleted` tombstones: apply only when no newer record
+            # file claims the same digest (mtime wins for recreated roots).
+            tombstone_mtimes: dict[str, int] = {}
+            for marker in records_dir.glob("*.deleted"):
+                try:
+                    tombstone_mtimes[marker.stem] = marker.stat().st_mtime_ns
+                except OSError:
+                    continue
+            for digest, tomb_mtime in tombstone_mtimes.items():
+                record = records_dir / f"{digest}.json"
+                if record.is_file():
+                    try:
+                        if record.stat().st_mtime_ns > tomb_mtime:
+                            continue  # newer record wins (recreated)
+                    except OSError:
+                        continue
+                dropped_digests.add(digest)
+
+            # Build canonical-path -> root-key index for O(1) old-row
+            # lookup when applying surviving records.
+            canon_index: dict[str, str] = {
+                _canonical_or(root): root for root in list(by_root)
+            }
+
+            # Drop rows claimed by tombstones or deleted markers.
+            for digest in dropped_digests:
+                for root_key in list(by_root):
+                    if hashlib.sha256(
+                        _canonical_or(root_key).encode("utf-8")
+                    ).hexdigest() == digest:
+                        by_root.pop(root_key, None)
+
+            # Apply surviving parsed records (each was already read once).
+            for row in parsed.values():
+                canon = _canonical_or(row["root"])
+                old_key = canon_index.get(canon)
+                if old_key is not None:
+                    by_root.pop(old_key, None)
+                by_root[row["root"]] = row
+            self._projects = list(by_root.values())
+            self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
+        except OSError:
+            return
+
     def _write_cache(self) -> None:
         """Persist changed project records without losing another writer's rows.
 
@@ -987,6 +1338,61 @@ class Api:
                 dirty.update(self._dirty_roots)
                 deleted = set(previous) - set(current)
                 deleted.update(self._cache_deleted_roots)
+
+            # PERF-004: no-op transactions perform zero durable I/O. Once a
+            # legacy cache exists (or sidecar records were created), persist
+            # only dirty roots and deletion tombstones; never rewrite the
+            # complete registry image.
+            if not dirty and not deleted:
+                return
+            if self._cache_file.exists() or self._cache_records_path().exists():
+                with _cache_lock, _cache_file_lock(self._cache_file):
+                    self._cache_records_path().mkdir(parents=True, exist_ok=True)
+                    for root in deleted:
+                        # W2-003: crash-atomic deletion. One durable authority
+                        # per canonical root -- the <digest>.json file whose
+                        # payload is either the validated row or the explicit
+                        # deleted marker. Written to a unique same-directory
+                        # temp and committed with os.replace so a crash leaves
+                        # the on-disk state either fully pre- or fully
+                        # post-transition; record + tombstone two-file races
+                        # that allowed resurrection are impossible.
+                        state_path = self._cache_record_path(root)
+                        tmp_path = state_path.with_name(
+                            state_path.name + f".del.{os.getpid()}.{time.monotonic_ns()}"
+                        )
+                        tmp_path.write_text(
+                            json.dumps(
+                                {self._CACHE_DELETED_MARKER: True},
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            encoding="utf-8",
+                        )
+                        os.replace(tmp_path, state_path)
+                        # Migrate legacy tombstone if present (harmless no-op
+                        # when absent).
+                        self._cache_tombstone_path(root).unlink(missing_ok=True)
+                    for root in dirty:
+                        if root not in current:
+                            continue
+                        record_path = self._cache_record_path(root)
+                        tmp_path = record_path.with_name(
+                            record_path.name + f".tmp.{os.getpid()}.{time.monotonic_ns()}"
+                        )
+                        tmp_path.write_text(
+                            json.dumps(current[root], ensure_ascii=False, separators=(",", ":")),
+                            encoding="utf-8",
+                        )
+                        os.replace(tmp_path, record_path)
+                        # Removing a legacy tombstone is safe; the new
+                        # single-state file is already authoritative.
+                        self._cache_tombstone_path(root).unlink(missing_ok=True)
+                with self._lock:
+                    self._last_cache_snapshot = current
+                    self._dirty_roots.clear()
+                    self._cache_deleted_roots.clear()
+                return
 
             with _cache_lock, _cache_file_lock(self._cache_file):
                 disk_base_valid = False
@@ -1019,6 +1425,12 @@ class Api:
                             disk_rows[root] = current[root]
                 rows = list(disk_rows.values())
                 body = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+                # CORE-004: advance delta bookkeeping ONLY after the durable
+                # os.replace succeeds, so a transient failure never suppresses
+                # a future retry of the same delta (an earlier write that
+                # dropped its bookkeeping would silently lose that delta
+                # forever). The bookkeeping itself lives under self._lock
+                # but the disk commit is outside the lock on purpose.
                 fd, tmp_name = tempfile.mkstemp(
                     dir=str(self._cache_file.parent), prefix="cache.json."
                 )
@@ -1032,13 +1444,10 @@ class Api:
                         tmp_path.unlink(missing_ok=True)
                     except OSError:
                         pass
-
-            # CORE-004: durable commit succeeded -- now advance the delta
-            # bookkeeping so a transient failure above never suppresses retries.
-            with self._lock:
-                self._last_cache_snapshot = current
-                self._dirty_roots.clear()
-                self._cache_deleted_roots.clear()
+                with self._lock:
+                    self._last_cache_snapshot = current
+                    self._dirty_roots.clear()
+                    self._cache_deleted_roots.clear()
         except (OSError, ValueError) as e:
             print(
                 f"SAIPENVIEW: failed to write cache at {self._cache_file}: {e}",
@@ -1101,6 +1510,10 @@ class Api:
             self._linked_worktrees = []
 
     def rescan(self) -> list[dict]:
+        # W2-001: bump the scan epoch so any older background publication
+        # becomes stale and is rejected by _set_cache. Authority is assigned
+        # at request start, not by completion timestamps.
+        epoch = self._next_scan_epoch()
         self._set_scanning(True)
         projects = scan(
             self._config["scan_roots"],
@@ -1110,8 +1523,16 @@ class Api:
         )
         # _set_cache owns the linked-worktree scan (T-165): calling it here too
         # would run the same worktree walk twice per rescan.
-        self._set_cache(projects, force=True)
+        self._set_cache(projects, force=True, epoch=epoch)
         return self.get_projects()
+
+    def _next_scan_epoch(self) -> int:
+        # W2-001: every scan request -- manual or background -- captures an
+        # epoch at start; the matching _set_cache commits only if its epoch
+        # is still the current one. A newer request bumps this counter first,
+        # so a slower older in-flight result becomes stale and is dropped.
+        self._scan_epoch += 1
+        return self._scan_epoch
 
     def get_wiki_pages(self) -> list[dict]:
         """Return available wiki pages as [{id, title, filename}, ...]."""
@@ -1244,13 +1665,17 @@ class Api:
     def get_config(self) -> dict:
         return dict(self._config)
 
-    def _mutate_config(self, fn) -> None:
+    def _mutate_config(self, fn) -> object:
         """Mutate, normalize, and persist config as one transaction.
 
         W2-003: the mutation is staged on a COPY. Only after the candidate is
         durably persisted (save_config) is it assigned to ``self._config``.
         A persistence failure raises and leaves the live config, disk, and any
         dependent runtime state unchanged at their previous consistent value.
+
+        CORE-004: returns the callback's return value so callers that need
+        the persisted value (e.g. toggle_pin's pinned list derived inside the
+        lock) can get it from the committed transaction.
         """
         from copy import deepcopy
 
@@ -1258,11 +1683,12 @@ class Api:
 
         with self._lock:
             candidate = normalize_config(deepcopy(self._config))
-            fn(candidate)
+            result = fn(candidate)
             candidate = normalize_config(candidate)
             save_config(candidate)
             self._config = candidate
             self._verified_roots_cache = {"key": None, "list": [], "set": set()}
+            return result
 
     def save_view_config(self, settings: dict) -> dict:
         # W2-005: the entire read-modify-normalize-replace sequence is one
@@ -1270,7 +1696,6 @@ class Api:
         # (e.g. search_query from poll and zoom_level from user) now see
         # each other's mutations instead of losing them.
         from saipenview.config import normalize_config
-        from saipenview.paths import canonical, dedupe
 
         _VIEW_KEYS = (
             "filter_phase",
@@ -1306,16 +1731,9 @@ class Api:
             for k in _VIEW_KEYS:
                 if k in settings:
                     cfg[k] = settings[k]
+            # CORE-003: normalize_config owns path canonicalization; no
+            # second transform here that could drift from load/save.
             normalized = normalize_config(cfg)
-            if isinstance(normalized.get("scan_roots"), list):
-                normalized["scan_roots"] = dedupe(normalized["scan_roots"])
-            for key in ("pinned_roots", "hidden_roots"):
-                normalized[key] = dedupe(normalized.get(key))
-            if normalized.get("selected_root"):
-                try:
-                    normalized["selected_root"] = canonical(normalized["selected_root"])
-                except (OSError, ValueError):
-                    normalized["selected_root"] = None
             cfg.clear()
             cfg.update(normalized)
 
@@ -1342,16 +1760,32 @@ class Api:
         return {"ok": True, "config": self.get_config()}
 
     def toggle_pin(self, root_str: str) -> list[dict]:
-        pinned = list(self._config.get("pinned_roots") or [])
-        if root_str in pinned:
-            pinned.remove(root_str)
-        else:
-            pinned.append(root_str)
-        self._mutate_config(lambda cfg: cfg.__setitem__("pinned_roots", pinned))
+        # CORE-004: the read-modify-write must happen INSIDE the locked
+        # mutation callback. Deriving `pinned` from self._config before the
+        # transaction lets a concurrent toggle's committed update be
+        # overwritten by this stale pre-lock snapshot (lost update).
+        # The callback returns the persisted pinned list (single locked
+        # read-modify-write inside _mutate_config).
+        # Canonicalize the target: pinned_roots are stored in canonical
+        # form (CORE-003), and toggle must match a stored entry exactly.
+        from saipenview.paths import canonical
+
+        target = canonical(root_str)
+
+        def _toggle(cfg):
+            pinned = list(cfg.get("pinned_roots") or [])
+            if target in pinned:
+                pinned.remove(target)
+            else:
+                pinned.append(target)
+            cfg["pinned_roots"] = pinned
+            return pinned
+
+        pinned = self._mutate_config(_toggle)
         with self._lock:
             changed = False
             for p in self._projects:
-                pinned_value = p["root"] in pinned
+                pinned_value = _canonical_or(p["root"]) in pinned
                 if p.get("is_pinned") != pinned_value:
                     p["is_pinned"] = pinned_value
                     changed = True
@@ -1361,20 +1795,38 @@ class Api:
             return list(self._projects)
 
     def hide_project(self, root_str: str) -> list[dict]:
-        hidden = list(self._config.get("hidden_roots") or [])
-        if root_str not in hidden:
-            hidden.append(root_str)
-        self._mutate_config(lambda cfg: cfg.__setitem__("hidden_roots", hidden))
+        # CORE-004: derive the hidden list inside the locked mutation.
+        from saipenview.paths import canonical
+
+        target = canonical(root_str)
+
+        def _hide(cfg):
+            hidden = list(cfg.get("hidden_roots") or [])
+            if target not in hidden:
+                hidden.append(target)
+            cfg["hidden_roots"] = hidden
+            return hidden
+
+        self._mutate_config(_hide)
         # CORE-006: hiding is a visibility toggle only. The project stays in the
         # internal registry and under the watcher; get_projects() filters it from
         # the UI. No row is deleted, so unhide needs no rescan.
         return self.get_projects()
 
     def unhide_project(self, root_str: str) -> list[dict]:
-        hidden = list(self._config.get("hidden_roots") or [])
-        if root_str in hidden:
-            hidden.remove(root_str)
-        self._mutate_config(lambda cfg: cfg.__setitem__("hidden_roots", hidden))
+        # CORE-004: derive the hidden list inside the locked mutation.
+        from saipenview.paths import canonical
+
+        target = canonical(root_str)
+
+        def _unhide(cfg):
+            hidden = list(cfg.get("hidden_roots") or [])
+            if target in hidden:
+                hidden.remove(target)
+            cfg["hidden_roots"] = hidden
+            return hidden
+
+        self._mutate_config(_unhide)
         return self.get_projects()
 
     def get_hidden_projects(self) -> list[dict]:
@@ -2031,8 +2483,9 @@ class Api:
         self._mutate_config(lambda cfg: cfg.__setitem__("scan_roots", roots))
         self.background_scanner.stop()
         self._set_scanning(True)
+        epoch = self._next_scan_epoch()
         projects = scan(**self._scan_kwargs())
-        self._set_cache(projects, force=True)
+        self._set_cache(projects, force=True, epoch=epoch)
         self._replace_background_scanner()
         return self.get_projects()
 
@@ -2080,22 +2533,28 @@ class Api:
 
         folder_str = canonical(folder)
 
-        existing = self._config.get("scan_roots")
-        if existing is None:
-            # was "auto all local drives" -- make that explicit so adding a folder
-            # expands the source set instead of silently replacing it
-            existing = _auto_roots()
-        # Keep stale roots (T-165): a root whose drive is currently missing is
-        # quarantined by scan(), not forgotten here -- dropping it on every
-        # browse would defeat the auto-repick-on-return invariant T-138 built.
-        # dedupe() canonicalises and collapses case/slash variants.
-        existing = dedupe(existing)
-        if folder_str not in existing:
-            existing.append(folder_str)
-        self._mutate_config(lambda cfg: cfg.__setitem__("scan_roots", existing))
+        # CORE-004: derive and merge scan_roots inside the locked mutation.
+        def _add_scan_root(cfg):
+            existing = cfg.get("scan_roots")
+            if existing is None:
+                # was "auto all local drives" -- make that explicit so adding a
+                # folder expands the source set instead of silently replacing it
+                existing = _auto_roots()
+            # Keep stale roots (T-165): a root whose drive is currently missing
+            # is quarantined by scan(), not forgotten here -- dropping it on
+            # every browse would defeat the auto-repick-on-return invariant
+            # T-138 built. dedupe() canonicalises and collapses case/slash
+            # variants (normalize_config runs again before persist).
+            existing = dedupe(existing)
+            if folder_str not in existing:
+                existing.append(folder_str)
+            cfg["scan_roots"] = existing
+
+        self._mutate_config(_add_scan_root)
         self._set_scanning(True)
+        epoch = self._next_scan_epoch()
         projects = scan(**self._scan_kwargs())
-        self._set_cache(projects, force=True)
+        self._set_cache(projects, force=True, epoch=epoch)
         self._replace_background_scanner()
 
         return self.get_projects()
@@ -2104,6 +2563,8 @@ class Api:
         # W2-022: subscribe to EventBus here, after full construction.
         # CORE-007: bind the generation at subscription time so a callback
         # captured by EventBus's pre-stop snapshot sees the old gen and aborts.
+        # CORE-005: restartable -- stop() resets _event_subscribed, so a second
+        # start binds a fresh generation-aware wrapper (no duplicate subs).
         if not self._event_subscribed:
             gen = self._stop_gen
 
@@ -2113,6 +2574,9 @@ class Api:
             self._wrapped_file_changed = _wrapped_file_changed
             event_bus.subscribe("saipen.project_changed", _wrapped_file_changed)
             self._event_subscribed = True
+        # CORE-005: a stopped watcher cannot be revived in place -- give it a
+        # fresh Observer, then re-watch the currently known roots.
+        self._watcher.revive()
         self._auto_scan = self._config.get("auto_scan", True)
         if self._auto_scan:
             self._set_scanning(True)
@@ -2121,6 +2585,7 @@ class Api:
             # so the eager prewalk here is redundant. Let the first scan
             # result establish both projects and worktrees.
             self.background_scanner.start()
+        self._sync_watcher()
 
     def stop(self) -> None:
         # W2-011: bump generation BEFORE cancelling timers or unsubscribing.
@@ -2154,6 +2619,15 @@ class Api:
             "saipen.project_changed",
             getattr(self, "_wrapped_file_changed", self._on_file_changed),
         )
+        # T-536: clear all remaining subscribers so a stopped Api never
+        # retains dangling callbacks. Without this, subscriber lists grow
+        # across start/stop cycles in tests and leak memory in production
+        # when the app is embedded (service mode restarts).
+        event_bus.clear()
+        # CORE-005: stop is idempotent, but restart must subscribe a fresh
+        # generation wrapper. Leaving this true made start() believe its
+        # callback still existed after unsubscribe.
+        self._event_subscribed = False
 
     def set_auto_scan(self, enabled: bool) -> dict:
         # W2-003: persist first, then apply the runtime start/stop. A failed
@@ -2320,12 +2794,44 @@ class Api:
         except OSError:
             return []
 
-    def _build_ticket_index(self, root: str) -> None:
-        """PERF-008: build in-memory ticket search index for one root.
+    @staticmethod
+    def _tickets_from_board(board) -> list[dict]:
+        """PERF-003: extract ticket index entries from an already-parsed Board.
 
-        Called after project load/refresh; avoids re-reading BOARD files on
-        every search query.
+        Avoids re-reading and re-parsing BOARD.md when the caller already
+        holds the parsed ``ProjectStatus.board``.
         """
+        section_map = {
+            "doing": "DOING",
+            "todo": "TODO",
+            "done": "DONE",
+            "blocked": "BLOCKED",
+        }
+        tickets: list[dict] = []
+        for attr, section in section_map.items():
+            for t in getattr(board, attr, []):
+                tickets.append(
+                    {
+                        "id": t.ticket_id,
+                        "desc": t.description,
+                        "section": section,
+                    }
+                )
+        return tickets
+
+    def _build_ticket_index(
+        self, root: str, *, pre_built: list[dict] | None = None
+    ) -> None:
+        """PERF-003/008: build in-memory ticket search index for one root.
+
+        When *pre_built* is supplied (already-extracted from a parsed Board),
+        skip all BOARD file I/O entirely.  Otherwise fall back to reading
+        sub/translate boards from disk.
+        """
+        if pre_built is not None:
+            with self._lock:
+                self._ticket_index[root] = pre_built
+            return
         tickets: list[dict] = []
         try:
             board_path = Path(root) / ".saipen" / "BOARD.md"
@@ -2737,6 +3243,15 @@ class Api:
     def list_running_agents(self) -> list[dict]:
         """Return status dicts for all tracked agent processes."""
         return self._process_manager.list_running()
+
+    def running_agent_count(self) -> int:
+        """PERF-004: count live agents without psutil introspection.
+
+        The toolbar badge only needs a count. ``list_running_agents``
+        invokes ``get_status()`` per agent (cpu_percent, memory_info),
+        which is O(N) process-API work for a single toolbar number.
+        """
+        return self._process_manager.count_running()
 
     def get_agent_history(self, root: str, limit: int = 20) -> list[dict]:
         """Past agent runs for a project, newest first, across restarts."""

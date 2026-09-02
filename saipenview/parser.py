@@ -359,7 +359,10 @@ def ticket_transition_error(
         agent = saio.agent_for(root)
     except saio.SaioUnavailable as exc:
         return str(exc)
-    ops = saio.engine(root)["operations"]
+    try:
+        ops = saio.engine(root)["operations"]
+    except saio.SaioUnavailable as exc:
+        return str(exc)
     with get_coordinator().locked(root):
         if action == "start":
             # Public dry-run: the same claim authority the mutation uses.
@@ -1314,7 +1317,10 @@ def collect_outbox_entry(
                     "unexplained external change(s) block collect: "
                     + "; ".join(c.rel_path for c in unresolved[:5]),
                 )
-            recovery = saio.recovery_status(root)
+            try:
+                recovery = saio.recovery_status(root)
+            except saio.SaioUnavailable as exc:
+                return _refuse_dict(saio.SAIO_UNAVAILABLE, str(exc))
             if recovery.get("blocked"):
                 return _refuse_dict(
                     "RECOVERY_REQUIRED",

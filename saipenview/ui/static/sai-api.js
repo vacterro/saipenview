@@ -56,6 +56,7 @@
     "hide_project",
     "launch_agent",
     "list_running_agents",
+    "running_agent_count",
     "maximize_window",
     "minimize_window",
     "move_by",

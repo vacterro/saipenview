@@ -170,7 +170,14 @@ def engine(root: Path) -> dict[str, object]:
         # A different home was already loaded
         existing = next(iter(_ENGINE_CACHE.keys()))
         if existing.lower() != key.lower():
-            raise RuntimeError(
+            # W2-004: the multi-home refusal must use the same structured
+            # exception as every other load failure. Callers such as
+            # WriteCoordinator.recovery_status / Api.get_project_detail /
+            # ticket_transition_error already catch SaioUnavailable and map
+            # it to the documented SAIO_UNAVAILABLE refusal; a raw RuntimeError
+            # escaped that boundary and turned a legitimate fail-closed
+            # condition into an uncaught RPC failure.
+            raise SaioUnavailable(
                 f"MULTI-HOME CONTAMINATION BLOCKED: Process already loaded saipen_engine "
                 f"from {existing}. Cannot concurrently load distinct home {key} "
                 f"because Python sys.modules global identity is module-name based."

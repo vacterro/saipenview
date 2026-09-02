@@ -303,6 +303,11 @@ class SingleInstanceGuard:
 
     def stop(self):
         self._stop_event.set()
+        # T-537: join all listener threads so their sockets are fully closed
+        # before the process exits. Without this, the OS may hold the port
+        # in TIME_WAIT after the guard releases it, blocking the next launch.
+        for t in list(self._threads):
+            t.join(timeout=2)
         if self._ownership is not None:
             _release_process_lock(self._ownership)
             self._ownership = None

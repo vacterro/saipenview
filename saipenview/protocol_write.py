@@ -373,10 +373,14 @@ class WriteCoordinator:
         root = Path(root)
         for rel in rel_paths:
             rel_text = str(rel).replace("\\", "/")
+            # W2-001: watcher publishes the full canonical relative path,
+            # including nested SubSaipen files. Never collapse to basename:
+            # extensions/subs/a/BOARD.md and extensions/subs/b/BOARD.md are
+            # independent self-write identities.
             file_key = (
                 rel_text[len(".saipen/") :]
                 if rel_text.startswith(".saipen/")
-                else rel_text.split("/")[-1]
+                else rel_text
             )
             if fingerprints is not None and rel_text in fingerprints:
                 fp = fingerprints[rel_text]

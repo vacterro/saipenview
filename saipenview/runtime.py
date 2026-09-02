@@ -180,6 +180,8 @@ from saipenview.events import event_bus
 from saipenview.paths import canonical_key
 from saipenview.sessions import SessionStore
 
+_control_run_ids = itertools.count(1)
+
 # Maximum lines to keep in the per-process output buffer.
 DEFAULT_OUTPUT_BUFFER_SIZE = 5000
 
@@ -351,7 +353,15 @@ class AgentProcess:
     # Set once the SessionStore has a transcript open for this run. None means
     # history could not be written (disk full, read-only _data/) -- the run
     # still proceeds, it just leaves no record.
+    # W2-002: run_id is the SessionStore ID when one exists, or the
+    # control_id if sessions failed. The control_id is always non-null so
+    # stale-run guards never skip their check (the old nullable run_id let
+    # a delayed kill with run_id=None kill a second run on the same root).
     run_id: str | None = None
+    # W2-002: immutable live-process identity, independent of SessionStore.
+    # Minted at construction so a disk/history failure never erases the
+    # generation token that protects reused roots.
+    control_id: str = ""
     # Per-process output lock (T-166): the reader thread appends while
     # get_output/get_status read, and _line_count must never be torn.
     _io_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -468,6 +478,8 @@ class ProcessManager:
     mutation; an app transaction that is mid-flight refuses the launch. The
     reservation is held from the launch decision until the process finalizes.
     """
+
+    _MAX_FINALIZED = 50  # PERF-004: eviction bound for terminal entries
 
     def __init__(
         self,
@@ -590,6 +602,10 @@ class ProcessManager:
                 instruction=instruction,
                 process=proc,
                 output_lines=deque(maxlen=self._buffer_size),
+                # W2-002: always mint a non-null control_id so the stale-run
+                # guard never skips its check. SessionStore may provide a
+                # different ID; run_id is set below.
+                control_id=f"ctrl-{next(_control_run_ids)}-{proc.pid}",
             )
 
             record = self.sessions.start(
@@ -599,8 +615,9 @@ class ProcessManager:
                 instruction,
                 pid=proc.pid,
             )
-            if record is not None:
-                ap.run_id = record.run_id
+            # W2-002: run_id is always non-null. Use the session's ID when
+            # persistence succeeded, otherwise fall back to the control_id.
+            ap.run_id = record.run_id if record is not None else ap.control_id
 
             with self._lock:
                 self._processes[key] = ap
@@ -703,22 +720,34 @@ class ProcessManager:
         # slow-to-die process remains visible to list_running/stop_all.
         with ap._io_lock:
             ap._kill_intent = True
+        # W2-002: capture a stable local reference. A concurrent reader
+        # thread can complete _finalize -> _compact_terminal between wait
+        # calls and set ap.process = None, so repeated ap.process.* reads
+        # here would raise AttributeError. The captured local stays valid
+        # for the duration of this method.
+        proc = ap.process
+        if proc is None:
+            # The reader thread already finalized the process; nothing to
+            # terminate, but the kill intent is recorded so subsequent
+            # _finalize (if any) still reports "killed".
+            self._finalize(ap, requested_status="killed")
+            return {"ok": True}
         try:
-            ap.process.terminate()
+            proc.terminate()
             # Give it 3s to die gracefully, then force kill.
             try:
-                ap.process.wait(timeout=3)
+                proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                ap.process.kill()
+                proc.kill()
                 try:
-                    ap.process.wait(timeout=2)
+                    proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     # Killed but the OS has not reaped it yet. That is not a
                     # failed kill -- it is a slow reap -- so do not roll the
                     # status back to running; the finalizer still runs and the
                     # wait above never leaks out of a "raises nothing" method.
                     print(
-                        f"SAIPENVIEW: process {ap.process.pid} slow to reap after kill",
+                        f"SAIPENVIEW: process {proc.pid} slow to reap after kill",
                         file=sys.stderr,
                     )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -744,7 +773,20 @@ class ProcessManager:
         process is still alive after the wait window, a background reaper
         thread handles the delayed release so that ownership is never
         released while the agent is still running.
+
+        W2-002: capture a stable ``proc`` reference BEFORE the first lock
+        check. A concurrent ``_compact_terminal`` (via ``_on_reader_eof``)
+        may set ``ap.process = None`` between the lock release and the
+        ``proc.wait()`` / ``proc.returncode`` reads; the captured local
+        prevents the AttributeError.
         """
+        proc = ap.process  # W2-002: stable reference before lock check
+        if proc is None:
+            # _compact_terminal already detached; finalize already ran.
+            # Mark as finalized defensively so _evict_finalized can drop it.
+            with ap._finalize_lock:
+                ap._finalized = True
+            return
         with ap._finalize_lock:
             if ap._finalized:
                 return
@@ -756,7 +798,7 @@ class ProcessManager:
         # Wait for proven death. Give it a reasonable window, but do NOT
         # give up if it takes longer -- instead schedule a background reaper.
         try:
-            ap.process.wait(timeout=5)
+            proc.wait(timeout=5)
         except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
             pass
 
@@ -764,7 +806,7 @@ class ProcessManager:
             if ap._finalized:
                 return
 
-        exit_code = ap.process.returncode
+        exit_code = proc.returncode
         if requested_status is not None:
             status = requested_status
         elif ap._kill_intent:
@@ -792,7 +834,7 @@ class ProcessManager:
         # the very objects that can keep the inherited stdout pipe open past
         # the bounded drain window. Closing early lets the pipe reach EOF
         # sooner, so late transcript data is less likely to be deferred.
-        _close_saipen_job_handle(ap.process)
+        _close_saipen_job_handle(proc)
 
         # Drain the output reader before closing the transcript: the reader
         # thread may still be appending the tail of stdout when the OS-exit
@@ -919,6 +961,31 @@ class ProcessManager:
         # Release the Popen object so its file descriptors and OS handles
         # are reclaimed promptly rather than waiting for GC.
         ap.process = None  # type: ignore[assignment]
+        # PERF-004: evict old finalized entries so _processes stays bounded.
+        self._evict_finalized()
+
+    def _evict_finalized(self) -> None:
+        """PERF-004: drop old finalized entries so _processes stays bounded.
+
+        After compaction, finalized entries are lightweight (cached totals
+        only), but they accumulate indefinitely. Keep at most
+        ``_MAX_FINALIZED`` entries, evicting the oldest by ``finished_at``.
+        """
+        with self._lock:
+            finalized = [
+                (key, ap)
+                for key, ap in self._processes.items()
+                if ap.status != "running"
+            ]
+            if len(finalized) <= self._MAX_FINALIZED:
+                return
+            # Sort oldest first so we evict the oldest.
+            finalized.sort(
+                key=lambda pair: pair[1].finished_at or datetime.min.replace(tzinfo=timezone.utc)
+            )
+            to_remove = finalized[: len(finalized) - self._MAX_FINALIZED]
+            for key, _ap in to_remove:
+                self._processes.pop(key, None)
 
     def send_input(
         self, project_root: str, text: str, expected_run_id: str | None = None
@@ -1108,6 +1175,18 @@ class ProcessManager:
             ]
         return [{**self.get_status(r), "root": r} for r in roots]
 
+    def count_running(self) -> int:
+        """PERF-004: count live agents without psutil introspection.
+
+        The badge only needs a count; calling get_status() for every
+        agent invokes cpu_percent() and memory_info() which is O(N)
+        process-API work for a toolbar badge.
+        """
+        with self._lock:
+            return sum(
+                1 for ap in self._processes.values() if ap.status == "running"
+            )
+
     def is_running(self, project_root: str) -> bool:
         """True when a Core agent process is live (or launching) for *root*.
 
@@ -1138,8 +1217,15 @@ class ProcessManager:
         reader reaching EOF never finalize, so a child that closed its output
         handles but is still alive is neither marked finished nor force-killed.
         """
+        # W2-002: capture a stable local reference. A concurrent kill() can
+        # win finalization and _compact_terminal can set ap.process = None
+        # before this wait runs; the captured local stays valid and the
+        # exactly-once guard in _finalize makes the finalize a no-op.
+        proc = ap.process
+        if proc is None:
+            return
         try:
-            ap.process.wait()
+            proc.wait()
         except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
             pass
         self._finalize(ap)

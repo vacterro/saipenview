@@ -181,12 +181,29 @@ class SessionStore:
     to WRITE history must never take down the agent run it is recording.
     """
 
+    _MAX_PENDING_FINAL = 100  # W2-004: cap for retry queue
+
     def __init__(self, base_dir: Path | None = None) -> None:
         self._dir = Path(base_dir) if base_dir else sessions_dir()
         self._open: dict[str, _OpenTranscript] = {}
         self._lock = threading.Lock()
+        # W2-004: records whose terminal metadata write failed on first
+        # attempt. Kept in memory so the next finish()/start() call retries
+        # them -- converting "done" runs that would otherwise silently
+        # degrade to "interrupted" on next startup.
+        self._pending_final: dict[str, SessionRecord] = {}
+        self._pending_final_lock = threading.Lock()  # W2-004: protect _pending_final mutations
 
     # ---- writing ---------------------------------------------------------
+
+    def _retry_pending_final(self) -> None:
+        """W2-004: retry any terminal metadata writes that failed earlier."""
+        with self._pending_final_lock:
+            pending = dict(self._pending_final)
+        for run_id, record in pending.items():
+            if self._write_meta(record):
+                with self._pending_final_lock:
+                    self._pending_final.pop(run_id, None)
 
     def start(
         self,
@@ -197,6 +214,9 @@ class SessionStore:
         pid: int | None = None,
     ) -> SessionRecord | None:
         """Open a transcript for a new run. Returns None if the disk says no."""
+        # W2-004: opportunistically retry any earlier failed metadata writes
+        # so a transient disk blip does not permanently lose terminal status.
+        self._retry_pending_final()
         now = datetime.now(timezone.utc)
         key = project_key(root)
         # Microseconds, not seconds. At one-second resolution two runs started
@@ -323,7 +343,18 @@ class SessionStore:
                 if self._open.get(run_id) is entry:
                     self._open.pop(run_id, None)
         # Best-effort metadata write after lifecycle cleanup — never gate on it.
-        self._write_meta(record)
+        # W2-004: if the write fails, keep the record in _pending_final so
+        # the next start() or finish() call retries it. Without this,
+        # a transient disk blip permanently loses terminal status and
+        # history() reports "interrupted" instead of "done"/"killed".
+        if not self._write_meta(record):
+            with self._pending_final_lock:
+                # W2-004: cap the pending queue to prevent unbounded growth
+                # if disk writes consistently fail.
+                if len(self._pending_final) < self._MAX_PENDING_FINAL:
+                    self._pending_final[run_id] = record
+        # W2-004: also retry any earlier failures opportunistically.
+        self._retry_pending_final()
 
     # ---- reading ---------------------------------------------------------
 
@@ -333,17 +364,31 @@ class SessionStore:
         A record still saying `running` that this process does not have open
         belongs to a SAIPENVIEW that died -- report it as `interrupted` rather
         than as an agent that has been working since Tuesday.
+
+        W2-004: a record known to this process via ``_pending_final`` has
+        authoritative terminal status the disk copy lacks (the metadata write
+        failed). Overlay the pending record over the stale disk copy so the
+        known terminal status survives even before the retry succeeds. Only
+        apply the overlay to records THIS process knows about; unknown
+        records still go through the interrupted conversion.
         """
         key = project_key(root)
         with self._lock:
             live = set(self._open)
+        with self._pending_final_lock:
+            pending = dict(self._pending_final)
         out = []
         for meta in self._meta_files(key):
             rec = self._read_meta(meta)
             if rec is None:
                 continue
-            if rec.status == "running" and rec.run_id not in live:
-                rec.status = "interrupted"
+            if rec.status == "running":
+                pending_rec = pending.get(rec.run_id)
+                if pending_rec is not None and pending_rec.status != "running":
+                    # This process knows the real terminal status; use it.
+                    rec = pending_rec
+                elif rec.run_id not in live:
+                    rec.status = "interrupted"
             # started_at alone can tie: two runs started in the same clock
             # tick (datetime.now() resolution under load) then sort back to
             # the stable _meta_files order, which is alphabetical by run_id --

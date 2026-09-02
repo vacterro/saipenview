@@ -32,7 +32,12 @@ def test_tracked_includes_outbox_and_manifest():
 
 
 def test_file_affects_index_catches_outbox_and_manifest():
-    """_file_affects_index returns True for OUTBOX and MANIFEST at any depth."""
+    """_file_affects_index returns True for OUTBOX and MANIFEST at any depth.
+
+    CORE-002 (AUDIT_ALL_3 ROUND 2): the classifier matches tracked basenames
+    anywhere in the .saipen-relative path, so a nested OUTBOX or MANIFEST
+    mutation still triggers a reload + cache write.
+    """
     assert Api._file_affects_index("OUTBOX.md") is True
     assert Api._file_affects_index("MANIFEST.md") is True
     assert Api._file_affects_index("extensions/subs/saihunt/kitchen/OUTBOX.md") is True
@@ -40,10 +45,11 @@ def test_file_affects_index_catches_outbox_and_manifest():
     # Existing tracked files still work
     assert Api._file_affects_index("STATE.md") is True
     assert Api._file_affects_index("BOARD.md") is True
-    assert Api._file_affects_index("BOARD") is True
+    # CORE-002: nested paths with the same tracked basename match.
+    assert Api._file_affects_index("extensions/subs/saiui/LOG.md") is True
     # Unrelated files still rejected
-    assert Api._file_affects_index("LOG.md") is False
     assert Api._file_affects_index("config.json") is False
+    assert Api._file_affects_index("random.txt") is False
 
 
 def test_file_affects_cache_catches_outbox_and_manifest():
@@ -51,7 +57,9 @@ def test_file_affects_cache_catches_outbox_and_manifest():
     assert Api._file_affects_cache("OUTBOX.md") is True
     assert Api._file_affects_cache("MANIFEST.md") is True
     assert Api._file_affects_cache("STATE.md") is True
-    assert Api._file_affects_cache("LOG.md") is False
+    # CORE-002: nested LOG path triggers a cache write so the reloaded
+    # project row is persisted.
+    assert Api._file_affects_cache("extensions/subs/saiui/LOG.md") is True
 
 
 def test_refresh_one_project_uses_changed_files_classifier(api: Api, tmp_path: Path):
