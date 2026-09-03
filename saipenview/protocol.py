@@ -22,7 +22,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.246.1"
+BASELINE_VERSION = "7.247.0"
 
 # CORE § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.
@@ -92,40 +92,58 @@ WAIT_CATEGORIES: tuple[str, ...] = (
     "init",
 )
 
-# CORE § 1.10's closed command list (tools/validate.py's SAIPEN_COMMANDS).
+# CORE § 1.10's closed command list (REGISTRY.json `commands.saipen`;
+# tools/validate.py derives SAIPEN_COMMANDS from the same registry).
 # `userperson` and `improve` joined in the 7.2xx cycle; the shortcut table's
 # `hh` also made `hunt` real in 7.148.0. Read this list as the authority on
 # what may follow `saipen `, never as "the phases that are missing from
 # PHASES".
 SAIPEN_COMMANDS: frozenset[str] = frozenset(
     {
-        "set",
-        "init",
-        "continue",
-        "goal",
-        "plan",
+        "acceptance",
+        "attempt",
+        "audit",
+        "brief",
+        "build",
+        "checkpoint",
+        "claim",
         "clean",
-        "translate",
-        "hunt",
-        "markhunt",
-        "prepare",
         "collect",
-        "ship",
-        "push",
-        "validate",
-        "test",
+        "context",
+        "continue",
         "crew",
+        "cut",
+        "explain-next",
+        "first-publish-confirm",
+        "focus",
+        "goal",
+        "hunt",
+        "hush",
+        "improve",
+        "init",
+        "markhunt",
+        "next",
+        "permissions",
+        "plan",
+        "prepare",
+        "push",
+        "rebind-home",
+        "recover",
+        "runtime",
+        "scope",
+        "set",
+        "ship",
+        "source",
         "status",
         "stop",
         "sub",
-        "userperson",
-        "improve",
-        "runtime",
-        "build",
-        "focus",
-        "source",
-        "cut",
+        "test",
+        "ticket",
+        "transition",
+        "translate",
         "undo",
+        "userperson",
+        "validate",
     }
 )
 
@@ -134,11 +152,13 @@ SAIPEN_COMMANDS: frozenset[str] = frozenset(
 READ_ONLY_BANNED_PHASES: tuple[str, ...] = (
     "INIT",
     "PLAN",
-    "ADD",
+    "SCOUT",
     "BUILD",
     "SHIP",
+    "ADD",
     "CLEAN",
     "TRANSLATE",
+    "PREPARE",
 )
 
 # CORE § 1.6/§ 1.10: entered by explicit user command from ANY phase, so the

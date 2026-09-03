@@ -16,6 +16,7 @@ import ast
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,73 @@ def engine_src():
             pytest.skip(f"SAIPEN repo not on this machine: {rel} not found")
         out[key] = path.read_text(encoding="utf-8")
     return out
+
+
+def _find_tools_dir() -> Path | None:
+    """The `tools/` dir whose `saipen_engine` package is the live vocabulary
+    home (NITRO M1: the validator's phase/board/log vocabularies moved out of
+    validate.py into engine modules and REGISTRY.json)."""
+    for root in _CANDIDATE_ROOTS:
+        candidate = root / "tools"
+        if (candidate / "saipen_engine" / "__init__.py").is_file():
+            return candidate
+    return None
+
+
+@pytest.fixture(scope="module")
+def engine_vocab():
+    """Live engine vocabularies, captured by importing the engine once.
+
+    Source-parsing can no longer see these: validate.py now derives
+    SAIPEN_COMMANDS / EXECUTABLE_PREFIXES / WAIT_CATEGORIES from
+    REGISTRY.json via `saipen_engine.registry`, and phases.py builds its
+    transition tables from the registry too. Importing beats parsing here
+    (the engine modules are pure libraries -- only validate.py runs checks at
+    import time, and it is never imported). The imported modules are fully
+    unloaded afterwards so no engine root pollutes the rest of the process
+    (the MULTI-HOME guard pattern from test_audit_repairs).
+    """
+    tools = _find_tools_dir()
+    if tools is None:
+        pytest.skip(
+            "SAIPEN repo not on this machine: tools/saipen_engine not found"
+        )
+    saved_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(tools))
+        from saipen_engine import phases
+        from saipen_engine import registry
+
+        reg = registry.load_registry()
+        return {
+            "commands": frozenset(
+                registry.require_string_list(
+                    registry.require_mapping(reg, "commands"), "saipen"
+                )
+            ),
+            "executable_prefixes": frozenset(
+                registry.require_string_list(
+                    registry.require_mapping(reg, "next_action_forms"),
+                    "executable_prefixes",
+                )
+            ),
+            "wait_categories": frozenset(
+                registry.require_string_list(reg, "wait_categories")
+            ),
+            "any_from": frozenset(phases.ANY_FROM),
+            "ticket_bearing": frozenset(phases.TICKET_BEARING_PHASES),
+            "valid_transitions": {
+                k: frozenset(v) for k, v in phases.VALID_TRANSITIONS.items()
+            },
+        }
+    finally:
+        for name in [
+            m
+            for m in sys.modules
+            if m == "saipen_engine" or m.startswith("saipen_engine.")
+        ]:
+            del sys.modules[name]
+        sys.path[:] = saved_path
 
 
 def _literal(src: str, name: str):
@@ -211,9 +279,8 @@ class TestAgainstValidator:
             _literal(validator_src, "OUTBOX_STATUSES")
         )
 
-    def test_saipen_commands(self, validator_src):
-        canon = _literal(validator_src, "SAIPEN_COMMANDS")
-        assert canon is not None, "the § 1.10 command set not found in validator"
+    def test_saipen_commands(self, engine_vocab):
+        canon = engine_vocab["commands"]
         assert protocol.SAIPEN_COMMANDS == frozenset(canon)
 
     def test_package_handoff_fields(self, validator_src):
@@ -234,21 +301,19 @@ class TestAgainstValidator:
 
 
 class TestAgainstEngine:
-    def test_valid_transitions(self, engine_src):
-        canon = _literal(engine_src["phases"], "VALID_TRANSITIONS")
+    def test_valid_transitions(self, engine_vocab):
+        canon = engine_vocab["valid_transitions"]
         mine = {k: list(v) for k, v in protocol.VALID_TRANSITIONS.items()}
         assert {k: sorted(v) for k, v in mine.items()} == {
             k: sorted(v) for k, v in canon.items()
         }
 
-    def test_any_from(self, engine_src):
-        canon = _literal(engine_src["phases"], "ANY_FROM")
-        assert canon is not None, "ANY_FROM not found in saipen_engine/phases.py"
+    def test_any_from(self, engine_vocab):
+        canon = engine_vocab["any_from"]
         assert set(protocol.ANY_FROM) == set(canon)
 
-    def test_ticket_bearing_phases(self, engine_src):
-        canon = _literal(engine_src["phases"], "TICKET_BEARING_PHASES")
-        assert canon is not None, "TICKET_BEARING_PHASES not found in phases.py"
+    def test_ticket_bearing_phases(self, engine_vocab):
+        canon = engine_vocab["ticket_bearing"]
         assert set(protocol.TICKET_PHASES) == set(canon)
 
     def test_ticket_fields(self, engine_src):
@@ -275,16 +340,12 @@ class TestAgainstValidatorNested:
         assert canon is not None, "READ_ONLY_BANNED_PHASES not found in validator"
         assert set(protocol.READ_ONLY_BANNED_PHASES) == set(canon)
 
-    def test_wait_categories(self, validator_src):
-        canon = _nested_literal(validator_src, "WAIT_CATEGORIES")
-        assert canon is not None, "WAIT_CATEGORIES not found in validator"
+    def test_wait_categories(self, engine_vocab):
+        canon = engine_vocab["wait_categories"]
         assert set(protocol.WAIT_CATEGORIES) == set(canon)
 
-    def test_next_action_prefixes(self, validator_src):
-        canon = _literal(validator_src, "EXECUTABLE_PREFIXES") or _nested_literal(
-            validator_src, "executable_prefixes"
-        )
-        assert canon is not None, "executable prefixes not found in validator"
+    def test_next_action_prefixes(self, engine_vocab):
+        canon = engine_vocab["executable_prefixes"]
         assert set(protocol.NEXT_ACTION_PREFIXES) == set(canon)
 
     def test_goal_caps(self, validator_src):
