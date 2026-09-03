@@ -290,6 +290,38 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .detail-content { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
 .detail-placeholder { color: var(--textMuted); padding: 12px; text-align: center; margin: auto; font-size: 11px; }
 
+/* --- Unrecorded external change: a warning that cannot eat the pane (T-191) --
+   The bar drew one chip per pending path in the SAME wrapping flex row as its
+   own message, with no height limit anywhere. A sub-agent sweep touches
+   STATE/BOARD/LOG per sub, so a few dozen unresolved paths stacked the bar to
+   full pane height and pushed the header, NEXT and every card off-screen: the
+   safety notice hid exactly the state it was warning about.
+   The fix is structural, not cosmetic. The summary is one row that never wraps
+   and never grows; the chips live in their own body, hidden until asked for,
+   and that body is capped and scrolls. `max-height` on the LIST, not on the
+   bar: a cap on the bar would clip the summary row too, which is the one part
+   that must always be readable. */
+.unrecorded-bar { display: flex; flex-direction: column; gap: 2px; padding: 3px 6px;
+  margin-bottom: 3px; background: var(--surfaceRaised); border: 1px solid var(--goldStar);
+  color: var(--textPrimary); font-size: 10px; flex: 0 0 auto; }
+.unrecorded-summary { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.unrecorded-flag { color: var(--goldStar); font-weight: bold; flex: 0 0 auto; }
+/* The message is the only flexible child; the two buttons keep their size so a
+   narrow pane shortens the sentence instead of pushing the actions out. */
+.unrecorded-text { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.unrecorded-summary button { flex: 0 0 auto; font-size: 9px; padding: 1px 4px; }
+.unrecorded-summary #recordManualWorkBtn { color: var(--success); }
+.unrecorded-items { display: none; }
+.unrecorded-bar.expanded .unrecorded-items { display: flex; flex-wrap: wrap; gap: 2px;
+  max-height: 76px; overflow-y: auto; overflow-x: hidden;
+  padding-top: 2px; border-top: 1px solid var(--borderMuted); }
+.unrecorded-item { display: inline-flex; gap: 4px; align-items: center; min-width: 0;
+  max-width: 100%; background: var(--surface); border: 1px solid var(--borderMuted); padding: 1px 4px; }
+.unrecorded-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unrecorded-more { color: var(--textMuted); }
+.unrecorded-item .ack-btn { flex: 0 0 auto; font-size: 8px; padding: 0 3px; }
+
 .detail-header { display: flex; flex-direction: column; gap: 2px; padding-bottom: 4px; border-bottom: 1px solid var(--borderMuted); }
 .detail-title { font-size: 12px; font-weight: bold; color: var(--borderHighlight); display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .detail-title .phase { flex: 0 0 auto; }

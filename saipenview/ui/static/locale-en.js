@@ -295,4 +295,7 @@ const LOCALE_EN = {
   "agent.unrecorded": "Unrecorded external change to this project's .saipen files",
   "agent.unrecorded.title": "You edited the project yourself -- record it so the board reflects the manual work",
   "agent.unrecorded.record": "Record manual work",
+  "agent.unrecorded.files": "Files",
+  "agent.unrecorded.hide": "Hide files",
+  "agent.unrecorded.files.title": "Show/hide the individual changed files, each with its own Ack",
 };

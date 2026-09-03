@@ -1102,25 +1102,39 @@ function renderDetailPane(detail) {
 
     // CORE-013: render from backend pending_external_changes (authoritative multi-root registry),
     // not the transient single-root unrecordedChangeRoot. Keep fallback for older backends.
+    //
+    // T-191: the bar is a WARNING, not a document, and it is BOUNDED. One chip
+    // per pending path used to wrap inside the bar itself, so a project with a
+    // few dozen unresolved paths (a sub-agent sweep touches STATE/BOARD/LOG per
+    // sub) grew a bar taller than the pane and buried the header, NEXT and every
+    // card under it -- the safety notice hid the thing it was warning about. The
+    // summary row is now exactly one line that never wraps; the paths live in a
+    // collapsed body that scrolls inside a capped height, and the list itself is
+    // capped so a runaway registry cannot build thousands of nodes.
     let _pending = detail.pending_external_changes || [];
     let _pendingBarHtml = "";
-    if (_pending.length > 0) {
-      const _items = _pending.map(pc => `<span style="display:inline-flex;gap:4px;align-items:center;background:var(--surface);border:1px solid var(--borderMuted);padding:1px 4px;margin:1px;">
-        <span style="color:var(--goldStar);font-weight:bold;">!</span>
-        <span>${escapeHtml(pc.path)}</span>
-        <button class="ack-btn" data-path="${escapeHtml(pc.path)}" data-token="${pc.token}" style="font-size:8px;padding:0 3px;">Ack</button>
-      </span>`).join("");
-      _pendingBarHtml = `<div id="unrecordedBar" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:3px 6px;margin-bottom:3px;background:var(--surfaceRaised);border:1px solid var(--goldStar);color:var(--textPrimary);font-size:10px;">
-        <span style="color:var(--goldStar);font-weight:bold;">!</span>
-        <span style="flex:1;">${escapeHtml(t("agent.unrecorded"))} (${_pending.length})</span>
-        ${_items}
-        <button id="recordManualWorkBtn" style="font-size:9px;padding:1px 4px;color:var(--success);" title="${escapeHtml(t("agent.unrecorded.title"))}">${escapeHtml(t("agent.unrecorded.record"))}</button>
-      </div>`;
-    } else if (unrecordedChangeRoot === detail.root) {
-      _pendingBarHtml = `<div id="unrecordedBar" style="display:flex; gap:6px; align-items:center; padding:3px 6px; margin-bottom:3px; background:var(--surfaceRaised); border:1px solid var(--goldStar); color:var(--textPrimary); font-size:10px;">
-        <span style="color:var(--goldStar); font-weight:bold;">!</span>
-        <span style="flex:1;">${escapeHtml(t("agent.unrecorded"))}</span>
-        <button id="recordManualWorkBtn" style="font-size:9px; padding:1px 4px; color:var(--success);" title="${escapeHtml(t("agent.unrecorded.title"))}">${escapeHtml(t("agent.unrecorded.record"))}</button>
+    const _legacyPending = _pending.length === 0 && unrecordedChangeRoot === detail.root;
+    if (_pending.length > 0 || _legacyPending) {
+      const _shown = _pending.slice(0, UNRECORDED_CHIP_CAP);
+      const _rest = _pending.length - _shown.length;
+      const _items = _shown.map(pc => `<span class="unrecorded-item">
+        <span class="unrecorded-flag">!</span>
+        <span class="unrecorded-path" title="${escapeHtml(pc.path)}">${escapeHtml(pc.path)}</span>
+        <button class="ack-btn" data-path="${escapeHtml(pc.path)}" data-token="${pc.token}">Ack</button>
+      </span>`).join("")
+        + (_rest > 0 ? `<span class="unrecorded-item unrecorded-more">+${_rest}</span>` : "");
+      const _label = escapeHtml(t("agent.unrecorded"))
+        + (_pending.length ? ` (${_pending.length})` : "");
+      const _expanded = _unrecordedExpandedRoot === detail.root && _pending.length > 0;
+      const _toggleLabel = escapeHtml(t(_expanded ? "agent.unrecorded.hide" : "agent.unrecorded.files"));
+      _pendingBarHtml = `<div id="unrecordedBar" class="unrecorded-bar${_expanded ? " expanded" : ""}">
+        <div class="unrecorded-summary">
+          <span class="unrecorded-flag">!</span>
+          <span class="unrecorded-text" title="${_label}">${_label}</span>
+          ${_pending.length ? `<button id="unrecordedToggleBtn" title="${escapeHtml(t("agent.unrecorded.files.title"))}">${_toggleLabel}</button>` : ""}
+          <button id="recordManualWorkBtn" title="${escapeHtml(t("agent.unrecorded.title"))}">${escapeHtml(t("agent.unrecorded.record"))}</button>
+        </div>
+        ${_pending.length ? `<div class="unrecorded-items">${_items}</div>` : ""}
       </div>`;
     }
     contentDiv.innerHTML = `
@@ -1551,6 +1565,21 @@ function renderDetailPane(detail) {
     });
   });
 
+  // T-191: fold/unfold the per-file list. The class flip is applied to the live
+  // node as well as recorded, so the click responds now instead of on the next
+  // 5s poll -- and the recorded root is what survives the repaint.
+  const unrecordedToggle = document.getElementById("unrecordedToggleBtn");
+  if (unrecordedToggle) {
+    unrecordedToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willExpand = _unrecordedExpandedRoot !== detail.root;
+      _unrecordedExpandedRoot = willExpand ? detail.root : null;
+      const bar = document.getElementById("unrecordedBar");
+      if (bar) bar.classList.toggle("expanded", willExpand);
+      unrecordedToggle.textContent = t(willExpand ? "agent.unrecorded.hide" : "agent.unrecorded.files");
+    });
+  }
+
   const recordBtn = document.getElementById("recordManualWorkBtn");
   if (recordBtn) {
     recordBtn.addEventListener("click", () => {
@@ -1576,6 +1605,7 @@ function renderDetailPane(detail) {
           delete manualWorkIntents[opId];
           pendingRecordOpId = null;
             unrecordedChangeRoot = null;
+            _unrecordedExpandedRoot = null;
            showToast("Recorded as " + (res.ticket_id || "ticket"), "success");
            const mwGen = _detailGen, mwRoot = selectedRoot;
           window.SaiApi.get_project_detail(intent.root).then((d) => {
@@ -2206,26 +2236,46 @@ window.__saipenSetVisible = function (visible) {
 let unrecordedChangeRoot = null;
 let pendingRecordOpId = null;
 let manualWorkIntents = {};
+// T-191: how many per-file chips the bar may draw at once, and WHICH project's
+// chips are currently unfolded. A count, not a bool: the pane re-renders every
+// poll and switches projects under the same variable, so keying the open state
+// to a root is what makes the list collapse again when you walk away from it --
+// and what stops one project's expansion from silently applying to the next.
+const UNRECORDED_CHIP_CAP = 12;
+let _unrecordedExpandedRoot = null;
+// T-191: per-root debounce for the bar's own detail refresh. A sub-agent sweep
+// pushes one file-changed event per touched path (STATE/BOARD/LOG per sub) and
+// every event used to fire its OWN get_project_detail + full pane rebuild on
+// top of the batched refresh in onSaipenFileChanged -- dozens of events meant
+// dozens of innerHTML replacements in seconds, so the pane visibly churned
+// instead of settling. One render per burst is enough: the bar must be
+// prompt, not loud.
+const UNRECORDED_RENDER_DEBOUNCE_MS = 350;
+let _unrecordedRenderTimers = {};
 
 function showUnrecordedChange(root) {
   unrecordedChangeRoot = root;
   const existingIntent = pendingRecordOpId && manualWorkIntents[pendingRecordOpId];
   if (!existingIntent || existingIntent.root !== root) {
-  pendingRecordOpId = "mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+    pendingRecordOpId = "mw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
     manualWorkIntents[pendingRecordOpId] = { root: root, ack_tokens: null };
   }
-  const opId = pendingRecordOpId;
   const detailEl = document.getElementById("detailPane");
   if (detailEl && currentDetailRoot === root) {
-    window.SaiApi.get_project_detail(root).then((d) => {
-      if (d && currentDetailRoot === root) {
-        const intent = manualWorkIntents[opId];
-        if (intent && intent.ack_tokens === null) {
-          intent.ack_tokens = (d.pending_external_changes || []).map((pc) => [pc.path, pc.token]);
+    const timer = _unrecordedRenderTimers[root];
+    if (timer) clearTimeout(timer);
+    _unrecordedRenderTimers[root] = setTimeout(() => {
+      delete _unrecordedRenderTimers[root];
+      window.SaiApi.get_project_detail(root).then((d) => {
+        if (d && currentDetailRoot === root) {
+          const intent = pendingRecordOpId && manualWorkIntents[pendingRecordOpId];
+          if (intent && intent.root === root && intent.ack_tokens === null) {
+            intent.ack_tokens = (d.pending_external_changes || []).map((pc) => [pc.path, pc.token]);
+          }
+          renderDetailPane(d);
         }
-        renderDetailPane(d);
-      }
-    }).catch(() => {});
+      }).catch(() => {});
+    }, UNRECORDED_RENDER_DEBOUNCE_MS);
   }
 }
 
