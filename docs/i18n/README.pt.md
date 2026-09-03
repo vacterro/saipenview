@@ -261,7 +261,7 @@ Todas as definições também são configuráveis através da janela de **Defini
 ```
 saipenview/
 ├── app.py              Cabeamento de entrada - bandeja, hotkey, janela, api, proteção de instância única
-├── api.py              Ponte pywebview voltada a JS (66 métodos públicos)
+├── api.py              Ponte pywebview voltada a JS (89 métodos públicos)
 ├── scanner.py          Varredura de unidades + ciclo de reverificação em segundo plano
 ├── parser.py           Análise de STATE.md / BOARD.md / LOG.md
 ├── textio.py           Um leitor para cada ficheiro .saipen/ — BOM, UTF-16, cp1251

@@ -277,7 +277,7 @@ Kõik seaded on kättesaadavad ka rakenduse **Seaded**-aknast.
 ```
 saipenview/
 ├── app.py              Sisenemispunkti ühendus — salv, kiirklahv, aken, api, ühekordne kaitsja
-├── api.py              JS-vastane pywebview sild (66 avalikku meetodit)
+├── api.py              JS-vastane pywebview sild (89 avalikku meetodit)
 ├── scanner.py          Ketta läbikäik + taustal skaneerimistsükkel
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsimine
 ├── textio.py           Üks lugeja kõikidele .saipen/-failidele — BOM, UTF-16, cp1251

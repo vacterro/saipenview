@@ -261,7 +261,7 @@ Alle indstillinger kan også konfigureres via **Indstillinger**-modalen i appen.
 ```
 saipenview/
 ├── app.py              Indgangsforbindelse - bakke, hotkey, vindue, api, enkeltinstans-beskyttelse
-├── api.py              JS-vendt pywebview-bro (66 offentlige metoder)
+├── api.py              JS-vendt pywebview-bro (89 offentlige metoder)
 ├── scanner.py          Gennemgang af drev + baggrundsscanningsloop
 ├── parser.py           Tolkning af STATE.md / BOARD.md / LOG.md
 ├── textio.py           En læser til enhver .saipen/-fil — BOM, UTF-16, cp1251

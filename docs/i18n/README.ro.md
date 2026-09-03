@@ -269,7 +269,7 @@ Toate setările sunt de asemenea configurabile prin modalul **Setări** din apli
 ```
 saipenview/
 ├── app.py              Cablaj de intrare - tavă, hotkey, fereastră, api, protecție instanță unică
-├── api.py              Pod pywebview orientat JS (66 metode publice)
+├── api.py              Pod pywebview orientat JS (89 metode publice)
 ├── scanner.py          Parcurgere unități + buclă de rescanare în fundal
 ├── parser.py           Analiză STATE.md / BOARD.md / LOG.md
 ├── textio.py           Un singur cititor pentru fiecare fișier .saipen/ — BOM, UTF-16, cp1251

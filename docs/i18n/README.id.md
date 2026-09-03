@@ -261,7 +261,7 @@ Semua pengaturan juga dapat dikonfigurasi melalui modal **Pengaturan** di aplika
 ```
 saipenview/
 ├── app.py              Kabel masuk - baki, hotkey, jendela, api, proteksi instansi tunggal
-├── api.py              Jembatan pywebview ke JS (66 metode publik)
+├── api.py              Jembatan pywebview ke JS (89 metode publik)
 ├── scanner.py          Penelusuran drive + ikal pindai ulang latar belakang
 ├── parser.py           Pemrosesan STATE.md / BOARD.md / LOG.md
 ├── textio.py           Satu pembaca untuk setiap berkas .saipen/ — BOM, UTF-16, cp1251

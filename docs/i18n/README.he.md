@@ -270,7 +270,7 @@ All settings are also configurable through the **Settings** modal in the app.
 ```
 saipenview/
 ├── app.py              Entry wiring — tray, hotkey, window, api, single-instance guard
-├── api.py              JS-facing pywebview bridge (66 public methods)
+├── api.py              JS-facing pywebview bridge (89 public methods)
 ├── scanner.py          Drive walk + background rescan loop
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsing
 ├── textio.py           One reader for every .saipen/ file — BOM, UTF-16, cp1251

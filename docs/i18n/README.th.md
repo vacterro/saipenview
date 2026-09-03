@@ -261,7 +261,7 @@ saipenview/_data/config.json
 ```
 saipenview/
 ├── app.py              การเชื่อมต่อจุดเข้า - ถาด, ปุ่มลัด, หน้าต่าง, api, ป้องกันหลายอินสแตนซ์
-├── api.py              บริดจ์ pywebview สำหรับ JS (66 เมธอดสาธารณะ)
+├── api.py              บริดจ์ pywebview สำหรับ JS (89 เมธอดสาธารณะ)
 ├── scanner.py          การวนสแกนไดรฟ์ + ลูปสแกนซ้ำในเบื้องหลัง
 ├── parser.py           การแยกวิเคราะห์ STATE.md / BOARD.md / LOG.md
 ├── textio.py           ตัวอ่านหนึ่งเดียวสำหรับทุกไฟล์ .saipen/ — BOM, UTF-16, cp1251

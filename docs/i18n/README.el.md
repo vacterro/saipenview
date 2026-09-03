@@ -269,7 +269,7 @@ saipenview/_data/config.json
 ```
 saipenview/
 ├── app.py              Καλωδίωση εισόδου - δίσκος, hotkey, παράθυρο, api, προστασία μοναδικού στιγμιότυπου
-├── api.py              Γέφυρα pywebview προς JS (66 δημόσιες μέθοδοι)
+├── api.py              Γέφυρα pywebview προς JS (89 δημόσιες μέθοδοι)
 ├── scanner.py          Σάρωση δίσκων + βρόχος επανασάρωσης παρασκηνίου
 ├── parser.py           Ανάλυση STATE.md / BOARD.md / LOG.md
 ├── textio.py           Ένας αναγνώστης για κάθε αρχείο .saipen/ — BOM, UTF-16, cp1251

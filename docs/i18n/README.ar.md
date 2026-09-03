@@ -261,7 +261,7 @@ saipenview/_data/config.json
 ```
 saipenview/
 ├── app.py              مدخل التوصيل - العلبة، المفتاح الساخن، النافذة، api، حماية النسخة الواحدة
-├── api.py              جسر pywebview لواجهة JS (66 طريقة عامة)
+├── api.py              جسر pywebview لواجهة JS (89 طريقة عامة)
 ├── scanner.py          مسح الأقراص + حلقة إعادة الفحص في الخلفية
 ├── parser.py           تحليل ملفات STATE.md / BOARD.md / LOG.md
 ├── textio.py           قارئ واحد لكل ملف .saipen/ — BOM, UTF-16, cp1251

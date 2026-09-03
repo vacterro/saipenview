@@ -261,7 +261,7 @@ Kaikki asetukset ovat myös määritettävissä sovelluksen **Asetukset**-ikkuna
 ```
 saipenview/
 ├── app.py              Sisääntulon kytkentä - lokero, pikanäppäin, ikkuna, api, yksittäisinstanssisuoja
-├── api.py              JS-puoleinen pywebview-silta (66 julkista metodia)
+├── api.py              JS-puoleinen pywebview-silta (89 julkista metodia)
 ├── scanner.py          Asemakierros + taustaskannauksen silmukka
 ├── parser.py           STATE.md / BOARD.md / LOG.md -jäsennys
 ├── textio.py           Yksi lukija jokaiselle .saipen/-tiedostolle — BOM, UTF-16, cp1251

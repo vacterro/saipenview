@@ -261,7 +261,7 @@ Tous les paramètres sont également configurables via la modale **Paramètres**
 ```
 saipenview/
 ├── app.py              Câblage d'entrée - barre, hotkey, fenêtre, api, protection d'instance unique
-├── api.py              Pont pywebview côté JS (66 méthodes publiques)
+├── api.py              Pont pywebview côté JS (89 méthodes publiques)
 ├── scanner.py          Parcours des lecteurs + boucle de re-analyse en arrière-plan
 ├── parser.py           Analyse de STATE.md / BOARD.md / LOG.md
 ├── textio.py           Un lecteur pour chaque fichier .saipen/ — BOM, UTF-16, cp1251

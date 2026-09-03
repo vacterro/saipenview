@@ -261,7 +261,7 @@ Minden beállítás módosítható az alkalmazás **Beállítások** ablakában 
 ```
 saipenview/
 ├── app.py              Belépési bekötés - tálca, gyorsbillentyű, ablak, api, egypéldányos védelem
-├── api.py              JS-felőli pywebview híd (66 publikus metódus)
+├── api.py              JS-felőli pywebview híd (89 publikus metódus)
 ├── scanner.py          Meghajtó bejárás + háttérbeli újraszkennelési ciklus
 ├── parser.py           STATE.md / BOARD.md / LOG.md feldolgozás
 ├── textio.py           Egységes olvasó minden .saipen/ fájlhoz — BOM, UTF-16, cp1251

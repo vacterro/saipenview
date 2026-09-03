@@ -261,7 +261,7 @@ Tüm ayarlar ayrıca uygulamadaki **Ayarlar** penceresinden de yapılandırılab
 ```
 saipenview/
 ├── app.py              Giriş bağlantısı - tepsi, kısayol, pencere, api, tek örnek koruması
-├── api.py              JS'ye dönük pywebview köprüsü (66 genel yöntem)
+├── api.py              JS'ye dönük pywebview köprüsü (89 genel yöntem)
 ├── scanner.py          Sürücü gezintisi + arka plan yeniden tarama döngüsü
 ├── parser.py           STATE.md / BOARD.md / LOG.md ayrıştırma
 ├── textio.py           Her .saipen/ dosyası için tek okuyucu — BOM, UTF-16, cp1251

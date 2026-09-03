@@ -261,7 +261,7 @@ saipenview/_data/config.json
 ```
 saipenview/
 ├── app.py              Вхідне з'єднання - трей, гаряча клавіша, вікно, api, захист від дублів
-├── api.py              Міст pywebview для JS (66 публічних методів)
+├── api.py              Міст pywebview для JS (89 публічних методів)
 ├── scanner.py          Обхід дисків + цикл фонового пересканування
 ├── parser.py           Парсинг STATE.md / BOARD.md / LOG.md
 ├── textio.py           Єдиний зчитувач для кожного файлу .saipen/ — BOM, UTF-16, cp1251

@@ -261,7 +261,7 @@ Alle Einstellungen können auch über das **Einstellungen**-Dialogfenster in der
 ```
 saipenview/
 ├── app.py              Einstiegsverdrahtung - Tray, Hotkey, Fenster, API, Einzelinstanz-Schutz
-├── api.py              JS-seitige pywebview-Brucke (66 offentliche Methoden)
+├── api.py              JS-seitige pywebview-Brucke (89 offentliche Methoden)
 ├── scanner.py          Laufwerks-Durchlauf + Hintergrund-Neuscan-Schleife
 ├── parser.py           Parsing von STATE.md / BOARD.md / LOG.md
 ├── textio.py           Ein Reader für jede .saipen/-Datei — BOM, UTF-16, cp1251

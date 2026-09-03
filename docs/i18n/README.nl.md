@@ -261,7 +261,7 @@ Alle instellingen zijn ook te configureren via het modale venster **Instellingen
 ```
 saipenview/
 ├── app.py              Ingangsbedrading - systeemvak, hotkey, venster, api, enkelvoudige-instantiebeveiliging
-├── api.py              JS-gerichte pywebview-brug (66 openbare methoden)
+├── api.py              JS-gerichte pywebview-brug (89 openbare methoden)
 ├── scanner.py          Schijfscan + achtergrond-rescanlus
 ├── parser.py           STATE.md / BOARD.md / LOG.md verwerking
 ├── textio.py           Eén lezer voor elk .saipen/-bestand — BOM, UTF-16, cp1251

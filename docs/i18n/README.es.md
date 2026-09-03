@@ -261,7 +261,7 @@ Todas las opciones también se pueden configurar a través de la ventana modal d
 ```
 saipenview/
 ├── app.py              Cableado de entrada - bandeja, hotkey, ventana, api, protección de instancia única
-├── api.py              Puente pywebview orientado a JS (66 métodos públicos)
+├── api.py              Puente pywebview orientado a JS (89 métodos públicos)
 ├── scanner.py          Recorrido de unidades + bucle de reescaneo en segundo plano
 ├── parser.py           Análisis de STATE.md / BOARD.md / LOG.md
 ├── textio.py           Un lector único para cada archivo .saipen/ — BOM, UTF-16, cp1251

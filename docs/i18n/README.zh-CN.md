@@ -261,7 +261,7 @@ saipenview/_data/config.json
 ```
 saipenview/
 ├── app.py              入口接线 - 托盘、热键、窗口、api、单实例保护
-├── api.py              面向 JS 的 pywebview 桥接（66 个公共方法）
+├── api.py              面向 JS 的 pywebview 桥接（89 个公共方法）
 ├── scanner.py          磁盘遍历 + 后台重新扫描循环
 ├── parser.py           STATE.md / BOARD.md / LOG.md 解析器
 ├── textio.py           统一的 .saipen/ 文件读取器 —— 处理 BOM、UTF-16、cp1251

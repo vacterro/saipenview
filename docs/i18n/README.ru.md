@@ -277,7 +277,7 @@ saipenview/_data/config.json
 ```
 saipenview/
 ├── app.py              Проводка входа — трей, хоткей, окно, api, защита от дублей
-├── api.py              JS-мост pywebview (66 публичных методов)
+├── api.py              JS-мост pywebview (89 публичных методов)
 ├── scanner.py          Обход дисков + фоновое пересканирование
 ├── parser.py           Разбор STATE.md / BOARD.md / LOG.md
 ├── textio.py           Единый читатель всех .saipen/-файлов — BOM, UTF-16, cp1251

@@ -261,7 +261,7 @@ saipenview/_data/config.json
 ```
 saipenview/
 ├── app.py              진입 배선 - 트레이, 단축키, 창, api, 단일 인스턴스 보호
-├── api.py              JS 지향 pywebview 브리지(공개 메서드 66개)
+├── api.py              JS 지향 pywebview 브리지(공개 메서드 89개)
 ├── scanner.py          드라이브 탐색 + 백그라운드 재스캔 루프
 ├── parser.py           STATE.md / BOARD.md / LOG.md 파싱
 ├── textio.py           모든 .saipen/ 파일 단일 리더 — BOM, UTF-16, cp1251
