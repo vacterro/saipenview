@@ -17,7 +17,7 @@
     <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
-    <strong>**v0.1.30**</strong>
+    <strong>**v0.1.31**</strong>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
   </p>
 </div>
@@ -307,12 +307,19 @@ python -m saipenview --dry-run
 ```
 saipenview/
 ├── app.py              Проводка: трей, хоткей, окно, api, защита от дублей
-├── api.py              JS-мост pywebview (89 публичных методов)
+├── api.py              JS-мост pywebview (90 публичных методов)
 ├── scanner.py          Обход дисков + фоновый рескан
 ├── parser.py           Разбор STATE.md / BOARD.md / LOG.md
 ├── textio.py           Один читатель всех .saipen/-файлов — BOM, UTF-16, cp1251
 ├── protocol.py         Закрытые словари протокола + BASELINE_VERSION
 ├── conformance.py      Оценивает проект по этим словарям
+├── collect.py          Шлюз collect — один адаптер проверки валидности пакетов SAIPEN
+├── outbox.py           Строгий разбор OUTBOX для пакетов производителей
+├── ownership.py        Единый писатель на корень (приложение vs запуск агентов)
+├── saio.py             Канонический клиентский мост SAIOPS
+├── service.py          Headless-сервисный режим SAIPENVIEW (встраивание SAIWORK)
+├── tailio.py           Ограниченное обратное чтение хвостов больших append-only журналов
+├── external_changes.py Отслеживание внешних изменений с хранением в backend
 ├── config.py           Настройки: загрузка/сохранение (атомарно)
 ├── tray.py             Иконка pystray в трее + меню
 ├── hotkey.py           Глобальные хоткеи (keyboard)
@@ -322,7 +329,11 @@ saipenview/
 ├── guard.py            Блокировка одиночного экземпляра + показ
 ├── git_diff.py         Diff / commit / revert рабочего дерева для агентов
 ├── runtime.py          Agent Engine — менеджер процессов агентов
+├── sessions.py         История запусков агентов + сохранённые транскрипты
 ├── watcher.py          Watchdog-наблюдатель за .saipen/-файлами
+├── themes.py           Цветовые темы — палитра + вычисление hexBlend
+├── paths.py            Канонизация путей + проверки границ файлов
+├── protocol_write.py   Координатор записи — делегирование каноническому журналу, предпроверка восстановления
 ├── engines/            Agent Engine — CLI-движки (claude-code, codex,
 │                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
@@ -411,4 +422,4 @@ MIT — см. [LICENSE](../../LICENSE).
 <br>
 
 </div>
-<!-- source-digest: README.md sha256:ebb7f98b97feb3bcf07ed42da6ccb5fc92e6fbc703cf965e241cfc54cd3319b8 -->
+<!-- source-digest: README.md sha256:5776eab714b34ee522cf77ac78dea3b766ae66d2ae81f9359ab1c76565e3f126 -->

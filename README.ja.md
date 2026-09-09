@@ -18,7 +18,7 @@
     <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
-    <strong>**v0.1.30**</strong>
+    <strong>**v0.1.31**</strong>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
   </p>
 </div>
@@ -269,12 +269,19 @@ All settings are also configurable through the **Settings** modal in the app.
 ```
 saipenview/
 ├── app.py              Entry wiring — tray, hotkey, window, api, single-instance guard
-├── api.py              JS-facing pywebview bridge (89 public methods)
+├── api.py              JS-facing pywebview bridge (90 public methods)
 ├── scanner.py          Drive walk + background rescan loop
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsing
 ├── textio.py           One reader for every .saipen/ file — BOM, UTF-16, cp1251
 ├── protocol.py         The protocol's closed vocabularies + BASELINE_VERSION
 ├── conformance.py      Grades a project against those vocabularies
+├── collect.py          The collect gate — one adapter for SAIPEN package validity
+├── outbox.py           Strict OUTBOX parsing for producer packages
+├── ownership.py        Per-root single-writer ownership (app vs agent launches)
+├── saio.py             The canonical SAIOPS client bridge
+├── service.py          Headless SAIPENVIEW service mode (SAIWORK embedding)
+├── tailio.py           Bounded backward tail readers for large append-only logs
+├── external_changes.py Backend-persistent external-change tracking
 ├── config.py           Settings load/save (atomic writes)
 ├── tray.py             pystray system-tray icon + menu
 ├── hotkey.py           Global hotkey registration (keyboard lib)
@@ -284,7 +291,11 @@ saipenview/
 ├── guard.py            Single-instance lock + show-request handoff
 ├── git_diff.py         Working-tree diff / commit / revert for agent actions
 ├── runtime.py          Agent Engine — process manager for launched agents
+├── sessions.py         Agent run history + stored transcripts
 ├── watcher.py          Watchdog file watcher on .saipen/ files
+├── themes.py           Colour themes — palette + hexBlend computation
+├── paths.py            Path canonicalization + file-boundary checks
+├── protocol_write.py   Write coordinator — canonical journal delegation, recovery preflight
 ├── engines/            Agent Engine — supported CLI engines (claude-code, codex,
 │                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
@@ -365,4 +376,4 @@ MIT — see [LICENSE](../../LICENSE).
 <br>
 
 </div>
-<!-- source-digest: README.md sha256:ebb7f98b97feb3bcf07ed42da6ccb5fc92e6fbc703cf965e241cfc54cd3319b8 -->
+<!-- source-digest: README.md sha256:5776eab714b34ee522cf77ac78dea3b766ae66d2ae81f9359ab1c76565e3f126 -->

@@ -1,0 +1,19 @@
+{
+  "op_id": "scope-d5baf23914d84cf386dc429675d7aaab",
+  "paths": {
+    "CHANGELOG.md": "79d9a2dac81df142",
+    "README.ded.md": "bc01b7dc8454c05f",
+    "README.ee.md": "79ff6fb6d0a1c329",
+    "README.ja.md": "ef538505aeda3a3d",
+    "README.md": "85edd32e9c15c29e",
+    "VERSION": "d06fbcea5ea3ef5f",
+    "saipenview/__init__.py": "8be7c312c4348808"
+  },
+  "project_identity": "v:\\___vac\\__k\\__code\\_py\\_saipenview",
+  "project_lineage": "lineage-3d3c3d12923e46d5808f1545a72e3c6c",
+  "recorded_at": "2026-09-09T17:18:40Z",
+  "schema_version": 1,
+  "source_head": "dc4791c9b590f0789d921320528a38ba87771692",
+  "source_tree_fingerprint": "git-delta-v1:f1745a4666b57730807b16eeb82b5cbf3daa2f7954db076e5fccc4566a9f1254",
+  "ticket": "T-833"
+}

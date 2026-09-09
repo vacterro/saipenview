@@ -14,6 +14,20 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## 0.1.31 - 2026-09-09
+
+### Fixed
+
+- **Localized README mirrors synchronized with the release documentation
+  (T-833).** The Estonian, ÐÐµÐ´ and Japanese mirrors now carry the
+  current documentation state: api.py count 90, the 11 newer `saipenview`
+  modules (collect, outbox, ownership, saio, service, tailio,
+  external_changes, sessions, themes, paths, protocol_write) in source
+  order, and a restamped normalized source-digest marker. Delivered through
+  the canonical producer pipeline (SAIT-004 READY package integrated by the
+  collector) rather than direct edits; the version badges follow the source
+  mechanically.
+
 ## 0.1.30 - 2026-09-09
 
 ### Added

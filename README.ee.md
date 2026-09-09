@@ -17,7 +17,7 @@
     <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
-    <strong>**v0.1.30**</strong>
+    <strong>**v0.1.31**</strong>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
   </p>
 </div>
@@ -306,12 +306,19 @@ lahknevus, igaüks nimetatud stdoutis.
 ```
 saipenview/
 ├── app.py              Sisenemispunkti ühendus — salv, kiirklahv, aken, api, ühekordne kaitsja
-├── api.py              JS-vastane pywebview sild (89 avalikku meetodit)
+├── api.py              JS-vastane pywebview sild (90 avalikku meetodit)
 ├── scanner.py          Ketta läbikäik + taustal skaneerimistsükkel
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsimine
 ├── textio.py           Üks lugeja kõikidele .saipen/-failidele — BOM, UTF-16, cp1251
 ├── protocol.py         Protokolli suletud sõnavarad + BASELINE_VERSION
 ├── conformance.py      Hindab projekti nende sõnavarade vastu
+├── collect.py          Kogumise värav — üks adapter SAIPEN-i pakettide kehtivusele
+├── outbox.py           Range OUTBOX-i parsimine tootjapakettide jaoks
+├── ownership.py        Ühe kirjutaja omandus igal juurel (rakendus vs agendi käivitused)
+├── saio.py             Kanooniline SAIOPS-i kliendisild
+├── service.py          Headless SAIPENVIEW-i teenindusrežiim (SAIWORK-i manustamine)
+├── tailio.py           Piiratud tagasisuunalised saba-lugejad suurtele ainult-lisavatele logidele
+├── external_changes.py Backendis püsiv väliste muudatuste jälgimine
 ├── config.py           Seadete salvestamine/laadimine (aatomilised kirjed)
 ├── tray.py             pystray salveikoon + menüü
 ├── hotkey.py           Globaalsete kiirklahvide registreerimine (keyboard)
@@ -321,7 +328,11 @@ saipenview/
 ├── guard.py            Ühekordse eksemplari lukk + näitamistaotluse edastus
 ├── git_diff.py         Tööpuu diff / commit / revert agentide tegevuste jaoks
 ├── runtime.py          Agent Engine — käivitatud agentide protsessihaldur
+├── sessions.py         Agentide jooksude ajalugu + salvestatud transkriptid
 ├── watcher.py          Watchdog-failivaatur .saipen/-failidele
+├── themes.py           Värviteemad — palett + hexBlend arvutus
+├── paths.py            Teede kanoniseerimine + failipiiride kontrollid
+├── protocol_write.py   Kirjutuste koordinaator — delegeerimine kanoonilisele žurnaalile, taastamise eelkontroll
 ├── engines/            Agent Engine — toetatud CLI-mootorid (claude-code, codex,
 │                       aider, gemini, cline, goose, agy, generic_cli)
 ├── ui/
@@ -410,4 +421,4 @@ MIT — vt [LICENSE](../../LICENSE).
 <br>
 
 </div>
-<!-- source-digest: README.md sha256:ebb7f98b97feb3bcf07ed42da6ccb5fc92e6fbc703cf965e241cfc54cd3319b8 -->
+<!-- source-digest: README.md sha256:5776eab714b34ee522cf77ac78dea3b766ae66d2ae81f9359ab1c76565e3f126 -->
