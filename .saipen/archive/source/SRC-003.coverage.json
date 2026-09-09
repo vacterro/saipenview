@@ -1,0 +1,113 @@
+{
+  "requirements": {
+    "SRC-003:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "CORE-001 api.py refresh_known: the one-shot startup reconciliation obligation must survive a transient read failure and retry exhaustion instead of being consumed at refresh entry",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R002": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "CORE-002 external_changes.py: a corrupt persisted registry must have one explicit evidence-safe recovery transition that preserves post-corruption pending records and the archived corrupt artifact",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R003": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "CORE-003 api.py Api.stop: teardown must unsubscribe only Api-owned EventBus callbacks and never clear the process-global bus",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R004": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "CORE-004 tests/test_audit_all3.py: the >100-finding truncation regression must be clock-independent instead of encoding an expiring calendar date",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R005": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "W2-001 saio.py: canonical engine/codec/freshness loading must be serialized under one authority lock with one normalized home key, so two concurrent first-use homes cannot both publish",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R006": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "W2-002 api.py + watcher.py: stop must be a real lifecycle barrier -- already-entered refresh work and concurrent watcher topology sync must not mutate cache/UI/watch state after invalidation",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R007": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "W2-003 external_changes.py _load: persisted rows must be validated against the registry's own semantic invariants (canonical root, normalized rel path, persistable status, valid token) and fail closed on any violation",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R008": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "W2-004 api.py set_hotkeys: an ImportError from the binding callback must roll back runtime, live and persisted config and return ok:false instead of escaping",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R009": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-840",
+      "text": "PERF-001 scanner.py: a timed-out non-cooperative scan worker must be treated as quarantined capacity so later healthy roots still start",
+      "verification": "E-841",
+      "work": "T-800"
+    },
+    "SRC-003:R010": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-842",
+      "text": "PERF-002 api.py _load_cache_records: sidecar loading must parse each record once with O(N) canonicalization instead of O(N^2)",
+      "verification": "E-843",
+      "work": "T-801"
+    },
+    "SRC-003:R011": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-907",
+      "text": "PERF-003 api.py ticket index: derive from already-parsed BOARD data, avoid the O(N^2) project-list lookup, and evict removed roots on authoritative full scans",
+      "verification": "tests/test_src003_audit_clauses.py + tests/test_audit_all3.py, 1250 passed, E-908",
+      "work": "T-817"
+    },
+    "SRC-003:R012": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "E-846",
+      "text": "PERF-004 runtime.py + app.js: the agent badge must use a count-only path that samples no psutil metrics",
+      "verification": "E-847",
+      "work": "T-803"
+    }
+  },
+  "schema_version": 1
+}

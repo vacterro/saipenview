@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CHANGELOG_HEAD_RE = re.compile(r"^## \[(\d+\.\d+\.\d+)\]")
+CHANGELOG_HEAD_RE = re.compile(r"^## (\d+\.\d+\.\d+)")
 VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']")
 
 

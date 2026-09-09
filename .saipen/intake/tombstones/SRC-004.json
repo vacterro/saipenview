@@ -1,0 +1,15 @@
+{
+  "actionable": 19,
+  "archive_ref": ".saipen/archive/source/SRC-004.md",
+  "closed_at": "2026-09-06T00:07:15Z",
+  "closure_event": null,
+  "linked_work": "T-818",
+  "purged": true,
+  "purged_at": "2026-09-09T00:12:46Z",
+  "receipt_id": "SRC-004",
+  "requirements": 19,
+  "schema_version": 1,
+  "source_sha256": "26fb28ef5b416c6fd9fcc42a2cfae1380fd4b0deaefb8fc7f7e67a5cd61091b9",
+  "status": "CLOSED",
+  "unresolved": 0
+}

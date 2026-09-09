@@ -26,7 +26,7 @@ def _no_leaked_event_bus_subscribers():
 # ── Config fixtures ──
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def tmp_config_path(tmp_path: Path, monkeypatch) -> Path:
     """Point config_path to a tmp dir so tests never touch real config.
 
@@ -36,6 +36,14 @@ def tmp_config_path(tmp_path: Path, monkeypatch) -> Path:
     ...) -- picks up the override. A plain ``monkeypatch.setattr`` of the bound
     ``config_path`` name leaks across tests because those late-imported modules
     capture the patched value at import time and are never re-patched.
+
+    Autouse, because the damage is invisible from inside the suite: everything
+    hanging off config_path().parent -- ``cache.json``, the per-root
+    ``cache_records/`` sidecars, ``sessions/`` -- belongs to the INSTALLED app.
+    A test that built an ``Api()`` without this fixture published its fixture
+    rows into the user's durable cache and wrote deletion tombstones over the
+    real ones, so the next real launch cold-started with an empty project list
+    and had to wait out a full drive scan before showing anything.
     """
     from saipenview import config as cfg_mod
     fake_dir = tmp_path / "_data"
@@ -290,7 +298,11 @@ def saipen_project_with_staleness(tmp_path: Path) -> Path:
     )
     (canon_subs / "README.md").write_text("# Subs\n\nReadme\n", encoding="utf-8")
     (canon_subs / "MANIFEST.md").write_text("- test-sub -- test\n", encoding="utf-8")
-    (canon_subs / "CREW.md").write_text("# Crew\n", encoding="utf-8")
+    # Lowercase, as the engine ships it (`saipen_engine.subs._SHARED_FILES`).
+    # It was `CREW.md` here, which resolves on Windows and not on Linux -- so
+    # the fixture agreed with the code only on one of the two platforms this
+    # suite runs on.
+    (canon_subs / "crew.md").write_text("# Crew\n", encoding="utf-8")
 
     templ = canon_subs / "TEMPLATE"
     templ.mkdir(exist_ok=True)
@@ -305,7 +317,7 @@ def saipen_project_with_staleness(tmp_path: Path) -> Path:
     (subs_dir / "PROTOCOL.md").write_text("# Protocol\n\nCanonical\n", encoding="utf-8")
     (subs_dir / "README.md").write_text("# Subs\n\nReadme\n", encoding="utf-8")
     (subs_dir / "MANIFEST.md").write_text("- test-sub -- test\n", encoding="utf-8")
-    (subs_dir / "CREW.md").write_text("# Crew\n", encoding="utf-8")
+    (subs_dir / "crew.md").write_text("# Crew\n", encoding="utf-8")
 
     local_templ = subs_dir / "TEMPLATE"
     local_templ.mkdir(exist_ok=True)
@@ -329,7 +341,7 @@ def saipen_project_with_staleness(tmp_path: Path) -> Path:
 _STALENESS_FILES = [
     "PROTOCOL.md",
     "README.md",
-    "MANIFEST.md",
+    "crew.md",
     "TEMPLATE/STATE.md",
     "TEMPLATE/BOARD.md",
     "TEMPLATE/LOG.md",

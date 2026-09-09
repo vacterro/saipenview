@@ -105,3 +105,17 @@ def test_the_panel_still_knows_which_project_it_is_showing(app_js: str) -> None:
     assert "data-root=" in panel.group(0), (
         "the panel no longer records which project it is showing"
     )
+
+
+def test_no_native_alert_or_confirm(app_js: str) -> None:
+    """The page must not open a native dialog: pywebview routes `alert()` and
+    `confirm()` to a WinForms MessageBox, and an icon-carrying MessageBox plays
+    a Windows system sound. The app owns its own DOM overlays instead.
+    """
+    offenders = []
+    for match in re.finditer(r"(?<![.\w$])(alert|confirm)\s*\(", app_js):
+        line = app_js[: match.start()].count("\n") + 1
+        offenders.append(f"app.js:{line}: {match.group(1)}()")
+    assert not offenders, "native dialog call (plays a system sound):\n" + "\n".join(
+        offenders
+    )

@@ -1,10 +1,15 @@
-"""T-27 / W2-017: read_file_text ordinary-file branch returns text.
+"""T-27 / W2-017 + SRC-004 R009: read_file_text ordinary-file branch.
 
 The ordinary file path decoded text into `text` but never returned it —
 only the protocol branch had a return statement. Allowed notes.md reads
 returned None instead of the file content.
 
-Fix: add `return text` after the protocol branch for ordinary files.
+Fix: return the decoded text for ordinary files.
+
+R009 extended the contract: EVERY read returns the editable snapshot
+`{text, edit_version, existed}` -- the token is the hash of the exact bytes
+returned, so an ordinary save can CAS against the baseline the user saw.
+A plain string would keep the stale-editor silent-overwrite hole open.
 """
 
 from __future__ import annotations
@@ -58,7 +63,7 @@ def api(tmp_path: Path):
 
 
 def test_read_ordinary_md_returns_text(api: Api, tmp_path: Path):
-    """Allowed .md file returns decoded string, not None."""
+    """Allowed .md file returns decoded text in the snapshot contract."""
     (tmp_path / ".saipen").mkdir()
     (tmp_path / ".saipen" / "STATE.md").write_text(
         "---\nphase: PLAN\n---\n", encoding="utf-8"
@@ -67,11 +72,14 @@ def test_read_ordinary_md_returns_text(api: Api, tmp_path: Path):
     f = tmp_path / "notes.md"
     f.write_text("hello world\n", encoding="utf-8")
     result = api.read_file_text(str(f))
-    assert result == "hello world\n", f"expected text, got {result!r}"
+    assert isinstance(result, dict), f"expected snapshot, got {result!r}"
+    assert result["text"] == "hello world\n"
+    assert result["existed"] is True
+    assert result["edit_version"], "ordinary reads must carry a CAS token"
 
 
 def test_read_ordinary_json_returns_text(api: Api, tmp_path: Path):
-    """Allowed .json file returns decoded string, not None."""
+    """Allowed .json file returns decoded text in the snapshot contract."""
     (tmp_path / ".saipen").mkdir()
     (tmp_path / ".saipen" / "STATE.md").write_text(
         "---\nphase: PLAN\n---\n", encoding="utf-8"
@@ -80,7 +88,9 @@ def test_read_ordinary_json_returns_text(api: Api, tmp_path: Path):
     f = tmp_path / "data.json"
     f.write_text('{"key": "value"}\n', encoding="utf-8")
     result = api.read_file_text(str(f))
-    assert result == '{"key": "value"}\n', f"expected text, got {result!r}"
+    assert isinstance(result, dict), f"expected snapshot, got {result!r}"
+    assert result["text"] == '{"key": "value"}\n'
+    assert result["existed"] is True
 
 
 def test_read_nonexistent_returns_none(api: Api, tmp_path: Path):
@@ -95,9 +105,11 @@ def test_read_nonexistent_returns_none(api: Api, tmp_path: Path):
 
 
 def test_read_file_text_source_has_return(api: Api):
-    """Verify the source code contains the ordinary-file return path."""
+    """The ordinary-file branch must return the decoded text inside the
+    snapshot dict -- never None and never a bare string (R009: a bare
+    string carries no CAS baseline, reopening the silent-overwrite hole)."""
     import inspect
 
     source = inspect.getsource(Api.read_file_text)
-    # After the protocol branch, there must be a return text for ordinary files
-    assert "return text" in source, "read_file_text must return text for ordinary files"
+    assert '"text": text' in source, "ordinary files must return text in the snapshot"
+    assert "existed" in source, "the snapshot must carry the existence baseline"

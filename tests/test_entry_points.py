@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,19 @@ import pytest
 # ── Helpers ──
 
 _MOCKED_MODULES: set[str] = set()
+
+
+@pytest.fixture(autouse=True)
+def _no_generated_startup_page():
+    """MainWindow tests run against the REAL static dir, so the T-831 delivery
+    path generates index.lite.html there; remove it before AND after every
+    test so nothing generated is left in the repository tree."""
+    from saipenview.ui import index_page
+
+    generated = Path(index_page.generated_index_path())
+    generated.unlink(missing_ok=True)
+    yield
+    generated.unlink(missing_ok=True)
 
 
 def _ensure_mock(mod_name: str, attrs: list[str] | None = None) -> MagicMock:
@@ -77,6 +91,77 @@ class TestMainModule:
         )
         _ = load_config()  # canonicalizes; path won't exist
         assert _dry_run() == 1
+
+    def test_startup_crash_is_silent(self, tmp_path):
+        """A failed start writes crash.log and exits 1 WITHOUT a Win32 dialog.
+
+        Every icon-carrying MessageBox plays a Windows system sound; the app
+        must never make noise, so the crash surface is the log + exit code.
+        """
+        _ensure_mock("webview")
+        import ctypes
+
+        import saipenview.__main__ as m
+
+        crash_log = tmp_path / "crash.log"
+        user32 = MagicMock()
+        with (
+            patch("saipenview.app.run", side_effect=RuntimeError("boom")),
+            patch.object(sys, "argv", ["saipenview"]),
+            patch.object(m, "__file__", str(tmp_path / "__main__.py")),
+        ):
+            if hasattr(ctypes, "windll"):
+                with patch.object(ctypes, "windll", new=MagicMock()) as windll:
+                    windll.user32 = user32
+                    assert m.main() == 1
+                assert not user32.MessageBoxW.called
+            else:
+                assert m.main() == 1
+        assert "boom" in crash_log.read_text(encoding="utf-8")
+
+    def test_no_sound_capable_win32_calls(self):
+        """No module may call a sound-producing Win32 API."""
+        from pathlib import Path
+
+        import saipenview
+
+        pkg = Path(saipenview.__file__).parent
+        banned = ("MessageBoxW", "MessageBoxA", "MessageBeep", "PlaySound", "winsound")
+        offenders = []
+        for path in pkg.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for name in banned:
+                if name in text:
+                    offenders.append(f"{path.name}:{name}")
+        assert offenders == []
+
+    def test_hard_error_dialogs_are_suppressed(self):
+        """main() must set the process error mode before anything walks a drive.
+
+        An unreadable volume otherwise raises a system-modal Windows dialog:
+        it plays a sound and blocks the calling thread until dismissed, which
+        on a hidden window means the scan never finishes.
+        """
+        _ensure_mock("webview")
+        import ctypes
+
+        import saipenview.__main__ as m
+
+        if not hasattr(ctypes, "windll"):
+            pytest.skip("ctypes.windll not available on this platform")
+
+        kernel32 = MagicMock()
+        with (
+            patch("saipenview.app.run", return_value=0),
+            patch.object(sys, "argv", ["saipenview"]),
+            patch.object(ctypes, "windll", new=MagicMock()) as windll,
+        ):
+            windll.kernel32 = kernel32
+            assert m.main() == 0
+        kernel32.SetErrorMode.assert_called_once()
+        flags = kernel32.SetErrorMode.call_args[0][0]
+        assert flags & 0x0001, "SEM_FAILCRITICALERRORS not set"
+        assert flags & 0x8000, "SEM_NOOPENFILEERRORBOX not set"
 
 
 # ── app.py ──

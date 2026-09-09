@@ -98,6 +98,9 @@ const LOCALE_ET = {
   "settings.save.saving": "Salvestamine...",
   "settings.save.timedOut": "Salvestamine aegus — proovi uuesti?",
   "settings.close.text": "Sule",
+  "settings.theme.label": "Värviteema",
+  "settings.engineOverrides.label": "Agendi CLI ülekirjutused (JSON)",
+  "settings.engineOverrides.placeholder": "{\"engine-name\": {\"path\": \"\", \"extra_args\": [], \"env\": {}}}",
 
   // ── File viewer ──
   "fileViewer.modeBtn.source": "Allikas",
@@ -238,6 +241,7 @@ const LOCALE_ET = {
   "time.daysAgo": "${n}p tagasi",
   "time.monthsAgo": "${n}k tagasi",
   "time.yearsAgo": "${n}a tagasi",
+  "time.clockAhead": "kell ees (tuleviku ajatempel)",
 
   // ── Collect / outbox ──
   "outbox.collect.title": "Kogu see sissekanne põhiprojekti",
@@ -276,7 +280,19 @@ const LOCALE_ET = {
   "agent.shortcut.clean.title": "Saada 'saipen clean' — tee tahvlil ja repos korda",
   "agent.output.lines": "Read",
   "agent.restored": "— salvestatud transkript — ${engine} — ${status} — ${when} —",
+  "agent.history.title": "Selle projekti varasemad agendijooksud — vali üks, et vaadata selle salvestatud transkripti",
+  "agent.history.label": "ajalugu",
+  "agent.history.empty": "varasemaid jookse pole",
+  "agent.restoredHistory": "— salvestatud transkript, ${count} rida —",
+  "agent.noTranscript": "selle jooksu jaoks salvestatud transkripti pole",
   "agent.output.truncated": "transkript kärbitud",
   "agent.output.title": "Agendi protsessi otseväljund. Ainult lugemiseks.",
   "agent.noEngines": "PATH-ist ei leitud ühtegi agendi CLI-d (Claude, Gemini, Codex, OpenCode, Aider, Cline, Goose, Agy). Varuvariandina valitakse tavaline CLI.",
+  "agent.noStdin": "See agendi CLI on ühekordne (headless): see ei loe pärast käivitamist sisendit, seepärast ei pakuta nuppu Saada, enne kui stdin'i tugi on selle puhul tõestatud",
+  "agent.unrecorded": "Salvestamata väline muudatus selle projekti .saipen failides",
+  "agent.unrecorded.title": "Sa muutsid projekti ise — salvesta see, et tahvel kajastaks käsitsi tehtud tööd",
+  "agent.unrecorded.record": "Salvesta käsitsi tehtud töö",
+  "agent.unrecorded.files": "Failid",
+  "agent.unrecorded.hide": "Peida failid",
+  "agent.unrecorded.files.title": "Näita/peida üksikud muudetud failid, igaühel oma kinnitus",
 };

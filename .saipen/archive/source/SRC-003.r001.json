@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-003:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-001 api.py refresh_known: the one-shot startup reconciliation obligation must survive a transient read failure and retry exhaustion instead of being consumed at refresh entry"
+    }
+  },
+  "derived_at": "2026-09-03T22:02:06Z",
+  "derived_from": "SRC-003",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "942c5487749aa018777e35f83d96e95567d07ac348d92c154fa1e56387d96a67"
+}

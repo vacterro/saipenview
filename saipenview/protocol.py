@@ -22,7 +22,7 @@ lag it *quietly*.
 
 from __future__ import annotations
 
-BASELINE_VERSION = "7.247.0"
+BASELINE_VERSION = "8.0.1"
 
 # CORE § 1.6 phase enum, also the `phase`/`transition_from` enum in
 # extensions/schemas/state.schema.json.
@@ -121,6 +121,7 @@ SAIPEN_COMMANDS: frozenset[str] = frozenset(
         "hush",
         "improve",
         "init",
+        "knowledge",
         "markhunt",
         "next",
         "permissions",
@@ -191,6 +192,23 @@ VALID_TRANSITIONS: dict[str, tuple[str, ...]] = {
 # extensions/subs/PROTOCOL.md § 2 status table.
 OUTBOX_STATUSES: tuple[str, ...] = ("ready", "draft", "blocked", "reviewed", "stale")
 
+# tools/saipen_engine/applicability.py PROBES -- 7.251.0 CREW-APPLICABILITY-01.
+# A crew role declares ONE probe naming the deterministic project fact that
+# decides whether it has anything to work on. `always` is the default and means
+# the role declares no condition; `visual-surface` is the only condition any
+# built-in declares (saiui). A NOT_APPLICABLE role is skipped with a receipt
+# naming the deciding fact AND is not spawned, so a project with no UI stops
+# producing an empty UI package that becomes a review ticket every cycle.
+#
+# Mirrored here for the same reason every other set in this file is: the viewer
+# renders sub state, and an unknown probe name must be visibly unknown rather
+# than silently rendered as ordinary. Two rules travel with the set and the
+# viewer must not invert either -- an unknown probe resolves APPLICABLE (the
+# model fails toward doing the work), and NOT_APPLICABLE always carries a
+# reason, because a bare verdict is indistinguishable from a stage nobody ran.
+APPLICABILITY_PROBES: tuple[str, ...] = ("always", "visual-surface")
+APPLICABILITY_VERDICTS: tuple[str, ...] = ("APPLICABLE", "NOT_APPLICABLE")
+
 # CORE § 1.2 BOARD.md section headings -- all four MUST be present, even empty.
 BOARD_HEADINGS: tuple[str, ...] = ("DOING", "TODO", "DONE", "BLOCKED")
 
@@ -210,6 +228,10 @@ TICKET_FIELDS: frozenset[str] = frozenset(
         "recurrence",
         "weak_model",
         "source_receipts",
+        # 7.250.0 VERIFY-ORACLE-01: `regression: required` is the machine-owned
+        # declaration that a ticket owes a red/green regression PAIR, not just a
+        # green run. A field, not an inference from the description.
+        "regression",
     }
 )
 

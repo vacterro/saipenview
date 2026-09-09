@@ -23,8 +23,25 @@ saipenview/_data/
 # Session / agent data — machine-local paths, session state. INTENTIONALLY
 # local-only by written contract (docs/saipen-persistence.md, T-172): the
 # canonical memory travels via tools/export_source.py, never via git.
-.saipen/
+.saipen/*
 .freebuff/
+# Release-authority exception (T-832 ship convergence): the source-receipt
+# intake/archive surface and the per-ticket release scope record are release
+# metadata (docs/saipen-persistence.md, "Authority receipts" section) — the
+# release executor must be able to commit them on ship so a fresh clone
+# carries the authoritative source scope. Everything else under .saipen/
+# stays machine-local.
+!.saipen/intake/
+!.saipen/archive/
+!.saipen/kitchen/
+.saipen/kitchen/*
+!.saipen/kitchen/release_scope/
+# The own-`.saipen` CI snapshot is TRACKED by deliberate exception (repair
+# mission P1): CI cannot validate the gitignored live memory, so it validates
+# this sanitized, mechanically-generated fixture instead. Regenerate with
+# tools/snapshot_saipen.py --write.
+!tests/fixtures/own_saipen_snapshot/.saipen/
+!tests/fixtures/own_saipen_snapshot/.saipen/**
 # The own-`.saipen` CI snapshot is TRACKED by deliberate exception (repair
 # mission P1): CI cannot validate the gitignored live memory, so it validates
 # this sanitized, mechanically-generated fixture instead. Regenerate with
@@ -62,3 +79,4 @@ NUL.*
 *.exe
 *.dist/
 crash.log
+saipenview/ui/static/index.lite.html

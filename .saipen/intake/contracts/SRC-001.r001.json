@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-001:R1": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [CORE-001] saipenview/ui/static/app.js / protocol source-editor Save path -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    }
+  },
+  "derived_at": "2026-09-09T14:30:16Z",
+  "derived_from": "SRC-001",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "fbad3d286d48eda4c4b2b86ac1d88b8207fa35e480e17c07db03ea8a360e09ac"
+}

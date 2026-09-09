@@ -1,0 +1,15 @@
+{
+  "linked_work": null,
+  "receipt_id": "SRC-001",
+  "received_at": "2026-08-26T01:36:20Z",
+  "schema_version": 1,
+  "sensitive": false,
+  "source_kind": "user_instruction",
+  "source_sha256": "fbad3d286d48eda4c4b2b86ac1d88b8207fa35e480e17c07db03ea8a360e09ac",
+  "status": "ACTIVE",
+  "transport": {
+    "newline_normalization": "none",
+    "source_encoding": "utf-8",
+    "transport_transform": "none"
+  }
+}

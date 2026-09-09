@@ -1,0 +1,69 @@
+{
+  "clauses": {
+    "SRC-001:R1": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [CORE-001] saipenview/ui/static/app.js / protocol source-editor Save path -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R10": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [W2-005] saipenview/scanner.py::scan / BackgroundScanner.stop + saipenview/api.py::_set_cache/rescan/set_scan_roots/browse_folder -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R11": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [W2-006] saipenview/ui/static/app.js Settings Save / SaiApi.supports / service RPC capability boundary -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R12": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [W2-007] saipenview/api.py::refresh_known concurrent registry commit -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R2": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [CORE-002] saipenview/runtime.py / ProcessManager.kill, _exit_monitor, _finalize -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R3": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P2] [CORE-003] saipenview/api.py / Api.__init__, _on_file_changed root-refresh debounce -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R4": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P2] [CORE-004] saipenview/api.py + saipenview/config.py / configuration setter normalization -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R5": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P2] [CORE-005] saipenview/runtime.py / _assign_job_object and completed-process handle ownership -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R6": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [W2-001] saipenview/ui/static/app.js::poll / saipenview/ui/static/sai-api.js transport contract -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R7": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [W2-002] saipenview/service.py::SaipenViewService.start / stop -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R8": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [W2-003] saipenview/api.py configuration mutation paths / save_view_config -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-001:R9": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [W2-004] saipenview/ui/static/app.js::renderDetailPane mutation callbacks -- audit finding carried verbatim from the SRC-001 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    }
+  },
+  "derived_at": "2026-09-09T14:30:20Z",
+  "derived_from": "SRC-001",
+  "interpretation_revision": 12,
+  "schema_version": 1,
+  "source_sha256": "fbad3d286d48eda4c4b2b86ac1d88b8207fa35e480e17c07db03ea8a360e09ac"
+}

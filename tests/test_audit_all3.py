@@ -646,17 +646,29 @@ def test_round2_t700_log_refresh_regrades_coherently(tmp_path):
 
 def test_round2_t700_truncated_log_exact_zero_old_failures(tmp_path):
     """T-700: >100 LOG findings then a clean LOG must produce exact zero old
-    LOG failures and correct truncation metadata (no stale transport cap)."""
+    LOG failures and correct truncation metadata (no stale transport cap).
+
+    CORE-004 (SRC-003:R004): the seeded stamps are derived from the CURRENT
+    clock plus a margin larger than `LOG_CLOCK_SLACK_SECONDS`. They used to be
+    hard-coded to `30.08.26 23:59`, which stopped being in the future three
+    days after the test was written -- so the case went permanently red for a
+    reason unrelated to T-700 and stopped proving the truncation invariant at
+    all. A calendar constant cannot express "ahead of now"; only the clock can.
+    """
+    import datetime
+
+    from saipenview import protocol
     from saipenview.api import Api
 
     proj = _round2_fixture(tmp_path)
-    # Seed LOG with >100 future-stamped entries (each yields a fail finding).
+    future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+        seconds=protocol.LOG_CLOCK_SLACK_SECONDS + 86400
+    )
+    stamp = future.strftime("%d.%m.%y %H:%M")
+    # Seed >100 future-stamped entries (each yields a log.timestamp.future fail).
     lines = ["# Log\n"]
     for i in range(1, 121):
-        lines.append(
-            f"- 30.08.26 23:59 [E-{i:03d}] [parent: E-{i-1:03d}] "
-            f"DEC: future {i}\n"
-        )
+        lines.append(f"- {stamp} [E-{i:03d}] [parent: E-{i-1:03d}] DEC: future {i}\n")
     (proj / ".saipen" / "LOG.md").write_text("\n".join(lines), encoding="utf-8")
     a = _round2_api(Api(), proj)
     try:
@@ -664,6 +676,9 @@ def test_round2_t700_truncated_log_exact_zero_old_failures(tmp_path):
         row = next(p for p in a._projects if p["root"] == str(proj))
         conf = row["conformance"]
         assert conf["verdict"] == "fail"
+        assert "log.timestamp.future" in {f["rule"] for f in conf["findings"]}, (
+            f"future stamps not detected: {conf}"
+        )
         assert conf.get("findings_truncated") is True, (
             f">100 findings must set truncated: {conf}"
         )

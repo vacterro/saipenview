@@ -525,8 +525,15 @@ class SaipenViewService:
                 from pathlib import Path
 
                 static_dir = Path(__file__).resolve().parent / "ui" / "static"
-                # Serve index.html for the bare base path (SAIWORK iframe target).
-                rel = "index.html" if path in ("/", "") else path.lstrip("/")
+                # T-831: / and /index.html must serve the EFFECTIVE startup
+                # document rendered for the CURRENT config locale, in memory
+                # -- never the raw 34-locale template and never a generated
+                # index.lite.html file. Every other path stays ordinary
+                # static delivery (path-safety and dotfile rules untouched).
+                if path in ("/", "", "/index.html"):
+                    self._serve_startup_document()
+                    return
+                rel = path.lstrip("/")
                 candidate = (static_dir / rel).resolve()
                 # Path-safety: never escape the static dir, never serve dotfiles.
                 if not candidate.is_relative_to(
@@ -546,6 +553,45 @@ class SaipenViewService:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _serve_startup_document(self) -> None:
+                """The rendered startup page for the current config locale.
+
+                Rendered IN MEMORY per request from the LIVE backend config
+                (a locale change in Settings is served on the next GET).
+                The service never creates or touches index.lite.html, and it
+                must not import the GUI window stack. A renderer failure is a
+                controlled 5xx with the diagnostic on the server side -- the
+                browser never receives a fabricated 200 page, and filesystem
+                internals stay out of the response."""
+                from saipenview.ui import index_page
+
+                locale = "en"
+                try:
+                    if service._api is not None:
+                        locale = service._api.get_config().get("locale") or "en"
+                except Exception as e:  # noqa: BLE001 - fall back to en, keep serving
+                    print(
+                        f"SAIPENVIEW service: config read for startup page "
+                        f"failed, using en: {e}",
+                        file=__import__("sys").stderr,
+                    )
+                try:
+                    html = index_page.render_index_html(locale).encode("utf-8")
+                except index_page.IndexPageError as e:
+                    print(
+                        f"SAIPENVIEW service: startup page render failed: {e}",
+                        file=__import__("sys").stderr,
+                    )
+                    self._send_error_json(
+                        500, "startup page unavailable: renderer failure"
+                    )
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(html)))
+                self.end_headers()
+                self.wfile.write(html)
 
             def do_POST(self) -> None:
                 path = self.path.split("?", 1)[0]

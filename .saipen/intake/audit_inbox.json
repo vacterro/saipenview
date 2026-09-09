@@ -1,0 +1,31 @@
+{
+  "layers": {
+    "audit/1.md": {
+      "binding": "exact",
+      "captured_at": "2026-09-03T21:57:38Z",
+      "closed_at": "2026-09-04T05:07:14Z",
+      "file_sha256": "942c5487749aa018777e35f83d96e95567d07ac348d92c154fa1e56387d96a67",
+      "generation": 1,
+      "layer": 1,
+      "linked_work": "T-817",
+      "receipt_id": "SRC-003",
+      "receipt_sha256": "942c5487749aa018777e35f83d96e95567d07ac348d92c154fa1e56387d96a67",
+      "size_bytes": 53323,
+      "state": "DELETED"
+    },
+    "audit/2.md": {
+      "binding": "exact",
+      "captured_at": "2026-09-04T05:09:05Z",
+      "closed_at": "2026-09-06T00:07:27Z",
+      "file_sha256": "26fb28ef5b416c6fd9fcc42a2cfae1380fd4b0deaefb8fc7f7e67a5cd61091b9",
+      "generation": 1,
+      "layer": 2,
+      "linked_work": "T-818",
+      "receipt_id": "SRC-004",
+      "receipt_sha256": "26fb28ef5b416c6fd9fcc42a2cfae1380fd4b0deaefb8fc7f7e67a5cd61091b9",
+      "size_bytes": 80860,
+      "state": "DELETED"
+    }
+  },
+  "schema_version": 1
+}

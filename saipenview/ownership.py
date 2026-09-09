@@ -21,6 +21,7 @@ already passed (the mutation re-checks under the lock).
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from pathlib import Path
 
@@ -97,3 +98,35 @@ class RootOwnership:
                 self._app_tx.pop(key, None)
             else:
                 self._app_tx[key] = depth
+
+    @contextlib.contextmanager
+    def app_transaction(self, root: Path):
+        """A SERIALIZED app transaction: the per-root lock is held throughout.
+
+        W2-003 (SRC-004:R011): `begin_app_tx` marks activity and returns, so it
+        releases `lock(root)` on the way out. That is correct for the write
+        coordinator, which takes the lock itself and holds it around the whole
+        mutation -- but a caller that only calls `begin_app_tx` gets no mutual
+        exclusion at all: the depth counter happily goes to 2 and both app
+        writers proceed. Two `git commit`/`reset`/`clean` operations on one root
+        could therefore verify the same fingerprint and then interleave their
+        index and worktree work.
+
+        The two verbs are deliberately distinct so a caller cannot confuse them:
+        `begin_app_tx` MARKS app activity, this MARKS AND SERIALIZES. Yields
+        True when the transaction is owned, False when an agent owns the root
+        (the caller refuses); the lock is released either way on exit.
+
+        Reentrant by construction -- the lock is an RLock, so a coordinator
+        mutation nested inside this context on the same thread still works.
+        """
+        lock = self.lock(root)
+        lock.acquire()
+        owned = False
+        try:
+            owned = self.begin_app_tx(root)
+            yield owned
+        finally:
+            if owned:
+                self.end_app_tx(root)
+            lock.release()

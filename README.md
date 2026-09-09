@@ -16,6 +16,7 @@
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
+    <strong>**v0.1.30**</strong>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
   </p>
 </p>
@@ -347,12 +348,19 @@ mismatch, each named on stdout.
 ```
 saipenview/
 ├── app.py              Entry wiring — tray, hotkey, window, api, single-instance guard
-├── api.py              JS-facing pywebview bridge (89 public methods)
+├── api.py              JS-facing pywebview bridge (90 public methods)
 ├── scanner.py          Drive walk + parallel per-root scan + background rescan loop
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsing, tickets, subs, git status
 ├── textio.py           One reader/writer for every .saipen/ file — BOM, UTF-16, cp1251
 ├── protocol.py         The protocol's closed vocabularies + BASELINE_VERSION
 ├── conformance.py      Grades a project against those vocabularies
+├── collect.py          The collect gate — one adapter for SAIPEN package validity
+├── outbox.py           Strict OUTBOX parsing for producer packages
+├── ownership.py        Per-root single-writer ownership (app vs agent launches)
+├── saio.py             The canonical SAIOPS client bridge
+├── service.py          Headless SAIPENVIEW service mode (SAIWORK embedding)
+├── tailio.py           Bounded backward tail readers for large append-only logs
+├── external_changes.py Backend-persistent external-change tracking
 ├── config.py           Settings load/save (atomic writes)
 ├── tray.py             pystray system-tray icon + menu
 ├── hotkey.py           Global hotkey registration (keyboard lib)

@@ -112,8 +112,7 @@ def engine_vocab():
     saved_path = list(sys.path)
     try:
         sys.path.insert(0, str(tools))
-        from saipen_engine import phases
-        from saipen_engine import registry
+        from saipen_engine import applicability, phases, registry
 
         reg = registry.load_registry()
         return {
@@ -136,6 +135,14 @@ def engine_vocab():
             "valid_transitions": {
                 k: frozenset(v) for k, v in phases.VALID_TRANSITIONS.items()
             },
+            # 7.251.0 CREW-APPLICABILITY-01. Imported, not parsed: the probe set
+            # and its two verdicts are module constants, and importing the
+            # module also proves the two are consistent with each other in the
+            # engine rather than only in this test's reading of it.
+            "applicability_probes": frozenset(applicability.PROBES),
+            "applicability_verdicts": frozenset(
+                {applicability.APPLICABLE, applicability.NOT_APPLICABLE}
+            ),
         }
     finally:
         for name in [
@@ -298,6 +305,41 @@ class TestAgainstValidator:
 
     def test_checkbox_sections(self, engine_src):
         assert protocol.CHECKBOX_SECTIONS == _checkbox_sections(engine_src["board"])
+
+
+class TestAgainstApplicability:
+    """7.251.0 CREW-APPLICABILITY-01: the crew roster became conditional.
+
+    A role declares one probe naming the deterministic project fact that decides
+    whether it has anything to work on, and a NOT_APPLICABLE role is skipped
+    with a receipt AND not spawned. The viewer renders sub state, so a probe the
+    engine adds and the viewer does not know is exactly the silent lag
+    `BASELINE_VERSION` exists to prevent -- these assert the set rather than
+    trusting the version string.
+    """
+
+    def test_probe_vocabulary(self, engine_vocab):
+        assert frozenset(protocol.APPLICABILITY_PROBES) == engine_vocab[
+            "applicability_probes"
+        ], (
+            "the engine's applicability probe set moved; a probe the viewer does "
+            "not know would render as ordinary state instead of as unknown"
+        )
+
+    def test_verdict_vocabulary(self, engine_vocab):
+        assert frozenset(protocol.APPLICABILITY_VERDICTS) == engine_vocab[
+            "applicability_verdicts"
+        ]
+
+    def test_always_is_the_default_probe(self, engine_vocab):
+        """The default has to be the permissive one, in both places.
+
+        If `always` ever stopped being a member, every role that declares no
+        condition would be judged against a probe nobody wrote, and the failure
+        direction would be a silently skipped capability.
+        """
+        assert "always" in protocol.APPLICABILITY_PROBES
+        assert "always" in engine_vocab["applicability_probes"]
 
 
 class TestAgainstEngine:

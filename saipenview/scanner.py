@@ -167,6 +167,213 @@ SCAN_INTER_DIR_DELAY = 0.001
 SCAN_DELAY_EVERY_N = 100
 SYSTEM_DRIVE = "C:\\"
 
+# T-814: overlapping configured scan roots. Config may hold both ``v:\`` and a
+# deeper nested root such as ``v:\___vac\__k\__code``; the naive
+# one-worker-per-raw-root submission walks the nested subtree twice (measured:
+# 2.11s of every cycle on the real roots, for 7 projects the parent only
+# misses because of depth). The fix is an ownership plan, not a depth change:
+# every configured root stays an independent provenance/depth unit, but a
+# parent walk PRUNES any child directory whose subtree is owned by a
+# more-specific configured root, and that root's own worker scans the
+# subtree exactly once at its own max_depth.
+#
+# Lexical only. The plan is built by the scan coordinator BEFORE worker
+# submission; no canonical()/exists()/resolve()/stat() may be added here
+# (PERF-002: filesystem-touching preflight happens inside the bounded
+# workers). Aliases therefore normalize with os.path.normcase + normpath
+# only -- the same lexical rules the in-flight reservation already uses, so
+# alias/case/trailing-separator behaviour stays compatible with it.
+
+
+def _lexical_root_key(root: str) -> str:
+    """Cheap scheduling identity used before filesystem-touching preflight."""
+    return os.path.normcase(os.path.normpath(os.fspath(root))).rstrip("\\/")
+
+
+def _lexical_norm(root: str) -> str:
+    """T-814: normcase+normpath WITHOUT stripping the trailing separator, so a
+    drive root (``v:\\``) and a bare drive letter compare correctly.
+
+    ``_lexical_root_key`` strips trailing separators (right for reservation
+    identity, where a root and its no-slash spelling are the same worker), but
+    it cannot be used for ancestry: ``v:`` does not prefix-contain ``v:\\x``
+    lexically. Windows accepts both spellings of a drive root, and normpath
+    keeps ``v:\\`` as-is while collapsing ``v:\\x\\`` to ``v:\\x`` -- so the
+    unstripped form is the one where the simple ``== or startswith(sep)`` test
+    is exact."""
+    return os.path.normcase(os.path.normpath(os.fspath(root)))
+
+
+def build_overlap_plan(
+    scan_roots: list[str],
+) -> dict[str, list[str]]:
+    """T-814: map each scan root to the child dirs a walk must PRUNE.
+
+    Purely lexical: normcase/normpath, no filesystem access. A root R prunes
+    child directory C when C belongs to a DIFFERENT configured root that is a
+    strict lexical descendant of R. When several configured roots own the same
+    subtree, the MOST-SPECIFIC (deepest) root owns it, so a middle root never
+    double-prunes with a grandchild root -- each subtree is traversed by
+    exactly one worker, and nested-many-levels ownership stays deterministic.
+
+    Cross-drive roots are never related: a descendant test requires the same
+    drive prefix, so ``c:/x`` can never prune inside ``v:/``.
+
+    Returns ``{pruner_root_lexical: [pruned_child_lexical, ...]}`` (only roots
+    that actually prune something carry entries). Workers look their walk root
+    up under all three lexical spellings (raw, key, normalized) so alias
+    spellings of the same configured root share the plan.
+    """
+    entries = [_lexical_norm(r) for r in scan_roots if str(r).strip()]
+    # Deduplicate aliases (same spelling after normcase/normpath) keeping
+    # first-seen order, so a parent and an alias-spelled child never both prune.
+    unique: list[str] = []
+    seen: set[str] = set()
+    for e in entries:
+        if e not in seen:
+            seen.add(e)
+            unique.append(e)
+    plan: dict[str, list[str]] = {}
+    for parent in unique:
+        # Every distinct configured root nested under this one is a candidate
+        # pruned child; overlapping-grandchild dedup happens on the CHILD side
+        # below (the deepest root owns the subtree and prunes it away from
+        # every shallower ancestor).
+        children = [c for c in unique if c != parent and _is_lexical_descendant(parent, c)]
+        if not children:
+            continue
+        plan[parent] = sorted(children)
+    return plan
+
+
+def _is_lexical_descendant(root: str, other: str) -> bool:
+    """True when *other* is *root* itself or lives under it, lexically.
+
+    Both sides arrive normcase/normpath'd from _lexical_norm. Different drives
+    can never match (the prefix check needs the same ``x:`` head), so roots on
+    separate drives are unrelated by construction."""
+    if other == root:
+        return True
+    if not root:
+        return False
+    # A drive root keeps its trailing separator through normpath ('v:\'), a
+    # normal directory does not ('v:\x'), and a bare drive letter ('v:') is
+    # also a legal spelling. Only add a separator when the root has none.
+    prefix = root if root.endswith("\\") or root.endswith("/") else root + "\\"
+    return other.startswith(prefix) or (
+        len(root) == 2 and root[1] == ":" and other.startswith(root)
+    )
+
+
+# T-814 follow-up (audit RUN-1/IMP-003): the plan is keyed by lexical spellings
+# of the RAW configured roots, but _scan_one_root walks the CANONICAL-resolved
+# path. Case/slash/trailing-separator aliases still match through the
+# three-spelling lookup in _pruned_dirnames_for, but a root whose canonical
+# resolution differs lexically from every raw spelling -- junction points,
+# subst drives, symlinked directories -- matched no plan entry and pruning
+# silently disappeared: the nested subtree was walked twice again (reproduced
+# with a Windows junction: raw plan == {}, nested physical subtree visited by
+# two different walk roots). The repair CANNOT canonicalize on the scan
+# coordinator (PERF-002 forbids blocking FS access there), so each bounded
+# worker, after resolving its own root, canonicalizes the OTHER configured
+# roots (a tiny closed list, paid once per worker) and prunes any that land
+# under its own canonical root. The coordinator only normalizes lexically.
+
+
+def _pruned_dirnames_for(
+    walk_root: str,
+    plan: dict[str, list[str]],
+    current_dir: str,
+    dirnames: list[str],
+) -> None:
+    """T-814: remove children of *current_dir* owned by other scan roots, in place.
+
+    The walk looks its plan up under all lexical spellings of its root so an
+    alias-spelled configured root shares the pruner's plan entry. Pruning is a
+    dirname REMOVAL before entering: a project located exactly at a nested
+    configured root is discovered by the OWNING worker only, never double-counted
+    and never hidden (entering the subtree and clearing dirnames afterwards
+    would duplicate the discovery). Cross-drive and unrelated subtrees match no
+    plan entry and are untouched."""
+    pruned_children: list[str] | None = None
+    for key in {walk_root, _lexical_root_key(walk_root), _lexical_norm(walk_root)}:
+        hit = plan.get(key)
+        if hit:
+            pruned_children = list(hit)
+            break
+    if not pruned_children:
+        return
+    current_norm = _lexical_norm(current_dir)
+    for child in list(dirnames):
+        child_path = _lexical_norm(os.path.join(current_norm, child))
+        for owned in pruned_children:
+            if child_path == owned:
+                dirnames.remove(child)
+                break
+
+
+def _worker_local_plan(
+    raw_root: str,
+    resolved_root: str,
+    plan: dict[str, list[str]] | None,
+    all_roots: list[str] | None,
+) -> dict[str, list[str]] | None:
+    """This worker's private plan view, extended with canonical-alias targets.
+
+    Runs INSIDE the bounded worker after its own root resolved. For every
+    other configured root whose raw spelling is NOT a lexical descendant of
+    the resolved walk root, canonical() it once and prune it too when it
+    lands under the walk root anyway (junction/subst alias). Never mutates
+    the shared plan; returns the original object unchanged when there is
+    nothing to add. Only canonical() is used -- never exists()/stat().
+
+    NOTE: the extension runs even when the shared plan is EMPTY -- a
+    junction-aliased root produces no lexical overlap at all, which is
+    precisely the case this repair exists to cover. Workers without nested
+    configured roots pay K-1 canonical() calls on healthy paths (cheap);
+    a dead network root costs its canonical() in each worker, but inside
+    the bounded pool and cancellable -- never on the coordinator.
+    """
+    if not all_roots:
+        return plan
+    my_norm = _lexical_norm(resolved_root)
+    my_key = _lexical_root_key(raw_root)
+    # AUDIT cycle-5 IMP-001: which plan keys can actually reach this walk?
+    # The raw plan is keyed by RAW configured spellings, but the walker looks
+    # its entry up under its OWN spelling(s) -- so when this walk root is an
+    # alias spelling (junction/subst), NO raw-plan entry can match its
+    # dirpaths and the "already pruned through the raw plan" assumption below
+    # was false: lexically nested sibling roots were walked twice. Decide
+    # from the plan content, not from the lexical relation alone.
+    plan_keys = set(plan or (()))
+    plan_reaches_this_walk = bool(
+        plan_keys & {my_norm, _lexical_root_key(raw_root)}
+    )
+    extras: set[str] = set()
+    for other in all_roots or ():
+        if _lexical_root_key(other) == my_key:
+            continue  # myself (any spelling)
+        if (
+            plan_reaches_this_walk
+            and _is_lexical_descendant(my_norm, _lexical_norm(other))
+        ):
+            continue  # lexically nested AND the raw plan really prunes it here
+        try:
+            resolved_other = _lexical_norm(canonical(other))
+        except (OSError, ValueError):
+            continue
+        if resolved_other != my_norm and _is_lexical_descendant(my_norm, resolved_other):
+            extras.add(resolved_other)
+    if not extras:
+        return plan
+    local = dict(plan)
+    local[my_norm] = sorted(set(local.get(my_norm, ())) | extras)
+    return local
+
+
+# Kept as a private alias for any legacy callers/tests of the old name.
+_lexical_root_key_legacy = _lexical_root_key
+
 
 # --- Linked worktree detection ---
 # A git-linked worktree has .git as a FILE (containing the path to the main
@@ -180,15 +387,52 @@ def find_linked_worktrees(
     extra_excludes: set[str] | None = None,
 ) -> list[dict]:
     """Walk scan roots looking for git-linked worktrees: directories where .git
-    is a FILE (containing the path to the main repo's .git dir) and there is
-    no .saipen/ directory (so it's not already tracked as a project).
-    Returns [{root: str, name: str, git_dir: str}] sorted by name."""
+    is a FILE (containing the path to the main repo's .git dir) and there
+    is no .saipen/ directory (so it's not already tracked as a project).
+    Returns [{root: str, name: str, git_dir: str}] sorted by name.
+
+    AUDIT cycle-2 IMP-002: this walker shares the T-814 overlap-ownership
+    plan -- overlapping configured roots here double-traversed nested
+    subtrees exactly like scan() did before the plan existed, and the walker
+    is live in production through Api._set_cache's fallback branch. The same
+    most-specific-owner rule applies: a parent walk prunes any child subtree
+    owned by a more-specific configured root; only the owner discovers the
+    worktrees inside it. Purely lexical plan, no extra filesystem access.
+    """
+    roots_list = list(scan_roots)
     results = []
     combined = EXCLUDE_DIRS | (extra_excludes or set())
+    prune_plan = build_overlap_plan(roots_list)
+    # AUDIT cycle-6 IMP-001: two raw spellings of the SAME canonical root are
+    # one root -- scan() enforces that through its canonical in-flight
+    # reservation (second spelling returns status=skipped); this walker
+    # dedups the same way, first-seen spelling wins, so a degenerate root
+    # list [alias, physical] walks the physical tree exactly once.
+    seen_canonical: set[str] = set()
     for root in scan_roots:
-        root_path = Path(root)
+        # AUDIT cycle-5 IMP-001: walk the CANONICAL-resolved root, exactly like
+        # scan()'s bounded workers do. Walking the raw spelling makes every
+        # dirpath spell through the alias (junction/subst), which can never
+        # match the canonical prune targets the plan carries -- pruning
+        # silently disappeared for alias-spelled walk roots.
+        try:
+            root_path = Path(canonical(root))
+        except (OSError, ValueError):
+            root_path = Path(root)
         if not root_path.exists() or not root_path.is_dir():
             continue
+        ck = _lexical_norm(str(root_path))
+        if ck in seen_canonical:
+            continue
+        seen_canonical.add(ck)
+        # AUDIT cycle-4 IMP-001: the lexical plan cannot see a junction/subst
+        # alias (its canonical resolution differs from every raw spelling),
+        # so this walker reuses the same worker-side canonical extension scan()
+        # got in cycle-1: resolve the OTHER configured roots once per walk and
+        # prune any that land under this root anyway. find_linked_worktrees
+        # runs on background threads of the Api, not the scan coordinator, so
+        # this stays inside the bounded/cancellable execution context.
+        local_plan = _worker_local_plan(root, str(root_path), prune_plan, roots_list)
         dir_count = 0
         for dirpath, dirnames, _filenames in os.walk(
             root_path, topdown=True, onerror=lambda e: None
@@ -202,6 +446,7 @@ def find_linked_worktrees(
                 for d in dirnames
                 if d not in combined and not d.startswith("$") and not d.startswith(".")
             ]
+            _pruned_dirnames_for(str(root_path), local_plan, dirpath, dirnames)
             dir_count += 1
             if delay and dir_count % SCAN_DELAY_EVERY_N == 0:
                 time.sleep(delay)
@@ -253,6 +498,7 @@ def _walk_with_depth_limit(
     *,
     collect_worktrees: bool = False,
     cancel: threading.Event | None = None,
+    prune_plan: dict[str, list[str]] | None = None,
 ):
     """Walk a scan root, yielding discovered project Paths.
 
@@ -264,9 +510,16 @@ def _walk_with_depth_limit(
     PERF-006: when *cancel* is set the walk stops cooperatively -- checked
     before every directory descent -- instead of grinding through a wedged
     drive after its owner is gone.
+
+    T-814: when *prune_plan* is supplied, child directories owned by a
+    more-specific configured scan root are removed from ``dirnames`` BEFORE
+    descent -- the owning root's own worker traverses that subtree, exactly
+    once, at its own max_depth. Lexical comparison only; no stat() is added to
+    the walk loop.
     """
     combined = EXCLUDE_DIRS | (extra_excludes or set())
     dir_count = 0
+    walk_root = str(root_path)
     for dirpath, dirnames, _filenames in os.walk(
         root_path, topdown=True, onerror=lambda e: None
     ):
@@ -283,6 +536,8 @@ def _walk_with_depth_limit(
             and not d.startswith("$")
             and not (d.startswith(".") and d != ".saipen")
         ]
+        if prune_plan:
+            _pruned_dirnames_for(walk_root, prune_plan, dirpath, dirnames)
         dir_count += 1
         if delay and dir_count % SCAN_DELAY_EVERY_N == 0:
             time.sleep(delay)
@@ -349,17 +604,27 @@ def _scan_one_root(
     *,
     collect_worktrees: bool = False,
     cancel: threading.Event | None = None,
+    prune_plan: dict[str, list[str]] | None = None,
+    all_roots: list[str] | None = None,
 ) -> tuple[list[ProjectStatus], list[dict]]:
     """Walk one scan root.
 
     PERF-003: returns (projects, worktrees) in a single traversal when
     *collect_worktrees* is True. PERF-006: stops early when *cancel* is set.
+    T-814: *prune_plan* carries the lexical overlap ownership so overlapping
+    workers never traverse the same subtree.
     """
     projects: list[ProjectStatus] = []
     worktrees: list[dict] = []
     root_path = Path(root)
     if not root_path.exists() or not root_path.is_dir():
         return projects, worktrees
+    # T-814 follow-up: extend the shared lexical plan with canonical-alias
+    # targets INSIDE this bounded worker (PERF-002: the coordinator never
+    # canonicalizes). _worker_local_plan canonicalizes the OTHER configured
+    # roots once, so a junction/subst-aliased root is pruned from its
+    # canonical ancestor even though the raw spellings never overlap.
+    local_plan = _worker_local_plan(root, str(root_path), prune_plan, all_roots)
     for item in _walk_with_depth_limit(
         root_path,
         max_depth,
@@ -367,6 +632,7 @@ def _scan_one_root(
         extra_excludes,
         collect_worktrees=collect_worktrees,
         cancel=cancel,
+        prune_plan=local_plan,
     ):
         if isinstance(item, dict):
             worktrees.append(item)
@@ -429,17 +695,14 @@ def _scan_worker(
             )
 
 
-def _lexical_root_key(root: str) -> str:
-    """Cheap scheduling identity used before filesystem-touching preflight."""
-    return os.path.normcase(os.path.normpath(os.fspath(root))).rstrip("\\/")
-
-
 def _scan_root_task(
     raw_root: str,
     max_depth: int,
     delay: float,
     extra_excludes: set[str] | None,
     cancel: threading.Event,
+    prune_plan: dict[str, list[str]] | None = None,
+    all_roots: list[str] | None = None,
 ) -> dict:
     """Preflight and scan one raw root inside its bounded worker.
 
@@ -451,6 +714,11 @@ def _scan_root_task(
     resolution the reservation is upgraded to the canonical key; alias
     deduplication (two raw roots resolving to the same canonical path) is
     also handled atomically.
+
+    T-814: *prune_plan* is the precomputed lexical overlap ownership. It is
+    built by the coordinator before submission -- no filesystem access of its
+    own -- and tells this walk which child subtrees belong to a more-specific
+    configured root.
     """
     lexical = _lexical_root_key(raw_root)
     if cancel.is_set():
@@ -523,6 +791,8 @@ def _scan_root_task(
             extra_excludes,
             collect_worktrees=True,
             cancel=cancel,
+            prune_plan=prune_plan,
+            all_roots=all_roots,
         )
         return {
             "root": resolved,
@@ -629,11 +899,21 @@ def scan(
     CORE-011: returns a ScanOutcome with complete/partial status.
     CORE-010: when cancel is set, returns immediately with zero roots.
     """
-    global _QUARANTINED_FUTURES
+    # PERF-001: BOTH quarantine globals are declared here. `_SHARED_POOL_STALE`
+    # was assigned below without a `global` statement, so the retirement of a
+    # pool generation holding a non-cooperative worker only ever wrote a local
+    # name -- the next scan kept reusing the executor whose threads were still
+    # blocked, which is the exact starvation the quarantine exists to prevent.
+    global _QUARANTINED_FUTURES, _SHARED_POOL_STALE
     if cancel is not None and cancel.is_set():
         _set_scan_progress(pct=0, root="", roots_done=0, roots_total=0)
         return ScanOutcome(projects=[], complete=True)
     raw_roots = scan_roots if scan_roots is not None else _auto_roots()
+    # T-814: the overlap ownership plan is built BEFORE worker submission
+    # from the raw configured roots only. Purely lexical (normcase/normpath)
+    # -- PERF-002 forbids canonical()/exists()/stat() on the coordinator, and
+    # canonical resolution still happens inside each worker's preflight.
+    prune_plan = build_overlap_plan(raw_roots)
     # PERF-002: raw roots enter workers immediately. canonical() and existence
     # probing may touch a disconnected drive, so neither may run serially on
     # the coordinator before healthy roots can start.
@@ -658,7 +938,7 @@ def scan(
         )
     futures = {
         pool.submit(
-            _scan_root_task, raw, max_depth, delay, extra_excludes, both_cancel
+            _scan_root_task, raw, max_depth, delay, extra_excludes, both_cancel, prune_plan, raw_roots
         ): raw
         for raw in raw_roots
     }
@@ -707,10 +987,12 @@ def scan(
                 # PERF-001: running non-cooperative future = quarantined
                 with _SHARED_POOL_LOCK:
                     _QUARANTINED_FUTURES += 1
-                def _quarantine_cleanup(_f, _id=id(future)):
+
+                def _quarantine_cleanup(_f):
                     global _QUARANTINED_FUTURES
                     with _SHARED_POOL_LOCK:
                         _QUARANTINED_FUTURES = max(0, _QUARANTINED_FUTURES - 1)
+
                 future.add_done_callback(_quarantine_cleanup)
         # PERF-001: quarantine this pool generation -- its non-cooperative
         # workers occupy capacity that must not block healthy roots in
@@ -745,6 +1027,13 @@ def scan(
 
 
 DEFAULT_RESCAN_SECONDS = 300
+
+# PERF: the cold-start full-drive scan costs seconds of in-process CPU (walk +
+# parse + one `git` per project). Running it while pywebview brings the window
+# and WebView2 up makes the app look slow to start, even though the project
+# list is already served from the durable cache. The first cycle waits this
+# long so the UI owns the startup window; later cycles are unaffected.
+STARTUP_SCAN_GRACE_SECONDS = 3.0
 
 
 _current_gen = 0
@@ -808,6 +1097,7 @@ class BackgroundScanner:
         extra_excludes: set[str] | None = None,
         on_scan_start: Callable[[], None] | None = None,
         epoch_source: Callable[[], int] | None = None,
+        initial_delay: float = 0.0,
     ):
         self._on_result = on_result
         self._scan_roots = scan_roots
@@ -821,6 +1111,10 @@ class BackgroundScanner:
         # publication. None means the on_result callback does not accept
         # epoch (legacy behaviour preserved).
         self._epoch_source = epoch_source
+        # One-shot grace period before the FIRST cycle only (consumed below).
+        # A restart -- config change, auto_scan re-enabled -- keeps its
+        # intentional immediate rescan.
+        self._initial_delay = max(0.0, float(initial_delay))
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lifecycle_lock = threading.Lock()
@@ -928,6 +1222,12 @@ class BackgroundScanner:
 
     def _loop(self) -> None:
         event, generation = self._scan_context
+        first_delay = self._initial_delay
+        self._initial_delay = 0.0
+        if first_delay:
+            event.wait(first_delay)
+            if event.is_set() or not self._gen_counter.is_current(generation):
+                return
         try:
             while not event.is_set():
                 if not self._gen_counter.is_current(generation):

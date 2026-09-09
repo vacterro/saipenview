@@ -97,6 +97,9 @@ const LOCALE_RU = {
   "settings.save.saving": "Сохранение...",
   "settings.save.timedOut": "Время вышло — повторить?",
   "settings.close.text": "Закрыть",
+  "settings.theme.label": "Цветовая тема",
+  "settings.engineOverrides.label": "Переопределения движка (JSON)",
+  "settings.engineOverrides.placeholder": "{\"engine-name\": {\"path\": \"\", \"extra_args\": [], \"env\": {}}}",
 
   // ── File viewer ──
   "fileViewer.modeBtn.source": "Исходник",
@@ -237,6 +240,7 @@ const LOCALE_RU = {
   "time.daysAgo": "${n} дн назад",
   "time.monthsAgo": "${n} мес назад",
   "time.yearsAgo": "${n} лет назад",
+  "time.clockAhead": "часы спешат (метка времени из будущего)",
 
   // ── Collect / outbox ──
   "outbox.collect.title": "Собрать этот отчет в основной проект",
@@ -275,7 +279,19 @@ const LOCALE_RU = {
   "agent.shortcut.clean.title": "Отправить 'saipen clean' — прибрать доску и репозиторий",
   "agent.output.lines": "Строки",
   "agent.restored": "— сохранённая запись — ${engine} — ${status} — ${when} —",
+  "agent.history.title": "Прошлые запуски агента для этого проекта — выберите один, чтобы просмотреть его сохранённую запись",
+  "agent.history.label": "история",
+  "agent.history.empty": "прошлых запусков нет",
+  "agent.restoredHistory": "— сохранённая запись, ${count} строк —",
+  "agent.noTranscript": "для этого запуска нет сохранённой записи",
   "agent.output.truncated": "запись обрезана",
   "agent.output.title": "Живой вывод процесса агента. Только чтение.",
   "agent.noEngines": "CLI агента не найден в PATH (Claude, Gemini, Codex, OpenCode, Aider, Cline, Goose, Agy). В качестве запасного выбран обычный CLI.",
+  "agent.noStdin": "Этот движок одноразовый (headless): после запуска он не читает ввод, поэтому кнопка «Отправить» не предлагается, пока поддержка stdin для него не подтверждена",
+  "agent.unrecorded": "Незарегистрированное внешнее изменение файлов .saipen этого проекта",
+  "agent.unrecorded.title": "Вы изменили проект сами — зарегистрируйте это, чтобы доска отражала ручную работу",
+  "agent.unrecorded.record": "Зарегистрировать ручную работу",
+  "agent.unrecorded.files": "Файлы",
+  "agent.unrecorded.hide": "Скрыть файлы",
+  "agent.unrecorded.files.title": "Показать/скрыть отдельные изменённые файлы, у каждого своя кнопка подтверждения",
 };

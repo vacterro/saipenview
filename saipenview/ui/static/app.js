@@ -32,6 +32,23 @@ let _detailGen = 0;
 let _deepSearchGen = 0;
 let _wikiGen = 0;
 let _fileReadGen = 0;
+// W2-001: request-time ownership for the file viewer. _fileReadGen must be
+// captured and bumped at READ DISPATCH (openRequest below), not inside
+// openFileViewer after a response has already arrived -- completion order,
+// not latest user intent, used to own the editor.
+function openFileViewerRequest(filename, filepath) {
+  _fileReadGen++;
+  const gen = _fileReadGen;
+  return window.SaiApi.read_file_text(filepath).then((snap) => {
+    // Only the LATEST dispatch may install: an earlier response whose
+    // generation was superseded by a newer open (or a close) is dropped,
+    // so completion order can never replace newer user intent.
+    if (gen !== _fileReadGen) return null;
+    if (snap === null) return null;
+    openFileViewer(filename, filepath, snap, gen);
+    return snap;
+  });
+}
 // PERF-010: coalesced persistence timers for high-frequency settings.
 let _searchPersistTimer = null;
 let _zoomPersistTimer = null;
@@ -95,50 +112,161 @@ let flashState = {};      // {root: flashTime} epoch ms when change was detected
 // ===== i18n runtime =====
 let currentLocale = "en";
 
-// Locale string tables — loaded from locale-*.js, fallback to LOCALE_EN
-const _localeTables = {
-  en: typeof LOCALE_EN !== "undefined" ? LOCALE_EN : {},
-  ar: typeof LOCALE_AR !== "undefined" ? LOCALE_AR : {},
-  bg: typeof LOCALE_BG !== "undefined" ? LOCALE_BG : {},
-  cs: typeof LOCALE_CS !== "undefined" ? LOCALE_CS : {},
-  da: typeof LOCALE_DA !== "undefined" ? LOCALE_DA : {},
-  de: typeof LOCALE_DE !== "undefined" ? LOCALE_DE : {},
-  ded: typeof LOCALE_DED !== "undefined" ? LOCALE_DED : {},
-  el: typeof LOCALE_EL !== "undefined" ? LOCALE_EL : {},
-  es: typeof LOCALE_ES !== "undefined" ? LOCALE_ES : {},
-  et: typeof LOCALE_ET !== "undefined" ? LOCALE_ET : {},
-  fi: typeof LOCALE_FI !== "undefined" ? LOCALE_FI : {},
-  fr: typeof LOCALE_FR !== "undefined" ? LOCALE_FR : {},
-  he: typeof LOCALE_HE !== "undefined" ? LOCALE_HE : {},
-  hi: typeof LOCALE_HI !== "undefined" ? LOCALE_HI : {},
-  hr: typeof LOCALE_HR !== "undefined" ? LOCALE_HR : {},
-  hu: typeof LOCALE_HU !== "undefined" ? LOCALE_HU : {},
-  id: typeof LOCALE_ID !== "undefined" ? LOCALE_ID : {},
-  it: typeof LOCALE_IT !== "undefined" ? LOCALE_IT : {},
-  ja: typeof LOCALE_JA !== "undefined" ? LOCALE_JA : {},
-  ko: typeof LOCALE_KO !== "undefined" ? LOCALE_KO : {},
-  nl: typeof LOCALE_NL !== "undefined" ? LOCALE_NL : {},
-  no: typeof LOCALE_NO !== "undefined" ? LOCALE_NO : {},
-  pl: typeof LOCALE_PL !== "undefined" ? LOCALE_PL : {},
-  pt: typeof LOCALE_PT !== "undefined" ? LOCALE_PT : {},
-  ro: typeof LOCALE_RO !== "undefined" ? LOCALE_RO : {},
-  ru: typeof LOCALE_RU !== "undefined" ? LOCALE_RU : {},
-  sk: typeof LOCALE_SK !== "undefined" ? LOCALE_SK : {},
-  sv: typeof LOCALE_SV !== "undefined" ? LOCALE_SV : {},
-  th: typeof LOCALE_TH !== "undefined" ? LOCALE_TH : {},
-  tr: typeof LOCALE_TR !== "undefined" ? LOCALE_TR : {},
-  uk: typeof LOCALE_UK !== "undefined" ? LOCALE_UK : {},
-  vi: typeof LOCALE_VI !== "undefined" ? LOCALE_VI : {},
-  zh: typeof LOCALE_ZH !== "undefined" ? LOCALE_ZH : {},
-  "zh-CN": typeof LOCALE_ZH_CN !== "undefined" ? LOCALE_ZH_CN : {},
+// T-816: locale tables are LAZY. The page ships only locale-en.js (the
+// fallback table) plus the configured locale's file; the other 32 files
+// (602 KB of the old 924 KB payload) load on demand below. Each entry holds
+// the global's name and a "captured" flag: on first need the loader checks
+// window[global], caches the table, and future lookups are plain reads.
+const _LOCALE_SOURCES = {
+  ar: "LOCALE_AR", bg: "LOCALE_BG", cs: "LOCALE_CS", da: "LOCALE_DA",
+  de: "LOCALE_DE", ded: "LOCALE_DED", el: "LOCALE_EL", es: "LOCALE_ES",
+  et: "LOCALE_ET", fi: "LOCALE_FI", fr: "LOCALE_FR", he: "LOCALE_HE",
+  hi: "LOCALE_HI", hr: "LOCALE_HR", hu: "LOCALE_HU", id: "LOCALE_ID",
+  it: "LOCALE_IT", ja: "LOCALE_JA", ko: "LOCALE_KO", nl: "LOCALE_NL",
+  no: "LOCALE_NO", pl: "LOCALE_PL", pt: "LOCALE_PT", ro: "LOCALE_RO",
+  ru: "LOCALE_RU", sk: "LOCALE_SK", sv: "LOCALE_SV", th: "LOCALE_TH",
+  tr: "LOCALE_TR", uk: "LOCALE_UK", vi: "LOCALE_VI", zh: "LOCALE_ZH",
+  "zh-CN": "LOCALE_ZH_CN",
 };
+const _localeTables = {};
+const _localeLoading = {};
+
+// AUDIT cycle-2 IMP-001: the generated page (index.lite.html) loads app.js
+// BEFORE locale-en.js, so an eager `typeof LOCALE_EN` initializer here runs
+// while the top-level `const LOCALE_EN` of locale-en.js has not executed and
+// permanently caches {} -- the English fallback (and therefore the whole UI)
+// rendered raw i18n keys in EVERY language. `_enProbed` makes the English
+// capture lazy with exactly one re-probe after a failed capture: the static
+// locale-en.js tag completes before any timeout callback runs, so the real
+// page recovers on the next tick without repeatedly paying the eval probe.
+let _enProbed = false;
+function _ensureEnTable() {
+  if (_localeTables.en) return _localeTables.en;
+  let table;
+  try {
+    table = (0, eval)("typeof LOCALE_EN === 'undefined' ? undefined : LOCALE_EN");
+  } catch (e) {
+    table = undefined;
+  }
+  if (typeof table !== "undefined") {
+    _localeTables.en = table;
+    _enProbed = false;
+  } else if (!_enProbed) {
+    // The locale-en.js tag may still be executing later in the same parse
+    // pass (generated page order); re-check once after the current task.
+    _enProbed = true;
+    setTimeout(function () {
+      try {
+        table = (0, eval)("typeof LOCALE_EN === 'undefined' ? undefined : LOCALE_EN");
+      } catch (e) {
+        table = undefined;
+      }
+      if (typeof table !== "undefined" && !_localeTables.en) {
+        _localeTables.en = table;
+        if (currentLocale === "en") hydrateDOM("en");
+      }
+    }, 0);
+  }
+  return _localeTables.en || {};
+}
+
+// Synchronous load of one locale's table. The static locale files are plain
+// `const LOCALE_X = {...}` scripts, so a locally-injected <script> executes
+// before this returns; once a table has been captured by ANY load path the
+// entry resolves from cache and repeated calls are free. Returns the table or
+// {} when the code is unknown.
+function loadLocaleTable(locale) {
+  if (locale === "en") return _ensureEnTable();
+  if (_localeTables[locale]) return _localeTables[locale];
+  const globalName = _LOCALE_SOURCES[locale];
+  if (!globalName) return {};
+  // AUDIT IMP-001: the locale files declare their tables with top-level
+  // `const LOCALE_X = ...`. A classic script's top-level const is a GLOBAL
+  // LEXICAL binding, never a property of the global object (ECMA-262), so
+  // `window[globalName]` is always undefined there -- the previous probe
+  // never captured any table and every non-English locale rendered English
+  // (V8-verified). A bare identifier reference DOES resolve the lexical
+  // binding, but the name only exists at runtime -- so the capture goes
+  // through indirect eval, which is itself a classic script sharing the
+  // page's global scope. `typeof` keeps a missing table harmless.
+  let table;
+  try {
+    table = (0, eval)("typeof " + globalName + " === 'undefined' ? undefined : " + globalName);
+  } catch (e) {
+    table = undefined;
+  }
+  if (typeof table !== "undefined") {
+    _localeTables[locale] = table;
+    return table;
+  }
+  // AUDIT IMP-002: the table is not yet present. If the page shipped this
+  // locale's tag but app.js ran FIRST (generated page order), a classic
+  // script's top-level const may still be executing later in the same parse
+  // pass -- schedule one synchronous re-check after the current task; the
+  // static script tags complete before any timeout callback runs.
+  setTimeout(function () {
+    try {
+      table = (0, eval)("typeof " + globalName + " === 'undefined' ? undefined : " + globalName);
+    } catch (e) {
+      table = undefined;
+    }
+    if (typeof table !== "undefined" && !_localeTables[locale]) {
+      _localeTables[locale] = table;
+      // The page state was rendered before the table existed; hydrate the
+      // current DOM with the now-real table (no-op when currentLocale moved on).
+      if (currentLocale === locale) hydrateDOM(locale);
+    }
+  }, 0);
+  // Otherwise fetch it dynamically. NOTE (IMP-002): a dynamically appended
+  // classic script executes AFTER the current task, so this first call still
+  // returns {} -- the onload below captures the table and re-hydrates, which
+  // is the only way a locale that was never shipped can become visible.
+  if (typeof document !== "undefined" && !_localeLoading[locale]) {
+    _localeLoading[locale] = true;
+    try {
+      const s = document.createElement("script");
+      s.src = "locale-" + locale + ".js";
+      s.async = false;
+      s.onload = function () {
+        try {
+          table = (0, eval)("typeof " + globalName + " === 'undefined' ? undefined : " + globalName);
+        } catch (e) {
+          table = undefined;
+        }
+        if (typeof table !== "undefined") {
+          _localeTables[locale] = table;
+          if (currentLocale === locale) hydrateDOM(locale);
+        }
+      };
+      // AUDIT cycle-2 IMP-003: a failed dynamic load (404 on a renamed
+      // locale file, transport hiccup) used to leave _localeLoading set
+      // forever -- every later call short-circuited and the locale stayed
+      // wedged for the whole session. Clear the flag (onerror AND onload,
+      // since a misconfigured server can return 200 with a body that throws
+      // on parse) so the next t() call retries the fetch.
+      s.onerror = function () {
+        delete _localeLoading[locale];
+      };
+      const _capturedOnload = s.onload;
+      s.onload = function () {
+        delete _localeLoading[locale];
+        _capturedOnload();
+      };
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) { /* no DOM (tests): nothing more to do this call */ }
+  }
+  return _localeTables[locale] || {};
+}
 
 function t(key, vars) {
   // Look up key in current locale; fallback to English, then raw key.
+  if (currentLocale !== "en" && !_localeTables[currentLocale]) {
+    loadLocaleTable(currentLocale);
+  }
   const table = _localeTables[currentLocale] || {};
   let val = table[key];
   if (val === undefined) {
-    val = _localeTables["en"][key];
+    val = _ensureEnTable()[key];
   }
   if (val === undefined) return key;
   // Replace ${var} placeholders
@@ -151,6 +279,14 @@ function t(key, vars) {
 }
 
 function hydrateDOM(locale) {
+  if (locale && locale !== "en") {
+    // T-816: guarantee the table exists BEFORE hydration. In the synchronous
+    // script-tag page the table is already parseable and this resolves
+    // immediately (AUDIT IMP-001 capture); for a dynamically fetched table
+    // (AUDIT IMP-002) the loader's onload re-hydrates when it lands, so a
+    // caller never needs to know which case it is in.
+    loadLocaleTable(locale);
+  }
   currentLocale = locale || currentLocale;
   // Walk all elements with data-i18n attribute (textContent)
   document.querySelectorAll("[data-i18n]").forEach(el => {
@@ -256,9 +392,11 @@ function showConfirm(message, onOk, onCancel) {
   const okBtn = document.getElementById('confirmOkBtn');
   const cancelBtn = document.getElementById('confirmCancelBtn');
   if (!overlay || !msgEl || !okBtn || !cancelBtn) {
-    // Fallback: if DOM elements don't exist, use native confirm
-    if (confirm(message) && onOk) onOk();
-    else if (onCancel) onCancel();
+    // No native confirm(): pywebview routes it to a WinForms MessageBox with
+    // an icon, which plays a Windows system sound. A missing overlay is a
+    // broken page, so refuse the action instead of confirming it silently.
+    console.error("SAIPENVIEW: confirm overlay missing, action cancelled");
+    if (onCancel) onCancel();
     return;
   }
   // Cancel any previous confirmation dialog before opening a new one.
@@ -424,9 +562,8 @@ function showSectionContextMenu(e, root, section) {
     if (action === "open-section-file") {
       const path = item.getAttribute("data-path");
       const fn = item.getAttribute("data-filename");
-      window.SaiApi.read_file_text(path).then((text) => {
-        if (text !== null) openFileViewer(fn, path, text);
-        else showToast("Can't read " + fn, "error", 2000);
+      openFileViewerRequest(fn, path).then((snap) => {
+        if (snap === null) showToast("Can't read " + fn, "error", 2000);
       });
     } else if (action === "copy-section-path") {
       const path = item.getAttribute("data-path");
@@ -1299,10 +1436,8 @@ function renderDetailPane(detail) {
     btn.addEventListener("click", (e) => {
       const fileName = e.currentTarget.getAttribute("data-file");
       const path = detail.root + "\\.saipen\\" + fileName;
-      window.SaiApi.read_file_text(path).then((text) => {
-        if (text !== null) {
-          openFileViewer(fileName, path, text);
-        } else {
+      openFileViewerRequest(fileName, path).then((snap) => {
+        if (snap === null) {
           const oldText = btn.textContent;
           btn.textContent = "Err";
           setTimeout(() => { btn.textContent = oldText; }, 2000);
@@ -1315,10 +1450,8 @@ function renderDetailPane(detail) {
     btn.addEventListener("click", (e) => {
       const path = e.currentTarget.getAttribute("data-path");
       const label = e.currentTarget.getAttribute("data-name");
-      window.SaiApi.read_file_text(path).then((text) => {
-        if (text !== null) {
-          openFileViewer(label, path, text);
-        } else {
+      openFileViewerRequest(label, path).then((snap) => {
+        if (snap === null) {
           const oldText = btn.textContent;
           btn.textContent = "Err";
           setTimeout(() => { btn.textContent = oldText; }, 2000);
@@ -1336,10 +1469,8 @@ function renderDetailPane(detail) {
       if (!subPath || !fileName) return;
       const path = subPath + "\\" + fileName;
       const label = btn.parentElement.parentElement.querySelector(".sub-name").textContent + " " + fileName;
-      window.SaiApi.read_file_text(path).then((text) => {
-        if (text !== null) {
-          openFileViewer(label, path, text);
-        } else {
+      openFileViewerRequest(label, path).then((snap) => {
+        if (snap === null) {
           const oldText = btn.textContent;
           btn.textContent = "Err";
           setTimeout(() => { btn.textContent = oldText; }, 2000);
@@ -1356,9 +1487,8 @@ function renderDetailPane(detail) {
         e.stopPropagation();
         const path = sp + "\\STATE.md";
         const label = (item.querySelector(".sub-name") || {}).textContent || "sub";
-        window.SaiApi.read_file_text(path).then((text) => {
-          if (text !== null) openFileViewer(label + " STATE.md", path, text);
-          else showToast("Can't read STATE.md", "error", 2000);
+        openFileViewerRequest(label + " STATE.md", path).then((snap) => {
+          if (snap === null) showToast("Can't read STATE.md", "error", 2000);
         });
       });
     }
@@ -1374,9 +1504,8 @@ function renderDetailPane(detail) {
       const fileName = _sectionFileFor(sec);
       const path = _sectionFilePath(root, sec);
       if (path && fileName) {
-        window.SaiApi.read_file_text(path).then((text) => {
-          if (text !== null) openFileViewer(fileName, path, text);
-          else showToast("Can't read " + fileName, "error", 2000);
+        openFileViewerRequest(fileName, path).then((snap) => {
+          if (snap === null) showToast("Can't read " + fileName, "error", 2000);
         });
       }
     });
@@ -1392,9 +1521,8 @@ function renderDetailPane(detail) {
       const fileName = _sectionFileFor(sec);
       const path = _sectionFilePath(root, sec);
       if (path && fileName) {
-        window.SaiApi.read_file_text(path).then((text) => {
-          if (text !== null) openFileViewer(fileName, path, text);
-          else showToast("Can't read " + fileName, "error", 2000);
+        openFileViewerRequest(fileName, path).then((snap) => {
+          if (snap === null) showToast("Can't read " + fileName, "error", 2000);
         });
       }
     });
@@ -2030,9 +2158,8 @@ function render(projects, scanned) {
 
     row.addEventListener("dblclick", () => {
       const path = root + "\\.saipen\\STATE.md";
-      window.SaiApi.read_file_text(path).then((text) => {
-        if (text !== null) openFileViewer("STATE.md", path, text);
-        else showToast("Can't read STATE.md", "error", 2000);
+      openFileViewerRequest("STATE.md", path).then((snap) => {
+        if (snap === null) showToast("Can't read STATE.md", "error", 2000);
       });
     });
 
@@ -2051,9 +2178,8 @@ function render(projects, scanned) {
         e.stopPropagation();
         const path = sp + "\\STATE.md";
         const label = (sr.querySelector(".name") || {}).textContent || "sub";
-        window.SaiApi.read_file_text(path).then((text) => {
-          if (text !== null) openFileViewer(label + " STATE.md", path, text);
-          else showToast("Can't read STATE.md", "error", 2000);
+        openFileViewerRequest(label + " STATE.md", path).then((snap) => {
+          if (snap === null) showToast("Can't read STATE.md", "error", 2000);
         });
       });
     }
@@ -2071,22 +2197,17 @@ function render(projects, scanned) {
     }
   }
 
-  // If selected project is in list, trigger detail load
-  // T-121: skip the async get_project_detail + renderDetailPane chain
-  // while the inline state editor is open. renderDetailPane's own
-  // stateEditActive guard already protects it (T-066), but the guard
-  // fires *inside* the callback -- after the API call and after the
-  // callback is scheduled, by which point a change to stateEditActive
-  // cannot be seen. Skipping here is deterministic.
-  if (selectedRoot && !stateEditActive) {
-    loadDetail(selectedRoot);
-  } else if (selectedRoot) {
-    // selectedRoot is set but we skipped loadDetail: the sidebar row
-    // still needs its .selected class and handlers. applyProjectRowHandlers
-    // already runs above (attaches to every row in the list), and
-    // selectedRoot is unchanged, so the previously-attached handlers
-    // and selection class are still current.
-  } else if (filtered.length > 0) {
+  // PERF-004 (SRC-004:R017): the list renderer is now side-effect-free with
+  // respect to detail I/O. render() used to call loadDetail(selectedRoot) on
+  // every paint, so typing, filtering and collapsing -- purely visual list
+  // work -- each triggered a full get_project_detail (parse + conformance +
+  // git subprocess), and the watcher/poll flows that already load detail
+  // explicitly loaded it a second time through the scheduled render. Detail
+  // now reloads ONLY from the events that own it: selectProject (real
+  // selection change), onSaipenFileChanged (selected-root data change),
+  // poll changed_roots recovery, and explicit refresh actions. Auto-select
+  // of the first row still loads once through selectProject.
+  if (!selectedRoot && filtered.length > 0) {
     selectProject(filtered[0].root);
   }
 }
@@ -3545,6 +3666,12 @@ window.addEventListener("saiapiready", () => {
       }
       if (cfg.selected_root) {
         selectedRoot = cfg.selected_root;
+        // PERF-004 (SRC-004:R017): the restored selection's detail is loaded
+        // here, once, on startup -- render() no longer loads it on every
+        // paint, so the persisted selection must be refreshed explicitly
+        // when it is first restored or the detail pane stays empty until
+        // the next data-change event.
+        if (window.SaiApi.ready && !stateEditActive) loadDetail(selectedRoot);
       }
       if (cfg.compact_mode && compactModeChk) {
         compactModeChk.checked = true;
@@ -3616,6 +3743,7 @@ window.addEventListener("saiapiready", () => {
 const fileViewerModal = document.getElementById("fileViewerModal");
 let currentFilePath = null;
 let currentFileEditVersion = null; // CORE-001: CAS token for protocol-file saves
+let currentFileExisted = true; // W2-001: read-time existence baseline for save intent
 let fileViewerMode = "source"; // "source" | "reader"
 let fileViewerDefault = "source"; // default mode on open, from config
 let currentFilename = "";
@@ -3725,24 +3853,36 @@ function applyFileViewerMode() {
   }
 }
 
-function openFileViewer(filename, filepath, content) {
+function openFileViewer(filename, filepath, content, readGen) {
+  // W2-001: only the latest still-current request may install the editor
+  // session. The dispatch-time generation (openFileViewerRequest) was
+  // already checked against _fileReadGen before this call; a late response
+  // with a stale generation never reaches here, and closing the viewer
+  // keeps it out (closeFileViewer bumps the generation).
   currentFilename = filename;
-  // CORE-001: read_file_text now returns {text, edit_version} for protocol
-  // files. Unpack it; never stuff the raw object into the textarea (that
-  // rendered as [object Object] and could be written back into canonical
-  // state). Non-protocol reads still return a plain string.
+  // CORE-001: read_file_text returns the snapshot contract
+  // {text, edit_version, existed}. Unpack it; never stuff the raw object
+  // into the textarea (that rendered as [object Object] and could be
+  // written back into canonical state). A plain string (legacy bridge)
+  // carries no token -- the save then proceeds tokenless the old way.
   let text = content;
   let editVersion = null;
+  let existed = true;
   if (content && typeof content === "object" && "text" in content) {
     text = content.text;
     editVersion = content.edit_version || null;
+    existed = content.existed !== false;
   }
   document.getElementById("fileViewerFilename").textContent = escapeHtml(filename);
   document.getElementById("fileViewerStatus").textContent = escapeHtml(filepath);
   document.getElementById("fileViewerContent").value = text;
   currentFilePath = filepath;
   currentFileEditVersion = editVersion;
-  _fileReadGen++;
+  // W2-001: the token is bound to the EXACT bytes displayed. If the modal
+  // already showed another file when this call landed, the dispatch-time
+  // check already discarded it; this guards same-session reinstalls.
+  if (typeof readGen === "number") _fileReadGen = readGen;
+  currentFileExisted = existed;
   fileViewerMode = fileViewerDefault || "source";
   applyFileViewerMode();
   fileViewerModal.style.display = "flex";
@@ -3752,6 +3892,10 @@ function closeFileViewer() {
   fileViewerModal.style.display = "none";
   currentFilePath = null;
   currentFileEditVersion = null;
+  currentFileExisted = true;
+  // W2-001: an outstanding read for the closed viewer must never reopen it
+  // or replace a later session -- invalidate every in-flight generation.
+  _fileReadGen++;
 }
 
 document.getElementById("closeFileViewerBtn")?.addEventListener("click", closeFileViewer);
@@ -3769,25 +3913,39 @@ document.getElementById("saveFileViewerBtn")?.addEventListener("click", () => {
   const content = document.getElementById("fileViewerContent").value;
   const btn = document.getElementById("saveFileViewerBtn");
   btn.textContent = "Saving...";
-   // CORE-001: protocol files must carry the edit_version CAS token read in
-   // openFileViewer; ordinary files keep the legacy two-argument contract.
-   // CORE-003: normalize backslashes so .saipen/ check works on Windows paths.
-   const isProtocol = currentFilePath.replace(/\\/g, "/").indexOf(".saipen/") !== -1;
+  // CORE-001: every save carries the snapshot contract read in
+  // openFileViewer -- the CAS token and the read-time existence baseline.
+  // A tokenless save onto an existing file is refused by the backend
+  // (fail closed).
   const savePath = currentFilePath;
   const saveGen = _fileReadGen;
-  const args = isProtocol
-    ? [currentFilePath, content, currentFileEditVersion]
-    : [currentFilePath, content];
+  const saveText = content;
+  const args = [currentFilePath, content, currentFileEditVersion, currentFileExisted];
   window.SaiApi.write_file_text(...args).then((ok) => {
     if (ok) {
       btn.textContent = "Saved";
       setTimeout(() => { btn.textContent = "Save"; }, 2000);
-      // W2-004: only refresh the token if this save still owns the open file.
-      // A later file open increments _fileReadGen, making this callback stale.
-      if (isProtocol && currentFilePath === savePath && _fileReadGen === saveGen) {
+      // W2-001: the post-save token refresh must NEVER bind a foreign
+      // revision's token to the displayed buffer. Adopt the re-read token
+      // only when the re-read returns the exact bytes this save committed;
+      // any other content means an external writer landed between our save
+      // and the re-read -- drop the token instead, so the next save is
+      // refused and the user reopens the file against the external state.
+      if (currentFilePath === savePath && _fileReadGen === saveGen) {
         window.SaiApi.read_file_text(currentFilePath).then((r) => {
-          currentFileEditVersion =
-            (r && typeof r === "object" && "edit_version" in r) ? r.edit_version : null;
+          if (currentFilePath !== savePath || _fileReadGen !== saveGen) return;
+          const rText = (r && typeof r === "object" && "text" in r) ? r.text : r;
+          const norm = (s) => String(s === null || s === undefined ? "" : s).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+          if (rText !== null && rText !== undefined && norm(rText) === norm(saveText)) {
+            if (r && typeof r === "object" && "edit_version" in r) {
+              currentFileEditVersion = r.edit_version || null;
+            }
+            if (r && typeof r === "object" && "existed" in r) {
+              currentFileExisted = r.existed !== false;
+            }
+          } else {
+            currentFileEditVersion = null;
+          }
         });
       }
       if (selectedRoot) loadDetail(selectedRoot);
@@ -3805,6 +3963,15 @@ window.addEventListener("saiapiready", () => {
   window.SaiApi.get_config().then((cfg) => {
     currentZoomLevel = cfg.zoom_level || 1.0;
     if (cfg.file_viewer_default) fileViewerDefault = cfg.file_viewer_default;
+    // T-816: STARTUP HYDRATION. Until now a configured non-English locale
+    // hydrated the DOM only when Settings opened -- the toolbar, sidebar and
+    // detail chrome stayed English for the whole session. Hydrate here, on
+    // the main startup path, once config is known. hydrateDOM loads the
+    // locale table on demand, so this works on both the generated page (table
+    // already shipped) and a stale cached page (table fetched now).
+    if (cfg.locale && cfg.locale !== "en") {
+      hydrateDOM(cfg.locale);
+    }
   });
 });
 
@@ -4469,7 +4636,21 @@ function loadAgentRun(root, runId) {
 // T-598/PERF-009: the running-agents badge is a cheap global concern that
 // stays on the slow registry poll; the live console below has its own
 // sub-second single-flight loop.
+// PERF-004: two independent loops drive this badge -- the 5s registry poll and
+// the output ticker's periodic status pass (~6s while an agent runs) -- plus
+// every launch/stop/kill handler. Nothing coalesced them, so overlapping and
+// bursting callers each opened their own RPC and painted the badge out of
+// order. Single-flight with ONE trailing refresh: a call arriving while a
+// request is in flight is folded into that single follow-up rather than
+// dropped, so the last transition is still read back promptly.
+let _badgeInFlight = false;
+let _badgeRefreshPending = false;
 function pollAgentsBadge() {
+  if (_badgeInFlight) {
+    _badgeRefreshPending = true;
+    return;
+  }
+  _badgeInFlight = true;
   // PERF-004: use the lightweight count endpoint instead of
   // list_running_agents which invokes psutil per running agent.
   window.SaiApi.running_agent_count().then(count => {
@@ -4481,6 +4662,15 @@ function pollAgentsBadge() {
       } else {
         badge.style.display = "none";
       }
+    }
+  }).catch(() => {
+    // A failed count must not wedge the guard: without this the flag would
+    // stay set and the badge would never update again for the session.
+  }).then(() => {
+    _badgeInFlight = false;
+    if (_badgeRefreshPending) {
+      _badgeRefreshPending = false;
+      pollAgentsBadge();
     }
   });
 }

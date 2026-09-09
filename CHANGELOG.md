@@ -14,7 +14,30 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
-## [0.1.29] - 2026-08-11
+## 0.1.30 - 2026-09-09
+
+### Added
+
+- **One GUI-neutral startup-document renderer (`saipenview/ui/index_page.py`, T-831).**
+  The desktop window and the headless service both render the effective startup page
+  from the canonical template: the locale script block is replaced in place with
+  `locale-en.js` plus the configured known locale, keeping every other byte and the
+  canonical script order. Unknown locales degrade to EN-only; the closed locale set
+  prevents markup injection. The service renders in memory per live config locale and
+  never touches a generated file; the desktop writes `index.lite.html` atomically and
+  never selects a stale generated page. A renderer failure falls back to the canonical
+  template only after a real open/read readability proof -- an unreadable template now
+  fails startup with a clear chained error instead of returning a path pywebview cannot
+  load. Build and wheel packaging exclude the generated page.
+
+### Fixed
+
+- T-800..T-831 wave: audit clauses (SRC-003/004), scanner worktree overlap (T-814),
+  complete ticket indexing (T-815), lazy locale capture (T-816), snapshot cache
+  identity (T-821), app transaction serialization (W2-003), plus the performance wave
+  (PERF-010..014) hot-path fixes.
+
+## 0.1.29 - 2026-08-11
 
 ### Changed
 
@@ -144,7 +167,7 @@ Semantic versioning — see `saipenview/__init__.py`.
   generic failure. The state editor and file editor check the result instead
   of treating any dict as success.
 
-## [0.1.27] - 2026-08-11
+## 0.1.27 - 2026-08-11
 
 ### Fixed
 
@@ -212,7 +235,7 @@ Semantic versioning — see `saipenview/__init__.py`.
   violated the PHASE grammar) and asserts that baseline PASS before every red
   mutation.
 
-## [0.1.26] - 2026-08-11
+## 0.1.26 - 2026-08-11
 
 ### Fixed
 
@@ -230,7 +253,7 @@ Semantic versioning — see `saipenview/__init__.py`.
   single canonical format from `docs/conformance-legacy.md` and checks any
   live marker against it, instead of failing on an empty board.
 
-## [0.1.25] - 2026-08-11
+## 0.1.25 - 2026-08-11
 
 ### Fixed
 
@@ -246,7 +269,7 @@ Semantic versioning — see `saipenview/__init__.py`.
   hook. `test_hotkey` 19/19; three consecutive full-suite runs green with
   no `INTERNALERROR` and no `0xC000041D`.
 
-## [0.1.24] - 2026-08-11
+## 0.1.24 - 2026-08-11
 
 ### Changed
 
@@ -265,7 +288,7 @@ Semantic versioning — see `saipenview/__init__.py`.
   gains a `--root` override; `test_release_gate_passes` runs the gate against
   a sandboxed bumped-version tree so it is green at every shipped HEAD.
 
-## [0.1.23] - 2026-08-07
+## 0.1.23 - 2026-08-07
 
 ### Fixed
 
@@ -278,7 +301,7 @@ Semantic versioning — see `saipenview/__init__.py`.
   (T-180 shipped the ctrl+q default). Wiki package WIKI-013 from saiwiki,
   collected and verified fresh at 71ed3a5.
 
-## [0.1.22] - 2026-08-07
+## 0.1.22 - 2026-08-07
 
 ### Added
 
@@ -333,7 +356,7 @@ Semantic versioning — see `saipenview/__init__.py`.
   made full-suite runs unreliable. The early-return path now cleans up, and
   the test suite pins zero subscriber leaks per test.
 
-## [0.1.21] - 2026-08-07
+## 0.1.21 - 2026-08-07
 
 ### Changed
 
@@ -358,13 +381,13 @@ Semantic versioning — see `saipenview/__init__.py`.
   the declared version stayed 0.1.17, so wheels carried stale METADATA).
   Reset to 0.1.21 so the tag, the wheel and the changelog agree again.
 
-## [0.1.20] - 2026-08-07
+## 0.1.20 - 2026-08-07
 
 ### Added
 
 - **Record manual work (T-127).** When a project's `.saipen/` files change from OUTSIDE the app — a hand edit, an external tool, a commit the app did not make — the detail pane shows a persistent "Unrecorded external change" bar with a **Record manual work** button. Clicking it asks for a short description and writes an explicit, user-attributed record: a `T-### Manual: <desc> | owner: user` ticket on the board, a valid LOG evidence line, and best-effort git context (current HEAD + dirty-file count). SAIPENVIEW never guesses who changed a file: the prompt is the attribution. The app's own writes are tracked so its actions never trigger the prompt.
 
-## [0.1.19] - 2026-08-07
+## 0.1.19 - 2026-08-07
 
 ### Added
 
@@ -375,13 +398,13 @@ Semantic versioning — see `saipenview/__init__.py`.
 
 - **The T-169 project-switch guard read the wrong element and was silently always-false.** `isCurrentProjectPanel` read `dataset.root` off the `#agentPanelContainer`, but the `data-root` lives on the `.agent-panel` *child* — so in the real DOM the guard never matched, which quietly disabled both the transcript auto-restore and (newly) the history picker. The node test stubbed the container with the attribute and passed while the app failed. Fixed to query the child; the test harness now mirrors the real DOM.
 
-## [0.1.17] - 2026-08-07
+## 0.1.17 - 2026-08-07
 
 ### Fixed
 
 - **The app can no longer "not start" with an off-screen window (T-176).** The saved window position could be Windows' own off-screen sentinel (-32000,-32000) or a coordinate on a monitor that was unplugged since the last save. The app launched and ran perfectly -- the WINDOW was just parked where no monitor exists, so a second launch handed off to it and nothing appeared anywhere. The saved position is now validated against the visible desktop (the union of every monitor) before it is restored; an off-screen position is dropped and the OS positions the window on a real monitor instead. The stale position also self-heals: the next save overwrites it.
 
-## [0.1.16] - 2026-08-07
+## 0.1.16 - 2026-08-07
 
 ### Added
 
@@ -393,7 +416,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 
 - **The file-viewer reader no longer hides the ticket fields (T-125).** The reader view of BOARD.md stripped everything after the first `|`, so `| verify:` and `| blocker:` evidence — the whole point of a reviewer reading the board — was invisible. The field tail is now kept and rendered as a muted sub-line, and STATE.md's known protocol keys (phase/task/next_action/blocker/agent/updated) are highlighted.
 
-## [0.1.15] - 2026-08-07
+## 0.1.15 - 2026-08-07
 
 ### Fixed
 
@@ -416,12 +439,12 @@ Semantic versioning — see `saipenview/__init__.py`.
 - **Deterministic source export (T-171).** `tools/export_source.py` produces `dist/saipenview-src-<version>.tar.gz` from a clean `git archive` plus the canonical SAIPEN memory, with a manifest. The stray scratch probes at the repo root were reviewed and removed.
 - **Explicit `.saipen` persistence contract (T-172).** `docs/saipen-persistence.md` documents that the project's SAIPEN memory is intentionally local-only — STATE carries a machine-local `saipen_home` and the board/log journal references machine paths, so tracking it raw would leak local paths — and defines the deterministic export/import handoff that replaces git for it.
 
-## [0.1.14] - 2026-08-07
+## 0.1.14 - 2026-08-07
 
 ### Fixed
 - **Edit form no longer collapses during live poll (T-121).** The 5-second poll cycle called `loadDetail(selectedRoot)` unconditionally from `render()`, which kicked off an async detail fetch + `renderDetailPane` chain. The `stateEditActive` guard from T-066 fires inside the `.then()` callback, but by then the callback is already scheduled and a concurrent state change cannot be seen — the detail pane could rebuild and destroy the inline edit form. `render()` now skips `loadDetail` entirely when `stateEditActive` is true, making the decision deterministic. The same function's filtered-list-eviction path (`renderDetailPane(null)` when the selected project disappears from the list) also now honours `stateEditActive` instead of discarding the user's typed work.
 
-## [0.1.13] - 2026-08-06
+## 0.1.13 - 2026-08-06
 
 ### Added
 - **Path-safety layers (T-138).** A canonical path layer (`saipenview/paths.py`) turns every stored path into one true spelling — absolute, case-normalised, symlink-resolved, a single trailing separator on drive roots and nowhere else — applied at config load/save, scan, and every comparison, so slash/case/duplicate spellings of the same folder never drift apart. Scan roots pointing at a missing drive are **quarantined, not silently dropped**: they surface in the scan error log and stay in the list, so the drive comes back and the next scan picks it up automatically. The built-in file viewer is now boundary-hardened: it opens only `.md`/`.json` files that sit inside a known project root, and a path that escapes every root (including a `..` climb) or carries another extension is rejected on the Python side, not just hidden in the UI. New `python -m saipenview --dry-run` validates the config and path layers without starting a window — exit `0` on a clean config, `1` naming every missing/quarantined root or canonical mismatch.
@@ -429,7 +452,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 ### Fixed
 - An explicit empty `scan_roots: []` ("scan nothing") is no longer promoted to `None` ("auto-scan all drives") during config canonicalization — the two are different answers and the promotion silently re-enabled auto-scan.
 
-## [0.1.12] - 2026-08-06
+## 0.1.12 - 2026-08-06
 
 ### Added
 - **All 16 Wintage colour palettes ship inside the app**, with a picker in Settings that switches live and needs no restart. They previously existed only as inputs to an external PowerShell installer that applied a palette by *rewriting* `saipenview/ui/static/style.css` on disk — the mechanism that destroyed the stylesheet twice (0.1.x, tickets T-096 and T-142) in a way that survived review both times, because the file it produced still parsed and still looked like itself. A theme is data now: `saipenview/assets/themes/*.json`, a `theme` config key, and CSS custom properties set on the root element at runtime. `goldendefault` reproduces the stylesheet's own `:root` token for token, so the app with themes and the app without them are identical until you pick something else. Palettes are validated before use, because the failure mode is silent — an undefined custom property renders as the initial value with no error anywhere
@@ -444,7 +467,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 ### Notes
 - `tests/test_protocol_sync.py` was **red on purpose** while the SAIPEN repo moved 7.176.0 → 7.201.0; it is green again at 7.201.0 (T-160)
 
-## [0.1.11] - 2026-08-04
+## 0.1.11 - 2026-08-04
 
 ### Added
 - **Agent Control panel strings translated into all 33 locales.** The panel's 25 keys (added in 0.1.10's engine work, English-only with runtime fallback) now ship translated in 22 real-translation locales (ar bg da de ded el es et fi fr hu id ko nl no pt ro ru th tr uk zh-CN) and `[XX]`-tagged placeholders in the 11 stub locales (cs he hi hr it ja pl sk sv vi zh), matching the existing stub convention. `node --check` clean on all 34 locale files; exactly 25 `agent.*` keys added per file, zero removals
@@ -452,7 +475,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 ### Changed
 - **README translation mirrors caught up with the current English README.** All 33 `docs/i18n/README.*.md` dropped the removed buy-me-a-coffee support link and the whole At-a-Glance/screenshot section (both deleted from the English README after the previous translation pass), so the mirrors again mirror the live document. Structure verified per file: 9 headings == EN, `<br> --- ## 🚀` layout identical
 
-## [0.1.10] - 2026-08-03
+## 0.1.10 - 2026-08-03
 
 ### Fixed
 - **The app shut itself down within seconds of any typing.** Regression shipped in 0.1.8. `to_layout_independent` returned `keyboard.parse_hotkey`'s output, but `add_hotkey` re-parses its argument with `parse_hotkey_combinations`, whose first branch is `if _is_number(hotkey) or len(hotkey) == 1` — and a parsed *one-step* hotkey is a 1-tuple, so it matched that branch and was read as a single key whose "alternatives" were the modifiers. `ctrl+shift+alt+q` became `ctrl OR shift OR alt OR q`: 36 four-key combinations collapsed to 8 one-key ones. That hotkey is the kill switch and its handler is `os._exit(0)`, so pressing Ctrl anywhere terminated SAIPENVIEW with no window, no dialog, no log and exit code 0. Layout pinning now returns shapes `keyboard` parses as intended, and the pinned combinations are provably a strict subset of what the plain string form would match
@@ -463,7 +486,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 - Startup was measured on the real launch path and is **not** slow: 1.6–2.3s from `run.vbs` to the window being shown (imports 0.19s, `create_window` 0.26s, `webview.start` 0.59s). WebView2 initialisation is the floor. The reported slowness is most plausibly the shutdown bug above — the app died, its socket lingered, and the next launch either exited quietly at the single-instance guard or waited out its bind retries
 - "Two instances running at once" was not real. `.venv\Scripts\pythonw.exe` is Python's venv launcher stub: it spawns the base interpreter as a child, so one launch always shows two `pythonw.exe` processes parented to each other. Port 47189 only ever had one listener
 
-## [0.1.9] - 2026-08-03
+## 0.1.9 - 2026-08-03
 
 ### Fixed
 - Gemini adapter never ran headless. `engines/gemini.py` built `gemini prompt <instruction>`, and Gemini CLI has no `prompt` subcommand — the string fell through to the default `gemini [query..]` positional and opened an *interactive* session whose query happened to start with the word "prompt", then waited for a human a subprocess pipe never provides. Now `--prompt <instruction> --yolo`, with `GEMINI_CLI_TRUST_WORKSPACE=true` in the launch env because the live repro then stopped on "not running in a trusted directory"
@@ -482,7 +505,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 ### Changed
 - `default_engine` had been a config key read by nothing, so the launcher always opened on whatever the registry listed first. It now preselects the configured engine when that engine is actually installed, and remembers the last one launched
 
-## [0.1.8] - 2026-08-02
+## 0.1.8 - 2026-08-02
 
 ### Fixed
 - Global hotkeys are layout-independent. `keyboard.add_hotkey("ctrl+q")` resolved the letter through the *active* Windows layout, so with a Russian (or any non-Latin) layout selected the combo bound to the wrong physical key — and on a machine with no Latin layout installed at all it raised `ValueError` and the hotkey silently never registered. Character keys now bind to their US scan-code positions; modifiers and F-keys still go through `keyboard`, which is already layout-independent for those
@@ -495,7 +518,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 - Agent Control explains itself: a one-line description of what it launches and where the output goes, plus a tooltip on every control (engine picker, instruction box, Launch, Note, Stop, Diff, Send, and the Continue/Hunt/Clean shortcuts). All strings are i18n keys instead of hardcoded English
 - Repo root holds one `README.md` again — the 33 translations moved to `docs/i18n/`, with every language bar and relative link retargeted, and all 33 now linked instead of 5. Dropped the tracked `scratch_t119.py` and the stray `nul` file
 
-## [0.1.7] - 2026-08-02
+## 0.1.7 - 2026-08-02
 
 ### Added
 - Full locale wiring: all 34 `locale-*.js` loaded by `index.html`, 33 languages selectable in Settings, `api.get_locales()` returns 34 with native names (was hardcoded en/zh-CN)
@@ -505,7 +528,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 - README translations refreshed to HEAD: snap hotkey `Alt+F14` (Ctrl+Q/Strg+Q gone), 18-key config example, full architecture trees, protocol phase diagram, Agent Engine docs; ru/ee/ded fully retranslated (were mojibake / broken UTF-8 / abridged)
 - Protocol baseline 7.161.0 -> 7.164.0 (stamp-only, no vocabulary drift)
 
-## [0.1.6] - 2026-08-02
+## 0.1.6 - 2026-08-02
 
 ### Fixed
 - README/CONTRIBUTING docs sync: hotkey rows (snap is `Alt+F14`, not `Ctrl+Q`), config example, architecture trees (all 19 modules + `engines/`), run.bat behavior claim, protocol phase diagram, Python target (3.10)
@@ -514,7 +537,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 ### Added
 - CHANGELOG.md (this file)
 
-## [0.1.5]
+## 0.1.5
 
 ### Fixed
 - Hotkeys: drop global `ctrl+q` default, survive one bad binding (3e02e1a)
@@ -522,7 +545,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 - Human note written where no agent could read it; protocol synced to 7.149.0 (5b7b66f)
 - Unreadable FAIL text, dead Conformance collapse, comments graded as entries (472a066)
 
-## [0.1.4]
+## 0.1.4
 
 ### Added
 - Complete agent IDE + exception handling refactor — T-083, T-097, T-099–T-107 (846e91d)
@@ -531,7 +554,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 - Perf: stop polling, re-rendering and disk-writing while the window is hidden (69230f3)
 - Scan: exclude garbage paths, cap the overall scan, free `ctrl+q` (4d291a0)
 
-## [0.1.3]
+## 0.1.3
 
 ### Added
 - Grade `.saipen` projects, and read them at all (42100e3)
@@ -540,7 +563,7 @@ Semantic versioning — see `saipenview/__init__.py`.
 ### Fixed
 - Dead collapse arrows on short lists; sync two stale docs (4b0c9f7)
 
-## [0.1.2]
+## 0.1.2
 
 ### Added
 - SingleInstanceGuard extracted to guard.py + 283-test suite (3c568a1)
@@ -551,9 +574,9 @@ Semantic versioning — see `saipenview/__init__.py`.
 - CI restore with continue-on-error on lint/typecheck (a6f5f4a)
 - Ruff lint fixes, CI hardening, shell injection fix (9360141)
 
-## [0.1.1]
+## 0.1.1
 
 ### Added
 - saiwiki + saitranslate content — OUTBOX closed, delivery layer wired (7429cdd)
 
-## [0.1.0] - initial release
+## 0.1.0 - initial release

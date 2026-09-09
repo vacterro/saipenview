@@ -99,6 +99,9 @@ const LOCALE_DED = {
   "settings.save.saving": "Пишу...",
   "settings.save.timedOut": "Отвалилось — ещё раз?",
   "settings.close.text": "Закрыть",
+  "settings.theme.label": "Farbschema",
+  "settings.engineOverrides.label": "Engine-Overrides (JSON)",
+  "settings.engineOverrides.placeholder": "{\"engine-name\": {\"path\": \"\", \"extra_args\": [], \"env\": {}}}",
 
   // ── File viewer ──
   "fileViewer.modeBtn.source": "Сырец",
@@ -239,6 +242,7 @@ const LOCALE_DED = {
   "time.daysAgo": "${n} дн назад",
   "time.monthsAgo": "${n} мес назад",
   "time.yearsAgo": "${n} лет назад",
+  "time.clockAhead": "Uhr geht vor (Zeitstempel in der Zukunft)",
 
   // ── Collect / outbox ──
   "outbox.collect.title": "Забрать этот кусок в основу",
@@ -277,7 +281,19 @@ const LOCALE_DED = {
   "agent.shortcut.clean.title": "Sendet 'saipen clean' — räumt Board und Repo auf",
   "agent.output.lines": "Zeilen",
   "agent.restored": "— gespeichertes Transkript — ${engine} — ${status} — ${when} —",
+  "agent.history.title": "Frühere Agent-Läufe für dieses Projekt — wähle einen, um sein gespeichertes Transkript zu sehen",
+  "agent.history.label": "Verlauf",
+  "agent.history.empty": "keine früheren Läufe",
+  "agent.restoredHistory": "— gespeichertes Transkript, ${count} Zeilen —",
+  "agent.noTranscript": "kein gespeichertes Transkript für diesen Lauf",
   "agent.output.truncated": "Transkript gekürzt",
   "agent.output.title": "Live-Ausgabe des Agentenprozesses. Nur lesen.",
   "agent.noEngines": "Kein Agent-CLI auf dem PATH gefunden (Claude, Gemini, Codex, OpenCode, Aider, Cline, Goose, Agy). Als Fallback wird ein generisches CLI gewählt.",
+  "agent.noStdin": "Diese Engine arbeitet als Einmal-Lauf (headless): Nach dem Start liest sie keine Eingabe, daher wird Senden erst angeboten, wenn stdin-Unterstützung nachgewiesen ist",
+  "agent.unrecorded": "Nicht erfasste externe Änderung an den .saipen-Dateien dieses Projekts",
+  "agent.unrecorded.title": "Du hast das Projekt selbst bearbeitet — erfasse es, damit das Board die manuelle Arbeit widerspiegelt",
+  "agent.unrecorded.record": "Manuelle Arbeit erfassen",
+  "agent.unrecorded.files": "Dateien",
+  "agent.unrecorded.hide": "Dateien ausblenden",
+  "agent.unrecorded.files.title": "Einzelne geänderte Dateien ein-/ausblenden, jede mit eigener Bestätigung",
 };

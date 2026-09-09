@@ -22,6 +22,7 @@ import importlib
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 
 from saipenview.textio import read_doc
@@ -40,6 +41,25 @@ class SaioUnavailable(Exception):
 
 
 _ENGINE_CACHE: dict[str, dict[str, object]] = {}
+# W2-001 (SRC-003:R005): ONE process-global authority lock. `engine()`,
+# `_load_codec_from()` and `_load_freshness_from()` each used to run
+# check-cache -> mutate sys.path -> import -> publish with no serialization, so
+# two first-use calls for DIFFERENT homes could both pass the fail-closed
+# multi-home guard, race through global `sys.path`/`sys.modules`, and cache the
+# same imported implementation under two home identities -- a later mutation
+# would then execute against another project's canonical engine. Re-entrant
+# because `engine()` and the freshness/codec loaders call into each other.
+_ENGINE_LOCK = threading.RLock()
+
+
+def _home_key(home: Path | str) -> str:
+    """The ONE cache identity for a canonical home.
+
+    `engine()` stored `str(home).lower()` while `_load_freshness_from()` stored
+    `str(home)`, so a mixed-case home produced two entries for one home and the
+    multi-home guard compared against whichever happened to be first.
+    """
+    return os.path.normcase(os.path.normpath(str(home)))
 
 # Authority-bearing STATE keys: a duplicated one MUST NOT pick a winner.
 _AUTHORITY_STATE_KEYS = frozenset(
@@ -134,20 +154,23 @@ def _load_codec_from(home: Path):
     resolution needed -- used to re-encode bytes in a project whose STATE is
     not yet writable)."""
     # W2-002: check multi-home BEFORE mutating sys.path to prevent contamination
-    key = str(home)
-    if _ENGINE_CACHE:
-        existing_key = next(iter(_ENGINE_CACHE.keys()))
-        if existing_key.lower() != key.lower():
-            raise SaioUnavailable(
-                f"MULTI-HOME CONTAMINATION BLOCKED: engine already loaded from "
-                f"{existing_key}. Cannot load codec from distinct home {key}."
-            )
-    tools = str(home / "tools")
-    if tools not in sys.path:
-        sys.path.insert(0, tools)
-    import importlib as _il
+    # W2-001 (SRC-003:R005): the whole check -> sys.path -> import transaction
+    # runs under the one authority lock and uses the one home key.
+    key = _home_key(home)
+    with _ENGINE_LOCK:
+        if _ENGINE_CACHE:
+            existing_key = next(iter(_ENGINE_CACHE.keys()))
+            if existing_key != key:
+                raise SaioUnavailable(
+                    f"MULTI-HOME CONTAMINATION BLOCKED: engine already loaded from "
+                    f"{existing_key}. Cannot load codec from distinct home {key}."
+                )
+        tools = str(home / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import importlib as _il
 
-    return _il.import_module("saipen_engine.codec")
+        return _il.import_module("saipen_engine.codec")
 
 
 def engine(root: Path) -> dict[str, object]:
@@ -161,46 +184,55 @@ def engine(root: Path) -> dict[str, object]:
     "codec", "freshness"}.
     """
     home = resolve_home(root)
-    key = str(home).lower()
-    cached = _ENGINE_CACHE.get(key)
-    if cached is not None and "operations" in cached:
-        return cached
+    key = _home_key(home)
+    # W2-001 (SRC-003:R005): cache lookup, multi-home refusal, sys.path
+    # mutation, every import and the publication are ONE serialized
+    # transaction. A partial cache entry is never published.
+    with _ENGINE_LOCK:
+        cached = _ENGINE_CACHE.get(key)
+        if cached is not None and "operations" in cached:
+            return cached
 
-    if _ENGINE_CACHE:
-        # A different home was already loaded
-        existing = next(iter(_ENGINE_CACHE.keys()))
-        if existing.lower() != key.lower():
-            # W2-004: the multi-home refusal must use the same structured
-            # exception as every other load failure. Callers such as
-            # WriteCoordinator.recovery_status / Api.get_project_detail /
-            # ticket_transition_error already catch SaioUnavailable and map
-            # it to the documented SAIO_UNAVAILABLE refusal; a raw RuntimeError
-            # escaped that boundary and turned a legitimate fail-closed
-            # condition into an uncaught RPC failure.
-            raise SaioUnavailable(
-                f"MULTI-HOME CONTAMINATION BLOCKED: Process already loaded saipen_engine "
-                f"from {existing}. Cannot concurrently load distinct home {key} "
-                f"because Python sys.modules global identity is module-name based."
-            )
+        if _ENGINE_CACHE:
+            # A different home was already loaded
+            existing = next(iter(_ENGINE_CACHE.keys()))
+            if existing != key:
+                # W2-004: the multi-home refusal must use the same structured
+                # exception as every other load failure. Callers such as
+                # WriteCoordinator.recovery_status / Api.get_project_detail /
+                # ticket_transition_error already catch SaioUnavailable and map
+                # it to the documented SAIO_UNAVAILABLE refusal; a raw RuntimeError
+                # escaped that boundary and turned a legitimate fail-closed
+                # condition into an uncaught RPC failure.
+                raise SaioUnavailable(
+                    f"MULTI-HOME CONTAMINATION BLOCKED: Process already loaded saipen_engine "
+                    f"from {existing}. Cannot concurrently load distinct home {key} "
+                    f"because Python sys.modules global identity is module-name based."
+                )
 
-    tools = str(home / "tools")
-    if tools not in sys.path:
-        sys.path.insert(0, tools)
-    loaded: dict[str, object] = {}
-    try:
-        loaded["engine_pkg"] = importlib.import_module("saipen_engine")
-        loaded["operations"] = importlib.import_module("saipen_engine.operations")
-        loaded["plan"] = importlib.import_module("saipen_engine.plan")
-        loaded["journal"] = importlib.import_module("saipen_engine.journal")
-        loaded["log"] = importlib.import_module("saipen_engine.log")
-        loaded["lock"] = importlib.import_module("saipen_engine.lock")
-        loaded["fast_check"] = importlib.import_module("saipen_engine.fast_check")
-        loaded["codec"] = importlib.import_module("saipen_engine.codec")
-        loaded["freshness"] = importlib.import_module("freshness")
-    except Exception as exc:  # noqa: BLE001 - fail closed on any load defect
-        raise SaioUnavailable(f"{root}: canonical engine load failed: {exc}") from exc
-    _ENGINE_CACHE[key] = loaded
-    return loaded
+        tools = str(home / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        loaded: dict[str, object] = {}
+        try:
+            loaded["engine_pkg"] = importlib.import_module("saipen_engine")
+            loaded["operations"] = importlib.import_module("saipen_engine.operations")
+            loaded["plan"] = importlib.import_module("saipen_engine.plan")
+            loaded["journal"] = importlib.import_module("saipen_engine.journal")
+            loaded["log"] = importlib.import_module("saipen_engine.log")
+            loaded["lock"] = importlib.import_module("saipen_engine.lock")
+            loaded["fast_check"] = importlib.import_module("saipen_engine.fast_check")
+            loaded["codec"] = importlib.import_module("saipen_engine.codec")
+            loaded["freshness"] = importlib.import_module("freshness")
+        except Exception as exc:  # noqa: BLE001 - fail closed on any load defect
+            raise SaioUnavailable(f"{root}: canonical engine load failed: {exc}") from exc
+        # Preserve a freshness-only slot published by an earlier loader for the
+        # same home instead of dropping it.
+        previous = _ENGINE_CACHE.get(key)
+        if previous:
+            loaded.update({k: v for k, v in previous.items() if k not in loaded})
+        _ENGINE_CACHE[key] = loaded
+        return loaded
 
 
 def agent_for(root: Path) -> str:
@@ -585,26 +617,30 @@ def _load_freshness_from(home: Path):
     import importlib as _il
 
     # W2-002: check multi-home BEFORE mutating sys.path
-    key = str(home)
-    if _ENGINE_CACHE:
-        existing_key = next(iter(_ENGINE_CACHE.keys()))
-        if existing_key.lower() != key.lower():
-            raise SaioUnavailable(
-                f"MULTI-HOME CONTAMINATION BLOCKED: freshness already loaded from "
-                f"{existing_key}. Cannot load from distinct home {key} because "
-                f"Python sys.modules is global by name."
-            )
-    tools = str(home / "tools")
-    if tools not in sys.path:
-        sys.path.insert(0, tools)
-    cached = _ENGINE_CACHE.get(key)
-    if cached is not None and "_freshness_only" in cached:
-        return cached["_freshness_only"]
-    # Load into a private slot, never a partial engine cache: engine() checks
-    # for a COMPLETE module set, so a half-built cache can never leak out.
-    mod = _il.import_module("freshness")
-    _ENGINE_CACHE.setdefault(key, {})["_freshness_only"] = mod
-    return mod
+    # W2-001 (SRC-003:R005): one authority lock, one home key -- this loader
+    # used to store `str(home)` while engine() stored `str(home).lower()`, so a
+    # mixed-case home produced two cache entries for a single home.
+    key = _home_key(home)
+    with _ENGINE_LOCK:
+        if _ENGINE_CACHE:
+            existing_key = next(iter(_ENGINE_CACHE.keys()))
+            if existing_key != key:
+                raise SaioUnavailable(
+                    f"MULTI-HOME CONTAMINATION BLOCKED: freshness already loaded from "
+                    f"{existing_key}. Cannot load from distinct home {key} because "
+                    f"Python sys.modules is global by name."
+                )
+        cached = _ENGINE_CACHE.get(key)
+        if cached is not None and "_freshness_only" in cached:
+            return cached["_freshness_only"]
+        tools = str(home / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        # Load into a private slot, never a partial engine cache: engine() checks
+        # for a COMPLETE module set, so a half-built cache can never leak out.
+        mod = _il.import_module("freshness")
+        _ENGINE_CACHE.setdefault(key, {})["_freshness_only"] = mod
+        return mod
 
 
 def role_revision(charter: Path) -> str:

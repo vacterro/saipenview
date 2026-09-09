@@ -102,7 +102,14 @@ saipenview/
 ├── textio.py       — One reader for every .saipen/ file (BOM, UTF-16, cp1251)
 ├── protocol.py     — The protocol's closed vocabularies + BASELINE_VERSION
 ├── conformance.py  — Grades a project against those vocabularies
-├── api.py          — JS-facing pywebview bridge (89 public methods)
+├── collect.py      — The collect gate — one adapter for SAIPEN package validity
+├── outbox.py       — Strict OUTBOX parsing for producer packages
+├── ownership.py    — Per-root single-writer ownership (app vs agent launches)
+├── saio.py         — The canonical SAIOPS client bridge
+├── service.py      — Headless SAIPENVIEW service mode (SAIWORK embedding)
+├── tailio.py       — Bounded backward tail readers for large append-only logs
+├── external_changes.py — Backend-persistent external-change tracking
+├── api.py          — JS-facing pywebview bridge (90 public methods)
 ├── config.py       — Settings load/save (atomic writes)
 ├── tray.py         — pystray system-tray icon + context menu
 ├── hotkey.py       — Global hotkey registration (keyboard lib)
@@ -137,7 +144,7 @@ saipenview/
 - **Atomic writes** — config and cache use `temp-file + os.replace` so a crash can never truncate them.
 - **Stale-read safe** — the 5s UI poll calls `refresh_known()` (re-reads only `.saipen/` files, no directory walk), so edits to `STATE.md` appear within seconds without a full drive scan.
 - **No CSS transitions** — all visual effects (flash, heat, hover) are JavaScript-driven `hexBlend` recomputations, strictly following the vintage no-animation constraint.
-- **Agent Engine layer** — `runtime.py`, `engines/`, `events.py`, `guard.py`, `git_diff.py`, `watcher.py` follow the same conventions as the rest of the package; `api.py` exposes its 89 public methods to the frontend.
+- **Agent Engine layer** — `runtime.py`, `engines/`, `events.py`, `guard.py`, `git_diff.py`, `watcher.py` follow the same conventions as the rest of the package; `api.py` exposes its 90 public methods to the frontend.
 
 ---
 

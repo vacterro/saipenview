@@ -33,6 +33,27 @@ The **canonical memory** is what a successor needs to continue: the board,
 the log, the knowledge. The **local** half is what must stay behind: anything
 that names this machine or this session.
 
+## Authority receipts (amendment, T-832)
+
+The engine's release contract (`saipen_engine.release_contract.
+source_authority_paths`) defines one further surface that **must** travel via
+git: the source-receipt authority trees. A release commit that drops them
+would leave a fresh clone unable to prove that every audited finding was
+dispositioned, so the executor commits them on ship:
+
+| Kind | Location | Contents | Travels |
+|------|----------|----------|---------|
+| Authority receipts | `.saipen/intake/`, `.saipen/archive/source/`, `.saipen/kitchen/release_scope/` | audit-handoff source receipts, requirement contracts, coverage dispositions, per-ticket release scope records | via git, committed by the release executor |
+
+These files are immutable audit evidence pinned by content digests
+(`verify_integrity` refuses any body drift) and are committed exactly as
+received — receipt prose may quote the machine paths the audit observed,
+which is inert description, not live state. Everything else under
+`.saipen/` remains machine-local: `.saipen/BOARD.md`, `.saipen/LOG.md`,
+`.saipen/STATE.md`, `.saipen/recovery/`, `.saipen/logs/` and the kitchen
+scratch never travel via git and continue to move only through the
+export/import handoff below.
+
 ## Handoff (deterministic export / import)
 
 `saipen stop`/`SHIP` and releases are the handoff points.

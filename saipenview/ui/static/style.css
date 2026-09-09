@@ -13,11 +13,18 @@
 :root {
   --background:#1A1810; --backgroundSoft:#232018; --surface:#332E22;
   --surfaceRaised:#3D372A; --surfaceAlt:#453D30; --surfaceSoft:#422D18;
-  --borderDark:#100E08; --borderHighlight:#F0D060; --borderMuted:#5A5040;
+  /* --bevelLight carries every raised/sunken edge pair (UI.md iron law 3).
+     --borderHighlight is the ACCENT gold, not a bevel colour: used as a bevel it
+     paints a #F0D060 highlight on #3D372A, which is a bright line where Win95
+     wants a subtle one, and it leaves SELECTION with no quieter edge to use. The
+     two jobs are different tokens now -- bevel for depth, highlight for accent.
+     --link is UI.md's anchor colour; without it every link inherits textPrimary
+     and a link stops being recognisable as one. */
+  --borderDark:#100E08; --borderHighlight:#F0D060; --bevelLight:#75663D; --borderMuted:#5A5040;
   --textPrimary:#D4C89A; --textSecondary:#9C9371; --textMuted:#6E674E;
   --accentTeal:#008080; --accentTealDeep:#004C4C;
   --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020; --dangerText:#D66464; --dangerText:#D66464;
-  --selection:#3D372A; --compareBack:#14120C;
+  --selection:#3D372A; --compareBack:#14120C; --link:#F0D060;
   --goldStar:#FFC107;
   /* Red for TEXT. --danger stays what it is -- a fill/border colour, fine
      behind white text or as a 1px edge -- but it was also being used as the
@@ -69,15 +76,15 @@
 body { background: var(--background); color: var(--textPrimary); font-size: 12px; }
 
 .raised, button { border: 2px solid;
-  border-color: var(--borderHighlight) var(--borderDark) var(--borderDark) var(--borderHighlight);
+  border-color: var(--bevelLight) var(--borderDark) var(--borderDark) var(--bevelLight);
   background: var(--surfaceRaised); }
 .sunken, input, select, textarea { border: 2px solid;
-  border-color: var(--borderDark) var(--borderHighlight) var(--borderHighlight) var(--borderDark);
+  border-color: var(--borderDark) var(--bevelLight) var(--bevelLight) var(--borderDark);
   background: var(--surface); }
 
 button { padding: 2px 6px; min-width: 24px; min-height: 20px; color: var(--textPrimary); cursor: pointer; }
 button:hover { background: var(--surfaceAlt); }
-button:active { border-color: var(--borderDark) var(--borderHighlight) var(--borderHighlight) var(--borderDark); background: var(--surface); transform: translate(1px,1px); }
+button:active { border-color: var(--borderDark) var(--bevelLight) var(--bevelLight) var(--borderDark); background: var(--surface); transform: translate(1px,1px); }
 button:focus-visible { outline: 1px dotted var(--textPrimary); outline-offset: -4px; }
 
 input, select, textarea { height: 20px; padding: 1px 4px; background: var(--compareBack); color: var(--textPrimary); }
@@ -103,19 +110,27 @@ body { display: flex; flex-direction: column;
   background: var(--surfaceRaised); padding: 1px 2px; gap: 1px; flex: 0 0 auto;
   border-bottom: 1px solid var(--borderDark);
   min-height: 20px; }
-.toolbar #status { color: var(--textMuted); font-size: 9px; white-space: nowrap; }
+.toolbar #status { color: var(--textMuted); font-size: 10px; white-space: nowrap; }
 .toolbar-left { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; }
 .filter-select { font-size: 9px; height: 14px; padding: 0 2px; max-width: var(--filterW); min-width: 0; }
+/* White text on the danger fill is the one place a near-white is correct (the
+   badge is a filled chip, not text on the surface), and dangerText measures
+   5.26:1 which passes AA here too -- but white is the honest "count on a red
+   light" signal, so it stays; it is the only allowed near-white in the app. */
 .error-badge { background: var(--danger); color: #fff; font-size: 8px; font-weight: bold; padding: 0 3px; min-width: 12px; text-align: center; border: 1px solid var(--borderHighlight); }
 .wt-badge { background: var(--accentTealDeep); color: var(--accentTeal); font-size: 8px; font-weight: bold; padding: 0 3px; min-width: 12px; text-align: center; border: 1px solid var(--borderMuted); cursor: pointer; }
 .wt-badge:hover { background: var(--accentTeal); color: var(--textPrimary); }
 .wt-label { font-size: 8px; color: var(--textMuted); border: 1px solid var(--borderMuted); padding: 0 3px; }
-.progress-wrap { width: 30px; height: 6px; border: 2px solid; border-color: var(--borderDark) var(--borderHighlight) var(--borderHighlight) var(--borderDark); background: var(--compareBack); flex: 0 0 auto; }
+.progress-wrap { width: 30px; height: 6px; border: 2px solid; border-color: var(--borderDark) var(--bevelLight) var(--bevelLight) var(--borderDark); background: var(--compareBack); flex: 0 0 auto; }
 .progress-fill { height: 100%; background: var(--accentTeal); }
 .scan-indicator { color: var(--accentTeal); font-size: 8px; font-weight: bold; padding: 0 2px; }
 .toolbar .btn-group { display: flex; gap: 1px; flex: 0 0 auto; }
 .toolbar .btn-group button { font-size: 9px; padding: 1px 3px; min-width: unset; min-height: 16px; height: 16px; }
-.quit-btn { color: #cc6666 !important; font-weight: bold; font-size: 9px !important; }
+/* Quit is the one destructive control in the toolbar: its resting colour must
+   be the danger TEXT token, not a one-off #cc6666 that traces to no palette and
+   breaks the "every hex traces to a token" QA gate. On hover it fills with the
+   danger surface and keeps readable text, exactly like the confirm-OK rule. */
+.quit-btn { color: var(--dangerText) !important; font-weight: bold; font-size: 9px !important; }
 .quit-btn:hover { background: var(--danger) !important; color: var(--textPrimary) !important; }
 /* Tip jar, not a call to action. It used to be the FIRST button in the group
    and painted #FFDD00 through an inline style -- brighter than anything else
@@ -132,7 +147,7 @@ body { display: flex; flex-direction: column;
    thing in the cascade that outranks it. */
 .search-input { width: var(--searchW); min-width: 0; height: 14px; font-size: 9px; }
 .exclude-input { width: var(--excludeW) !important; min-width: 0 !important; height: 14px !important; font-size: 9px !important; }
-.toggle-btn { padding:0 2px; height:14px; line-height:10px; font-size:8px; cursor:pointer; border:2px solid; border-color:var(--borderHighlight) var(--borderDark) var(--borderDark) var(--borderHighlight); background:var(--surfaceRaised); color:var(--textPrimary); flex:0 0 auto; }
+.toggle-btn { padding:0 2px; height:14px; line-height:10px; font-size:8px; cursor:pointer; border:2px solid; border-color:var(--bevelLight) var(--borderDark) var(--borderDark) var(--bevelLight); background:var(--surfaceRaised); color:var(--textPrimary); flex:0 0 auto; }
 .toolbar-left label { font-size: 8px !important; }
 .toolbar-left label input { width: 8px !important; height: 8px !important; }
 
@@ -153,9 +168,14 @@ body.swapped .main-container { flex-direction: row-reverse; }
    region shows it occupies its own line and pushes the toolbar / main layout
    down -- nothing sits on top of anything else, every button stays clickable.
    max-height + overflow:hidden trim runaway content (T-179, ALEKS UI pass). */
+/* Unrecorded/error banner: the ONLY hard hexes that were here (#2a1510 / #e08a8a
+   / #7a2020) traced to no token, so they failed the closed-palette gate. Mapped
+   to the nearest palette intent: a danger-tinted strip on the danger surface with
+   dangerText, edged by --danger. Monospace dropped -- UI.md says keep Verdana
+   unless fixed-width is required, and a warning line is not. */
 .top-banner-region { display: flex; align-items: center; gap: 6px;
-  background: #2a1510; color: #e08a8a; font-size: 10px; font-family: monospace;
-  padding: 2px 6px; border-bottom: 1px solid #7a2020;
+  background: var(--danger); color: var(--dangerText); font-size: 10px;
+  padding: 2px 6px; border-bottom: 1px solid var(--borderDark);
   flex: 0 0 auto; max-height: 60px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .top-banner-region[hidden] { display: none !important; }
@@ -165,7 +185,7 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 
 .collapse-hint { position:fixed; top:20px; right:2px; z-index:300; display:flex; align-items:center; gap:4px;
   background:var(--surfaceRaised); border:2px solid;
-  border-color:var(--borderHighlight) var(--borderDark) var(--borderDark) var(--borderHighlight);
+  border-color:var(--bevelLight) var(--borderDark) var(--borderDark) var(--bevelLight);
   padding:3px 5px; font-size:9px; white-space:nowrap; }
 .collapse-hint span { color:var(--textSecondary); }
 
@@ -222,14 +242,14 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .project-row .pin-btn:hover { color: var(--borderHighlight); }
 
 .project-row .name { color: var(--textPrimary); font-weight: bold; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.project-row .phase { padding: 0 2px; font-size: 9px; min-width: 40px; text-align: center; flex: 0 0 auto; }
+.project-row .phase { padding: 0 2px; font-size: 10px; min-width: 40px; text-align: center; flex: 0 0 auto; }
 .project-row .task { color: var(--textSecondary); font-size: 10px; padding-left: 16px; }
 .project-row .blocker { color: var(--dangerText); font-size: 10px; padding-left: 16px; }
-.project-row .updated { color: var(--textMuted); font-size: 9px; flex: 0 0 auto; }
+.project-row .updated { color: var(--textMuted); font-size: 10px; flex: 0 0 auto; }
 .hide-btn, .unhide-btn { color: var(--textMuted); font-size: 9px; cursor: pointer; padding: 0 2px; flex: 0 0 auto; }
 .hide-btn:hover { color: var(--warning); }
 .unhide-btn:hover { color: var(--accentTeal); }
-.hidden-row { opacity: 0.65; }
+.hidden-row { color: var(--textMuted); font-style: italic; }
 .hidden-row .name { color: var(--textMuted); font-style: italic; }
 
 .project-list.compact .project-row { padding: 1px 4px 1px 7px; height: 18px; overflow: hidden; border-bottom: 1px solid var(--borderDark); }
@@ -274,7 +294,7 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .sub-row .name { flex: 0 0 auto; max-width: var(--subNameW); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub-row .sub-icon { flex: 0 0 auto; font-size: 9px; line-height: 1; }
 .sub-row .phase { flex: 0 0 auto; font-size: 8px; font-weight: bold; }
-.sub-row .task { flex: 1 1 auto; min-width: 0; padding-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-row .task { flex: 1 1 auto; min-width: 0; padding-left: 0; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The pane is its own query container, not just a flex child.
    `body` alone was not enough: the pane is a fraction of the window, so a
@@ -286,7 +306,7 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 /* renderDetailPane's wrapper. It used to carry these three properties as an
    inline style, which meant the column stack could never be conditioned on
    width -- an inline declaration outranks any rule here. It is a class now so
-   the wide-window band below can turn it into a grid. */
+   the wide-pane band below can turn it into a multi-column flow. */
 .detail-content { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
 .detail-placeholder { color: var(--textMuted); padding: 12px; text-align: center; margin: auto; font-size: 11px; }
 
@@ -323,7 +343,7 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .unrecorded-item .ack-btn { flex: 0 0 auto; font-size: 8px; padding: 0 3px; }
 
 .detail-header { display: flex; flex-direction: column; gap: 2px; padding-bottom: 4px; border-bottom: 1px solid var(--borderMuted); }
-.detail-title { font-size: 12px; font-weight: bold; color: var(--borderHighlight); display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.detail-title { font-size: 14px; font-weight: bold; color: var(--borderHighlight); display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .detail-title .phase { flex: 0 0 auto; }
 /* Which project am I looking at is the one question the header must always
    answer. It used to stop answering it below a certain width: a flex row with
@@ -335,7 +355,7 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .detail-name { flex: 0 1 auto; min-width: 5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-name-group .git-badge, .detail-name-group .conf-badge { flex: 0 0 auto; }
 .detail-title-right { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
-.detail-path { font-size: 9px; color: var(--textMuted); word-break: break-all; }
+.detail-path { font-size: 10px; color: var(--textMuted); word-break: break-all; }
 
 .action-bar { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 3px; }
 .action-bar button { font-size: 9px; padding: 1px 4px; min-height: 16px; }
@@ -343,13 +363,13 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 /* the heart of SAIPEN -- next_action gets its own raised banner, not just
    another field buried in State Summary */
 .next-action-banner { background: var(--surfaceRaised); border: 2px solid;
-  border-color: var(--borderHighlight) var(--borderDark) var(--borderDark) var(--borderHighlight);
+  border-color: var(--bevelLight) var(--borderDark) var(--borderDark) var(--bevelLight);
   padding: 3px 5px; display: flex; align-items: baseline; gap: 5px; }
 .next-action-label { color: var(--borderHighlight); font-weight: bold; font-size: 10px; flex: 0 0 auto; }
 .next-action-text { color: var(--textPrimary); font-size: 11px; font-weight: bold; overflow-wrap: anywhere; }
 
 .detail-card { background: var(--surface); border: 1px solid var(--borderMuted); padding: 3px; display: flex; flex-direction: column; gap: 2px; }
-.card-title { font-size: 10px; font-weight: bold; color: var(--textSecondary); border-bottom: 1px solid var(--borderDark); padding-bottom: 1px; }
+.card-title { font-size: 11px; font-weight: bold; color: var(--textSecondary); border-bottom: 1px solid var(--borderDark); padding-bottom: 1px; }
 
 /* history reads like an archive, not live state -- LOG.md only */
 .detail-card.history { background: var(--compareBack); }
@@ -367,7 +387,7 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 .sub-detail-row .phase-dot { flex: 0 0 auto; }
 .sub-detail-row .sd-name { color: var(--borderHighlight); flex: 0 1 auto; max-width: var(--subNameW);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
-.sub-detail-row .sd-phase { font-size: 9px; min-width: 36px; flex: 0 0 auto; text-align: center; }
+.sub-detail-row .sd-phase { font-size: 10px; min-width: 36px; flex: 0 0 auto; text-align: center; }
 .sub-detail-row .sd-task { color: var(--textSecondary); flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .sub-detail-row .sd-counts { color: var(--accentTeal); font-size: 8px; flex: 0 0 auto; margin: 0 2px; white-space: nowrap; }
@@ -376,28 +396,28 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
    two must move together or the alignment drifts at every width. */
 .detail-field .label { color: var(--textMuted); font-weight: bold; display: inline-block; min-width: var(--fieldLabelW); flex-shrink: 0; }
 
-.ticket-list { display: flex; flex-direction: column; gap: 1px; font-size: 9px; }
+.ticket-list { display: flex; flex-direction: column; gap: 1px; font-size: 10px; }
 .ticket-item { display: flex; gap: 2px; }
-.ticket-id { color: var(--accentTeal); font-weight: bold; min-width: 36px; flex: 0 0 auto; font-size: 9px; }
-.ticket-desc { color: var(--textPrimary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ticket-id { color: var(--accentTeal); font-weight: bold; min-width: 36px; flex: 0 0 auto; font-size: 10px; }
+.ticket-desc { color: var(--textPrimary); font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.log-item { font-size: 9px; color: var(--textSecondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log-item { font-size: 10px; color: var(--textSecondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.time-heat { font-size: 9px; font-weight: bold; }
+.time-heat { font-size: 10px; font-weight: bold; }
 
 .outbox-block { margin-top: 2px; padding-top: 2px; border-top: 1px solid var(--borderMuted); }
 .outbox-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 2px; font-size: 9px; color: var(--textSecondary); }
 .outbox-header button { font-size: 8px; padding: 0 3px; min-width: unset; min-height: 12px; height: 12px; }
 .outbox-items { display: flex; flex-direction: column; gap: 1px; margin-top: 1px; }
-.outbox-item { display: flex; gap: 2px; align-items: baseline; font-size: 9px; }
-.outbox-id { color: var(--accentTeal); font-weight: bold; min-width: 40px; flex: 0 0 auto; font-size: 9px; }
-.outbox-status { text-transform: uppercase; font-size: 8px; min-width: 36px; }
+.outbox-item { display: flex; gap: 2px; align-items: baseline; font-size: 10px; }
+.outbox-id { color: var(--accentTeal); font-weight: bold; min-width: 40px; flex: 0 0 auto; font-size: 10px; }
+.outbox-status { text-transform: uppercase; font-size: 10px; min-width: 36px; }
 .outbox-status-ready { color: var(--success); font-weight: bold; }
 .outbox-status-blocked { color: var(--warning); }
 .outbox-status-draft { color: var(--textMuted); }
 .outbox-status-reviewed, .outbox-status-stale { color: var(--textMuted); font-style: italic; }
-.outbox-critical-flag { color: var(--dangerText); font-weight: bold; font-size: 9px; }
-.outbox-summary { color: var(--textPrimary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outbox-critical-flag { color: var(--dangerText); font-weight: bold; font-size: 10px; }
+.outbox-summary { color: var(--textPrimary); font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .empty { color: var(--textMuted); padding: 12px; text-align: center; }
 
@@ -405,16 +425,16 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
 ::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-track { background: var(--compareBack); border: 1px solid var(--borderDark); }
 ::-webkit-scrollbar-thumb { background: var(--surfaceRaised); border: 2px solid;
-  border-color: var(--borderHighlight) var(--borderDark) var(--borderDark) var(--borderHighlight);
+  border-color: var(--bevelLight) var(--borderDark) var(--borderDark) var(--bevelLight);
   min-height: 20px; }
-::-webkit-scrollbar-thumb:hover { background: #4e3a18; }
+::-webkit-scrollbar-thumb:hover { background: var(--surfaceAlt); }
 ::-webkit-scrollbar-thumb:active { background: var(--surface);
-  border-color: var(--borderDark) var(--borderHighlight) var(--borderHighlight) var(--borderDark); }
+  border-color: var(--borderDark) var(--bevelLight) var(--bevelLight) var(--borderDark); }
 ::-webkit-scrollbar-button { display: block; background: var(--surfaceRaised); height: 14px; width: 14px;
-  border: 2px solid; border-color: var(--borderHighlight) var(--borderDark) var(--borderDark) var(--borderHighlight);
+  border: 2px solid; border-color: var(--bevelLight) var(--borderDark) var(--borderDark) var(--bevelLight);
   background-repeat: no-repeat; background-position: center; }
-::-webkit-scrollbar-button:hover { background-color: #4e3a18; }
-::-webkit-scrollbar-button:active { border-color: var(--borderDark) var(--borderHighlight) var(--borderHighlight) var(--borderDark); }
+::-webkit-scrollbar-button:hover { background-color: var(--surfaceAlt); }
+::-webkit-scrollbar-button:active { border-color: var(--borderDark) var(--bevelLight) var(--bevelLight) var(--borderDark); }
 /* Up arrow */
 ::-webkit-scrollbar-button:vertical:decrement {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M1 5L4 2l3 3' fill='none' stroke='%23C0A060' stroke-width='1.5'/%3E%3C/svg%3E");
@@ -486,10 +506,24 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
    These carried their geometry as an inline `style="max-width:800px; width:90%;
    height:80%; display:flex; flex-direction:column"`, repeated three times. Same
    sizes, expressed once and in the same fluid vocabulary as everything else, so
-   the narrow bands can reach them. */
-.modal-box-lg, .modal-box-xl { display: flex; flex-direction: column; height: 80%; }
-.modal-box-lg { width: min(94cqi, 800px); }
-.modal-box-xl { width: min(94cqi, 900px); height: 60%; }
+   the narrow bands can reach them.
+
+   `max-height`, never `height`. A fixed percentage RESERVES that share of the
+   window whatever the content is, so a clean `git status` opened a dialog
+   80% of the window tall to say "no changes" -- one line of text and a wall of
+   empty panel under it, and the taller the window the worse it got. With a cap
+   the box is content-sized up to the cap and scrolls past it, which is the
+   same behaviour for a long diff and an honest one for a short one.
+
+   The floors below are the other half: the scroll regions inside these boxes
+   are `flex: 1` on a now-auto-height column, so with little content they
+   would collapse to a sliver. A floor in the same units the content is read
+   in keeps a small diff legible without reserving a screen for it. */
+.modal-box-lg, .modal-box-xl { display: flex; flex-direction: column; }
+.modal-box-lg { width: min(94cqi, 800px); max-height: 80%; }
+.modal-box-xl { width: min(94cqi, 900px); max-height: 80%; }
+#fileViewerContent, #fileViewerRendered { min-height: 12lh; }
+#diffViewerContent, #fleetDashboardContent { min-height: 6lh; }
 .help-box-quick { max-width: 460px; }
 /* Status on the left, buttons on the right -- until there is no room for both
    on one line, at which point they stack instead of pushing out of the box. */
@@ -570,8 +604,8 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .file-viewer-rendered .reader-log-text { color: var(--textPrimary); word-break: break-word; }
 
 /* Interactive ticket action buttons */
-.ticket-action-btn { font-size: 8px; padding: 0 5px; height: 16px; line-height: 14px; border-radius: 2px; margin-left: auto; flex-shrink: 0; cursor: pointer; min-width: 32px; text-align: center; }
-.ticket-action-btn:disabled { opacity: 0.4; cursor: default; }
+.ticket-action-btn { font-size: 8px; padding: 0 5px; height: 16px; line-height: 14px; margin-left: auto; flex-shrink: 0; cursor: pointer; min-width: 32px; text-align: center; }
+.ticket-action-btn:disabled { color: var(--textMuted); cursor: default; }
 .ticket-done-btn { color: var(--borderHighlight); border-color: var(--borderHighlight); }
 .ticket-done-btn:hover { background: var(--borderHighlight); color: var(--surface); }
 .ticket-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; }
@@ -579,9 +613,9 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .ticket-desc { color: var(--textPrimary); font-size: 10px; flex: 1 1 auto; word-break: break-word; }
 .ticket-chk { width: 12px; height: 12px; margin: 0; flex-shrink: 0; cursor: pointer; }
 .ticket-block-btn { color: var(--dangerText); }
-.ticket-blocker { font-size: 9px; color: var(--dangerText); padding: 1px 6px 4px 24px; word-break: break-word; }
+.ticket-blocker { font-size: 10px; color: var(--dangerText); padding: 1px 6px 4px 24px; word-break: break-word; }
 .ticket-item[draggable="true"] { cursor: grab; }
-.ticket-item.drag-source { opacity: 0.4; }
+.ticket-item.drag-source { color: var(--textMuted); }
 .ticket-item.drag-over { outline: 1px dashed var(--borderHighlight); outline-offset: -1px; }
 
 /* Contextual quick-action buttons — accent teal, slightly smaller */
@@ -592,7 +626,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .collect-btn { font-size: 8px; padding: 0 5px; height: 16px; line-height: 14px; min-width: 36px; text-align: center; flex-shrink: 0; cursor: pointer; }
 .collect-btn { color: var(--success); border-color: var(--success); margin-left: auto; }
 .collect-btn:hover { background: var(--success); color: var(--textPrimary); }
-.collect-btn:disabled { opacity: 0.4; cursor: default; }
+.collect-btn:disabled { color: var(--textMuted); cursor: default; }
 
 /* Stale protocol badge — warning-colored, small, sits next to card titles */
 .stale-badge { font-size: 8px; padding: 0 4px; color: var(--warning); border: 1px solid var(--warning); font-weight: bold; vertical-align: middle; }
@@ -602,7 +636,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .custom-cmd-btn:hover { background: #4a3a10; color: var(--textPrimary); }
 
 /* Quick-search results panel */
-.search-results-header { font-size: 9px; color: var(--textMuted); padding: 4px 6px; border-bottom: 1px solid var(--borderMuted); font-style: italic; }
+.search-results-header { font-size: 10px; color: var(--textMuted); padding: 4px 6px; border-bottom: 1px solid var(--borderMuted); font-style: italic; }
 .search-project-group { border-bottom: 1px solid var(--borderMuted); }
 .search-project-head { display: flex; align-items: center; gap: 4px; padding: 3px 6px; cursor: pointer; user-select: none; }
 .search-project-head:hover { background: var(--surface); }
@@ -613,7 +647,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .search-ticket-count { font-size: 8px; color: var(--accentTeal); flex: 0 0 auto; padding: 0 4px; }
 .search-ticket-row { display: flex; align-items: center; gap: 4px; padding: 2px 6px 2px 16px; cursor: pointer; user-select: none; font-size: 10px; }
 .search-ticket-row:hover { background: var(--surfaceSoft); }
-.search-ticket-section { font-size: 8px; font-weight: bold; flex: 0 0 auto; min-width: 40px; }
+.search-ticket-section { font-size: 10px; font-weight: bold; flex: 0 0 auto; min-width: 40px; }
 .search-ticket-section.section-doing { color: var(--borderHighlight); }
 .search-ticket-section.section-todo { color: var(--textSecondary); }
 .search-ticket-section.section-blocked { color: var(--dangerText); }
@@ -622,7 +656,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .search-ticket-desc { color: var(--textPrimary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-sub-ticket-row { padding-left: 22px; border-left: 2px solid var(--borderMuted); margin-left: 6px; }
 .search-sub-label { font-size: 8px; color: var(--accentTeal); font-weight: bold; flex: 0 0 auto; min-width: 36px; text-transform: uppercase; margin-right: 2px; }
-.search-highlight { background: #4a3a10; color: var(--goldStar); font-weight: bold; border-radius: 1px; padding: 0 1px; }
+.search-highlight { background: var(--surfaceSoft); color: var(--goldStar); font-weight: bold; padding: 0 1px; }
 
 /* Right-click context menu */
 .context-menu { position: fixed; z-index: 500; min-width: 180px; padding: 2px; font-size: 11px; }
@@ -641,7 +675,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .error-item:last-child { border-bottom: none; }
 /* Same shape as .conf-item, same failure available to it: a 110px column that
    refuses to shrink beside a message that will. */
-.error-time { color: var(--textMuted); font-family: monospace; font-size: 9px;
+.error-time { color: var(--textMuted); font-family: monospace; font-size: 10px;
   flex: 0 1 auto; min-width: 0; white-space: nowrap; }
 .error-message { flex: 1 1 12ch; min-width: 12ch; color: var(--textPrimary);
   word-break: break-word; overflow-wrap: anywhere; }
@@ -655,7 +689,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .sub-next-action .label { color: var(--borderHighlight); font-weight: bold; flex-shrink: 0; }
 .sub-log-section { font-size: 10px; margin-top: 2px; padding-left: 2px; border-left: 2px solid var(--borderMuted); }
 .sub-log-section .label { color: var(--textMuted); font-weight: bold; }
-.sub-log-line { font-size: 9px; color: var(--textSecondary); padding-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-log-line { font-size: 10px; color: var(--textSecondary); padding-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* --- Floating search overlay --- */
 .search-overlay { position: fixed; inset: 0;
@@ -671,8 +705,8 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   border-bottom: 1px solid var(--borderDark);
 }
 .search-overlay-title { font-weight: bold; font-size: 11px; color: var(--borderHighlight); }
-.search-overlay-count { font-size: 9px; color: var(--accentTeal); font-weight: bold; }
-.search-overlay-cycle { font-size: 9px; color: var(--borderHighlight); font-weight: bold; }
+.search-overlay-count { font-size: 10px; color: var(--accentTeal); font-weight: bold; }
+.search-overlay-cycle { font-size: 10px; color: var(--borderHighlight); font-weight: bold; }
 .search-overlay-header button { font-size: 9px; padding: 0 4px; min-width: 20px; height: 16px; }
 .search-overlay-body { flex: 1; overflow-y: auto;
   /* flex, not a calc against a viewport unit: the header and footer are
@@ -683,7 +717,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .search-overlay-footer { padding: 2px 6px;
   border-top: 1px solid var(--borderDark);
 }
-.search-overlay-status { font-size: 9px; color: var(--textMuted); }
+.search-overlay-status { font-size: 10px; color: var(--textMuted); }
 
 /* --- Help modal styles --- */
 .help-box {
@@ -747,7 +781,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   color: var(--accentTeal);
   background: var(--compareBack);
   padding: 0 2px;
-  border-radius: 1px;
+  /* radius 1px removed: iron law 2 bans rounded corners */
   font-size: 10px;
 }
 .help-section strong {
@@ -788,9 +822,9 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   color: var(--textSecondary);
   padding: 3px 4px;
   cursor: pointer;
-  border-radius: 2px;
+  /* radius 2px removed: iron law 2 bans rounded corners */
   margin-bottom: 1px;
-  transition: background 0.1s, color 0.1s;
+  /* no transition: iron law 2 bans motion */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -855,13 +889,13 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
   color: var(--accentTeal);
   background: var(--surface);
   padding: 0 3px;
-  border-radius: 2px;
+  /* radius 2px removed: iron law 2 bans rounded corners */
   font-size: 10px;
 }
 .wiki-markdown pre {
   background: var(--surface);
   border: 1px solid var(--borderMuted);
-  border-radius: 2px;
+  /* radius 2px removed: iron law 2 bans rounded corners */
   padding: 6px 8px;
   overflow-x: auto;
   font-size: 10px;
@@ -950,18 +984,18 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
    letters. The fix has to be on the sibling that would not budge.
    `overflow-wrap: anywhere` because a path has no space to break at, and
    `word-break: break-word` alone will not break inside a long slug. */
-.conf-rule { flex: 0 1 auto; min-width: 0; color: var(--textMuted); font-size: 9px;
+.conf-rule { flex: 0 1 auto; min-width: 0; color: var(--textMuted); font-size: 10px;
   overflow-wrap: anywhere; }
 /* `1 1 12ch`, not `1 1 auto`: a floor in characters is the only basis that
    means anything for text. Below roughly twelve the row stops being a message
    and becomes a column of letters, which is the bug this rule exists for. */
 .conf-msg { flex: 1 1 12ch; min-width: 12ch; color: var(--textSecondary);
   word-break: break-word; overflow-wrap: anywhere; }
-.conf-where { flex: 0 1 auto; min-width: 0; color: var(--textMuted); font-size: 9px;
+.conf-where { flex: 0 1 auto; min-width: 0; color: var(--textMuted); font-size: 10px;
   overflow-wrap: anywhere; }
-.conf-cite { flex: 0 1 auto; min-width: 0; color: var(--accentTeal); font-size: 9px;
+.conf-cite { flex: 0 1 auto; min-width: 0; color: var(--accentTeal); font-size: 10px;
   overflow-wrap: anywhere; }
-.conf-baseline { color: var(--textMuted); font-size: 9px; font-style: italic;
+.conf-baseline { color: var(--textMuted); font-size: 10px; font-style: italic;
   padding-top: 3px; border-top: 1px solid var(--borderMuted); margin-top: 3px; }
 
 /* Agent Panel Styles */
@@ -975,9 +1009,14 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 .agent-status-bar { display: flex; justify-content: space-between; align-items: center; background: var(--surfaceRaised); padding: 2px 4px; border: 1px solid var(--borderHighlight); border-right-color: var(--borderDark); border-bottom-color: var(--borderDark); font-size: 11px; }
 .agent-status-info { display: flex; gap: 6px; align-items: center; color: var(--borderHighlight); font-weight: bold; }
 .agent-status-elapsed { color: var(--textSecondary); font-weight: normal; font-size: 10px; }
-.agent-output-panel { height: 150px; overflow-y: auto; background: var(--compareBack); border: 2px solid; border-color: var(--borderDark) var(--borderHighlight) var(--borderHighlight) var(--borderDark); padding: 4px; font-family: "Cascadia Mono", "Consolas", monospace; font-size: 10px; color: var(--textPrimary); display: flex; flex-direction: column; }
+/* `max-height`, not `height`: a flat 150px was reserved whether the console
+   held 900 lines or nothing at all, so the panel of an idle project was 150px
+   of empty sunken box under a one-line "no agent running" subtitle. The cap is
+   what the panel is for -- long output must not push the pane -- and the floor
+   keeps a couple of lines readable without reserving the rest. */
+.agent-output-panel { max-height: 150px; min-height: 3lh; overflow-y: auto; background: var(--compareBack); border: 2px solid; border-color: var(--borderDark) var(--bevelLight) var(--bevelLight) var(--borderDark); padding: 4px; font-family: "Cascadia Mono", "Consolas", monospace; font-size: 10px; color: var(--textPrimary); display: flex; flex-direction: column; }
 .agent-output-line { white-space: pre-wrap; word-break: break-all; margin-bottom: 2px; line-height: 1.3; }
-.agent-output-meta { color: var(--textMuted); font-size: 9px; text-align: right; margin-top: 2px; }
+.agent-output-meta { color: var(--textMuted); font-size: 10px; text-align: right; margin-top: 2px; }
 .agent-launch-panel { display: flex; flex-direction: column; gap: 4px; background: var(--surface); border: 1px solid var(--borderMuted); padding: 4px; }
 .agent-launch-row { display: flex; gap: 4px; align-items: stretch; }
 .agent-launch-row select { flex: 0 0 120px; }
@@ -998,19 +1037,55 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
    path is in the tooltip, the folder button opens it).
    ============================================================ */
 
-/* --- Wide: stop stacking cards in a single narrow column ------------------ */
-@container app (min-width: 1100px) {
+/* --- Wide pane: stop stacking cards in a single narrow column -------------
+   Multi-column FLOW, not a grid, and asked of the PANE rather than the body.
+
+   Two separate defects lived in the rule this replaces:
+
+   1. `repeat(auto-fit, minmax(360px, 1fr))` plus `align-self: start` is a hole
+      generator by construction. A grid row is as tall as its tallest item and
+      `align-self: start` tells the short one not to fill the rest, so
+      Conformance (2 rows) beside Tickets (20 rows) left a dead column the
+      height of the difference -- hundreds of pixels of nothing between two
+      cards. That is the "elements refuse to stack" symptom exactly.
+   2. It was a `@container app` band, so the BODY decided whether the cards go
+      side by side -- and the body is not what holds them. Collapse the sidebar
+      on a 1000px window and the pane is ~980px wide, room for two columns,
+      while `min-width: 1100px` on the body still says one: dead space to the
+      right of a narrow column of cards. The pane owns the space, so the pane
+      answers the question.
+
+   Multicol has no row concept at all: cards fragment into columns by flow, so
+   the only vertical space between two of them is the margin. `column-width`
+   also picks its own column count from the space actually available.
+
+   Two properties are load-bearing:
+   * `flex: 0 0 auto` -- the base rule is `flex: 1 1 auto`, which stretches this
+     box to the full pane height. Balancing across a stretched box puts the
+     emptiness back, at the bottom instead of between the cards.
+   * `break-inside: avoid` -- a card split mid-body across a column boundary is
+     unreadable. A card taller than the balanced column overflows it instead,
+     which is the right trade. */
+@container pane (min-width: 780px) {
   .detail-content {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-    align-content: start;
-    gap: 4px;
+    display: block;
+    flex: 0 0 auto;
+    column-width: 360px;
+    column-gap: 4px;
+    column-fill: balance;
   }
-  /* The two things that must stay full width and stay at the top: which
-     project this is, and what it wants done next. */
+  /* The three things that must stay full width and stay at the top: which
+     project this is, what it wants done next, and any unrecorded-change
+     warning about it. `column-span: all` fragments the multicol around
+     itself, so these keep their place above the columns. */
   .detail-content > .detail-header,
-  .detail-content > .next-action-banner { grid-column: 1 / -1; }
-  .detail-card { align-self: start; }
+  .detail-content > .next-action-banner,
+  .detail-content > .unrecorded-bar { column-span: all; }
+  /* In flow layout this is the cards' own separation; the flex `gap` that
+     used to provide it does not apply to a block container. */
+  .detail-content > .detail-card { break-inside: avoid; margin-bottom: 4px; }
+  .detail-content > .detail-header,
+  .detail-content > .next-action-banner { margin-bottom: 4px; }
 }
 
 /* --- Narrow: the toolbar stops being able to hold everything ------------- */

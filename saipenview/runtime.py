@@ -829,6 +829,15 @@ class ProcessManager:
                 return
             ap._finalized = True
 
+        # W2-002 (SRC-004:R010): proven-death finalization is the AUTHORITATIVE
+        # cleanup point for the stuck marker. A reaper-timeout marker can only
+        # mean "death unproven"; once the OS returncode is known, the marker's
+        # premise is gone and a phantom live-writer state must not survive the
+        # same transition that releases ownership. Idempotent: discard() on an
+        # absent key is a no-op, so the reaper's own success-path discard stays.
+        with self._lock:
+            self._stuck_agents.discard(self._key(ap.project_root))
+
         # W2-004: close the Job Object handle as soon as direct child death
         # is proven. KILL_ON_JOB_CLOSE terminates contained descendants --
         # the very objects that can keep the inherited stdout pipe open past
@@ -853,6 +862,10 @@ class ProcessManager:
             ap.finished_at = datetime.now(timezone.utc)
             ap.status = status
             ap._psutil_proc = None
+            # W2-002 (SRC-004:R010): a finalized process retains no stale
+            # reaper metadata -- the lifecycle transition owns both the stuck
+            # marker and the reaper flag in one place.
+            ap._reaper_scheduled = False
 
         # PERF-009: a pending availability timer for a finalized run is stale
         # -- cancel it so a dead root never fires a notification afterwards.
@@ -996,36 +1009,64 @@ class ProcessManager:
             ap = self._processes.get(key)
         if not ap:
             return {"ok": False, "error": "No agent process found"}
-        if ap.status != "running":
-            return {"ok": False, "error": f"Agent is not running (status={ap.status})"}
-        # W2-026: run-aware target identity
-        if expected_run_id is not None and ap.run_id != expected_run_id:
-            return {
-                "ok": False,
-                "code": "RUN_STALE",
-                "error": f"expected run_id={expected_run_id}, active={ap.run_id}",
-            }
         if not ap.engine.supports_stdin:
             return {
                 "ok": False,
                 "error": f"Engine '{ap.engine.name}' does not support stdin",
             }
+        # Single framing owner (T-167): the backend strips trailing CR/LF
+        # and adds exactly one \n, so the frontend sends clean text and the
+        # wire always carries one final newline. Multiline input keeps its
+        # internal newlines. Empty input is refused.
+        text = text.rstrip("\r\n")
+        if not text.strip():
+            return {"ok": False, "error": "input is empty"}
+
+        # W2-004 (SRC-004:R012): liveness validation and stream acquisition
+        # share ONE synchronization boundary with terminal finalization and
+        # compaction (both publish under ``ap._io_lock``). A natural exit
+        # that wins the race is a structured lifecycle outcome, never an
+        # AttributeError escaping to the RPC surface. The global
+        # ProcessManager lock is never held across blocking stdin I/O; the
+        # stream reference captured here stays valid even if a concurrent
+        # compaction drops ``ap.process``.
+        with ap._io_lock:
+            if ap.status != "running":
+                return {
+                    "ok": False,
+                    "code": "RUN_ENDED",
+                    "error": f"Agent is not running (status={ap.status})",
+                }
+            # W2-026: run-aware target identity -- validated in the same
+            # synchronized generation, so delayed input can never target a
+            # replacement run.
+            if expected_run_id is not None and ap.run_id != expected_run_id:
+                return {
+                    "ok": False,
+                    "code": "RUN_STALE",
+                    "error": f"expected run_id={expected_run_id}, active={ap.run_id}",
+                }
+            proc = ap.process
+            stdin = proc.stdin if proc is not None else None
+
+        if stdin is None:
+            return {
+                "ok": False,
+                "code": "RUN_ENDED",
+                "error": "agent already finalized",
+            }
 
         try:
-            # Single framing owner (T-167): the backend strips trailing CR/LF
-            # and adds exactly one \n, so the frontend sends clean text and the
-            # wire always carries one final newline. Multiline input keeps its
-            # internal newlines. Empty input is refused.
-            text = text.rstrip("\r\n")
-            if not text.strip():
-                return {"ok": False, "error": "input is empty"}
             # PERF-008: stdin is a binary pipe now (unbuffered, matching the
             # bounded stdout reader); the wire contract stays UTF-8 + "\n".
-            ap.process.stdin.write((text + "\n").encode("utf-8"))
-            ap.process.stdin.flush()
-        except OSError as exc:
+            stdin.write((text + "\n").encode("utf-8"))
+            stdin.flush()
+        except (OSError, ValueError) as exc:
+            # A closed pipe/file object is the race outcome, not a fault:
+            # finalization or compaction closed the stream between the
+            # liveness check and the write.
             print(f"SAIPENVIEW: send_input failed: {exc}", file=sys.stderr)
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "code": "RUN_ENDED", "error": str(exc)}
 
         return {"ok": True}
 

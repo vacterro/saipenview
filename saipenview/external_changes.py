@@ -55,6 +55,61 @@ def normalize_rel(rel_path: str) -> str:
 _next_token = 0
 _token_lock = threading.Lock()
 
+# The only status a current writer persists. `acknowledge()` REMOVES the entry
+# rather than rewriting its status, so a persisted row carrying anything else
+# is damaged persistence, not valid history (W2-003 / SRC-003:R007).
+_PERSISTABLE_STATUSES = frozenset({"unresolved"})
+
+
+def _normalized_root_spelling(root: str) -> bool:
+    """True when *root* is already in the spelling `record()` would have written.
+
+    Deliberately lexical: comparing against `canonical_key()` would re-resolve
+    the path on disk, so an unplugged drive or a moved project would turn a
+    perfectly good registry into "corrupt". The invariants that matter for a
+    KEY are that it carries no traversal component and no case/separator
+    variation -- both decidable from the string alone.
+    """
+    if not isinstance(root, str) or not root:
+        return False
+    if root != os.path.normcase(os.path.normpath(root)):
+        return False
+    return ".." not in Path(root).parts
+
+
+def _valid_persisted_row(item: object) -> bool:
+    """True when a persisted row satisfies the registry's OWN invariants.
+
+    W2-003 (SRC-003:R007): `_load` used to accept any row whose constructor
+    call did not raise, so a syntactically valid file could carry a status no
+    writer produces (`"garbage"`), a `..` traversal path, a noncanonical root
+    alias or a nonnumeric timestamp. Such a row loaded as TRUSTED while
+    `unresolved()` -- the collect boundary's fail-closed evidence -- could not
+    see it, turning a required refusal into apparent clean state.
+    """
+    if not isinstance(item, dict):
+        return False
+    root, rel = item.get("root"), item.get("path")
+    if not _normalized_root_spelling(root):
+        return False
+    try:
+        if not isinstance(rel, str) or normalize_rel(rel) != rel:
+            return False
+    except ValueError:
+        return False
+    if item.get("status", "unresolved") not in _PERSISTABLE_STATUSES:
+        return False
+    fingerprint = item.get("fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return False
+    observed_at = item.get("observed_at")
+    if isinstance(observed_at, bool) or not isinstance(observed_at, (int, float)):
+        return False
+    token = item.get("token")
+    if isinstance(token, bool) or not isinstance(token, int) or token < 0:
+        return False
+    return True
+
 
 def _gen_token() -> int:
     global _next_token
@@ -165,7 +220,19 @@ class ExternalChangeRegistry:
                 self._mark_corrupt(path)
                 return
             loaded_max = int(saved_token) if isinstance(saved_token, int) else 0
+            seen_keys: set[tuple[str, str]] = set()
             for item in items:
+                # W2-003 (SRC-003:R007): validate the row against the
+                # registry's own invariants BEFORE trusting it. A row that
+                # only survives the constructor is not evidence.
+                if not _valid_persisted_row(item):
+                    self._mark_corrupt(path)
+                    return
+                key = (item["root"], item["path"])
+                if key in seen_keys:
+                    self._mark_corrupt(path)
+                    return
+                seen_keys.add(key)
                 try:
                     pc = PendingChange(
                         root=item["root"],
@@ -327,6 +394,60 @@ class ExternalChangeRegistry:
                 self._write_degraded = True
                 return False
             return True
+
+    def recover_from_corrupt(self) -> dict:
+        """The ONE evidence-safe way out of a corrupt-load state.
+
+        CORE-002 (SRC-003:R002): corruption was fail-closed with no exit. A
+        `.corrupt` marker made every later `_save()` a no-op, every restart
+        re-entered the degraded state from the marker, and collect stayed
+        refused forever -- the only escape was manual filesystem surgery,
+        which is exactly the destructive act with no evidence behind it.
+
+        This is deliberate, caller-authorized, and evidence-preserving:
+        the corrupt artifact is ARCHIVED under a timestamped name (never
+        deleted), any PendingChange observed after corruption is retained and
+        written into the new generation, and the marker is cleared only
+        because a durable commit already succeeded. A failed commit leaves the
+        degraded state and the artifact exactly as they were.
+        """
+        if not self._load_corrupt:
+            return {"ok": True, "recovered": False, "detail": "registry is not corrupt"}
+        marker = self._corrupt_marker()
+        archived: str | None = None
+        with self._lock:
+            retained = len(self._entries)
+            try:
+                if marker.exists():
+                    target = marker.with_name(
+                        f"{marker.name}.{_time.strftime('%Y%m%dT%H%M%SZ', _time.gmtime())}"
+                    )
+                    while target.exists():
+                        target = target.with_name(f"{target.name}.1")
+                    marker.replace(target)
+                    archived = str(target)
+            except OSError as exc:
+                return {
+                    "ok": False,
+                    "recovered": False,
+                    "detail": f"corrupt evidence could not be archived: {exc}",
+                }
+            # Let _save() run: it refuses while _load_corrupt is True.
+            self._load_corrupt = False
+            if not self._save():
+                self._load_corrupt = True
+                return {
+                    "ok": False,
+                    "recovered": False,
+                    "archived": archived,
+                    "detail": "recovery write failed; registry stays fail-closed",
+                }
+        return {
+            "ok": True,
+            "recovered": True,
+            "archived": archived,
+            "retained_pending": retained,
+        }
 
     def is_degraded(self) -> bool:
         """CORE-006: True when either trust condition is unresolved.

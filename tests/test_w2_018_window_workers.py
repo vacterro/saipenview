@@ -20,6 +20,19 @@ import pytest
 from saipenview.ui.window import MainWindow
 
 
+@pytest.fixture(autouse=True)
+def _no_generated_startup_page():
+    """MainWindow tests run against the REAL static dir, so the T-831 delivery
+    path generates index.lite.html there; remove it before AND after every
+    test so nothing generated is left in the repository tree."""
+    from saipenview.ui import index_page
+
+    generated = Path(index_page.generated_index_path())
+    generated.unlink(missing_ok=True)
+    yield
+    generated.unlink(missing_ok=True)
+
+
 def test_geometry_worker_checks_generation():
     """Rapid stop/start leaves only one alive worker via generation gate."""
     with patch("saipenview.ui.window.webview"):

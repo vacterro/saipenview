@@ -59,8 +59,15 @@ _LOG_ANY_EVENT_RE = re.compile(r"^-\s+.*?\[E-(\d+)\]")
 # it, and the project came back clean while the canonical validator FAILed on
 # exactly that line. Coverage, not content: the same shape as a check that
 # walks a curated file list instead of the shipped surface.
+#
+# PERF: the date, time and event id are CAPTURED here so one match answers
+# every question about the line. They used to be re-derived by running
+# _LOG_ENTRY_RE and _LOG_ANY_EVENT_RE over the same string -- three regex
+# passes per LOG line, on ~23k lines per full grade. Those two patterns stay
+# defined above as the reference spellings the equivalence test compares
+# against; nothing in the hot path uses them.
 _LOG_SKELETON_RE = re.compile(
-    r"^- (?:\d{2}\.\d{2}\.\d{2} \d{2}:\d{2} )?"
+    r"^- (?:(\d{2}\.\d{2}\.\d{2}) (\d{2}:\d{2}) )?"
     r"\[E-(\d+)\]"
     r"(?: \[parent: E-(\d+)\])?"
     r"(?: \[(T-[^\]]*)\])?"
@@ -74,6 +81,32 @@ _LOG_SKELETON_RE = re.compile(
 _LOG_TAXONOMY = protocol.LOG_READ_TAXONOMIES
 _TICKET_REF_RE = re.compile(r"^T-(?:\d+|none)$")
 _ISO_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})Z$")
+
+_UTC = datetime.timezone.utc
+
+
+def _log_stamp(day: str, clock: str) -> datetime.datetime:
+    """`DD.MM.YY HH:MM` -> aware UTC datetime, without `strptime`.
+
+    PERF: identical result to
+    ``strptime(f"{day} {clock}", "%d.%m.%y %H:%M").replace(tzinfo=utc)`` --
+    including the 69/68 two-digit-year pivot and the ValueError on an
+    out-of-range component -- at ~6.5x the speed. `strptime` rebuilds a
+    format-driven regex match, re-reads the locale (``getlocale`` +
+    ``setlocale``) and allocates a struct_time on EVERY call; at ~22k dated
+    LOG lines per full grade that was the single largest cost in the whole
+    refresh. The digits are already positionally fixed by the skeleton regex
+    that produced these two groups, so slicing them is not a new assumption.
+    """
+    year = int(day[6:8])
+    return datetime.datetime(
+        (2000 + year) if year < 69 else (1900 + year),
+        int(day[3:5]),
+        int(day[0:2]),
+        int(clock[0:2]),
+        int(clock[3:5]),
+        tzinfo=_UTC,
+    )
 
 # Beyond this the `updated` stamp stops describing a live project. Not a
 # protocol rule -- purely the viewer telling a human "nobody has touched this".
@@ -1034,7 +1067,7 @@ def _log_sequence(root: Path) -> tuple[list[Path], Path | None]:
     return segments, active if active.is_file() else None
 
 
-@dataclass
+@dataclass(slots=True)
 class _LogRecord:
     findings: list[Finding]
     event: int | None = None
@@ -1045,6 +1078,15 @@ class _LogRecord:
     warns_total: int | None = None
 
     def __post_init__(self) -> None:
+        # PERF: the overwhelmingly common case is a conformant line with an
+        # empty findings list, so short-circuit before building two generator
+        # expressions per record (~23k records per full grade).
+        if not self.findings:
+            if self.fails_total is None:
+                self.fails_total = 0
+            if self.warns_total is None:
+                self.warns_total = 0
+            return
         if self.fails_total is None:
             self.fails_total = sum(
                 1 for finding in self.findings if finding.severity == FAIL
@@ -1176,7 +1218,7 @@ def _parse_log_record(line: str, path: Path, line_no: int, is_active: bool) -> _
             "RFC § 1.2", path.name, line_no,
         ))
         return _LogRecord(findings, line_no=line_no)
-    _, _, ticket_ref, taxonomy, _ = skeleton.groups()
+    _day, _clock, _event, _, ticket_ref, taxonomy, _ = skeleton.groups()
     if taxonomy not in _LOG_TAXONOMY:
         findings.append(Finding(
             "log.taxonomy", WARN,
@@ -1189,8 +1231,11 @@ def _parse_log_record(line: str, path: Path, line_no: int, is_active: bool) -> _
             f"ticket reference {ticket_ref!r} is neither a numeric T-### nor the literal T-none",
             "RFC § 1.2", path.name, line_no,
         ))
-    dated = _LOG_ENTRY_RE.match(line)
-    event = int(_LOG_ANY_EVENT_RE.match(line).group(1))
+    # PERF: date/time/event come from the ONE skeleton match above. Re-running
+    # _LOG_ENTRY_RE and _LOG_ANY_EVENT_RE here meant three regex passes over
+    # every LOG line in the tree on every full grade.
+    dated = _day is not None
+    event = int(_event)
     stamp = None
     if not dated:
         if is_active:
@@ -1201,12 +1246,10 @@ def _parse_log_record(line: str, path: Path, line_no: int, is_active: bool) -> _
             ))
     else:
         try:
-            stamp = datetime.datetime.strptime(
-                f"{dated.group(1)} {dated.group(2)}", "%d.%m.%y %H:%M"
-            ).replace(tzinfo=datetime.timezone.utc)
+            stamp = _log_stamp(_day, _clock)
         except ValueError:
             pass
-    return _LogRecord(findings, event, stamp, dated is not None, line_no=line_no)
+    return _LogRecord(findings, event, stamp, dated, line_no=line_no)
 
 
 def _parse_log_text(
@@ -1332,9 +1375,14 @@ def _build_log_aggregate(
     # it is not retained in the live cache. Clean appends use a targeted disk
     # lookup only when the new event is non-monotonic.
     seen: dict[int, int] = {}
+    # PERF: one clock read for the whole rebuild. Read per record it was
+    # ~22k datetime.now() calls on a full grade, and the future-timestamp
+    # bound already carries LOG_CLOCK_SLACK_SECONDS of tolerance, so a
+    # single instant for the batch cannot change a verdict.
+    now = datetime.datetime.now(datetime.timezone.utc)
     for path in files:
         for record in cache.files[path].records:
-            _fold_log_record(aggregate, record, path, seen=seen)
+            _fold_log_record(aggregate, record, path, seen=seen, now=now)
     aggregate.findings = aggregate.findings[:Report.MAX_TRANSPORT_FINDINGS]
     return aggregate
 
@@ -1346,6 +1394,7 @@ def _fold_log_record(
     *,
     seen: dict[int, int] | None = None,
     duplicate: bool = False,
+    now: datetime.datetime | None = None,
 ) -> None:
     """PERF-001: fold ONE parsed record into a _LogAggregate.
 
@@ -1368,14 +1417,17 @@ def _fold_log_record(
         return
     if not record.dated:
         aggregate.undated += 1
-    if path == aggregate.active and not record.dated:
-        aggregate.active_missing = True
+        if path == aggregate.active:
+            aggregate.active_missing = True
     if record.stamp is not None:
         # PERF-001: only timestamps that can still violate the future-clock
         # bound remain resident. Historical timestamps can never become future
         # as wall time advances, so retaining them is another full-history
         # object copy.
-        now = datetime.datetime.now(datetime.timezone.utc)
+        # PERF: `now` is passed in by the caller when folding a batch -- one
+        # clock read per aggregate instead of one per dated LOG line.
+        if now is None:
+            now = datetime.datetime.now(datetime.timezone.utc)
         if (record.stamp - now).total_seconds() > -protocol.LOG_CLOCK_SLACK_SECONDS:
             aggregate.future.append(
                 (record.event, record.stamp, path.name, record.line_no)
@@ -1427,8 +1479,9 @@ def _fold_log_records(
     (no pending partial-record from the previous read): the historical records
     were already folded, so this is O(new records), not O(total history).
     """
+    now = datetime.datetime.now(datetime.timezone.utc)
     for record in records:
-        _fold_log_record(aggregate, record, path)
+        _fold_log_record(aggregate, record, path, now=now)
     aggregate.findings = aggregate.findings[:Report.MAX_TRANSPORT_FINDINGS]
 
 

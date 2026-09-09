@@ -108,6 +108,33 @@ def _dry_run() -> int:
     return 0
 
 
+def _silence_windows_hard_errors() -> None:
+    """Make failed drive access return an error instead of a modal dialog.
+
+    The scanner walks whole drive roots, and Windows' default error mode
+    answers an unreadable volume (empty card reader, disconnected network
+    mapping, spun-down removable) with a system-modal "There is no disk in the
+    drive" box. That box plays a system sound and BLOCKS the worker thread that
+    triggered it until someone clicks it -- on a hidden-at-launch window there
+    is nothing to click, so the scan stalls and the app looks both noisy and
+    slow. SEM_FAILCRITICALERRORS turns those into ordinary OSErrors, which the
+    scanner already handles per root; SEM_NOOPENFILEERRORBOX does the same for
+    the open-file variant. Process-wide, so worker threads inherit it.
+    """
+    if os.name != "nt":
+        return
+    import ctypes
+
+    SEM_FAILCRITICALERRORS = 0x0001
+    SEM_NOOPENFILEERRORBOX = 0x8000
+    try:
+        ctypes.windll.kernel32.SetErrorMode(
+            SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
+        )
+    except (AttributeError, OSError) as e:  # pragma: no cover - platform guard
+        print(f"SAIPENVIEW: SetErrorMode failed: {e}", file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="saipenview")
     parser.add_argument(
@@ -137,12 +164,12 @@ def main() -> int:
         help="per-launch session token (default: generated randomly)",
     )
     args = parser.parse_args()
+    _silence_windows_hard_errors()
     if args.dry_run:
         return _dry_run()
     if args.service:
         return _run_service(args)
 
-    import ctypes
     import traceback
     from pathlib import Path
 
@@ -162,13 +189,15 @@ def main() -> int:
         except OSError:
             pass
 
-        # Display MessageBoxW so silent failures don't happen
-        msg = (
-            f"SAIPENVIEW failed to start.\\n\\n{str(e)}\\n\\nSee crash.log for details."
+        # Deliberately no MessageBox: every icon-carrying Win32 dialog plays a
+        # system sound, and the app must stay silent. The non-zero exit is the
+        # visible signal instead -- run.bat polls the launched process and logs
+        # the failure, which a modal dialog used to mask by keeping the process
+        # alive past the launcher's 5s window.
+        print(
+            f"SAIPENVIEW failed to start: {e}\nSee {crash_log} for details.",
+            file=sys.stderr,
         )
-        ctypes.windll.user32.MessageBoxW(
-            0, msg, "SAIPENVIEW Fatal Error", 0x10
-        )  # 0x10 = MB_ICONERROR
         return 1
 
 

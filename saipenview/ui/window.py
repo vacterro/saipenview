@@ -12,8 +12,78 @@ import webview
 
 from saipenview import zone_picker
 from saipenview.config import config_path
+from saipenview.ui import index_page
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# T-831: the locale vocabulary and the startup-page rendering moved to the
+# GUI-neutral ``ui/index_page.py`` -- one renderer owns locale-aware startup
+# HTML for BOTH delivery surfaces (this window and the headless service).
+# Window re-exports keep the historical import path alive for tests.
+LOCALE_CODES = index_page.LOCALE_CODES
+INDEX_LITE_NAME = index_page.INDEX_LITE_NAME
+
+
+def build_index_html(locale: str) -> str:
+    """Render the effective startup page for *locale* (pure, no writes).
+
+    Thin delegate to the shared renderer; kept for the historical import
+    path. Desktop delivery happens in :func:`_startup_document_path`, which
+    owns the generated-file policy."""
+    return index_page.render_index_html(locale)
+
+
+def _startup_document_path(locale: str) -> Path:
+    """The file the window must load: a fresh generated page, or the canonical
+    template -- never a stale generated one.
+
+    Delivery contract (T-831):
+
+    * render first; a renderer failure falls back to the canonical template
+      when it is readable, else startup fails clearly (no fabricated page);
+    * the render is written atomically (temp sibling + ``os.replace``); only
+      a successful replace returns the generated path;
+    * ANY failure to write or replace returns the canonical template path --
+      a pre-existing ``index.lite.html`` from an earlier run with a different
+      locale is NEVER selected just because the fresh write failed;
+    * the canonical template itself is never overwritten."""
+    try:
+        html = index_page.render_index_html(locale)
+    except index_page.IndexPageError as e:
+        # T-831 fallback contract: the canonical template may be selected as
+        # the heavy fallback ONLY after proving it is actually readable.
+        # ``Path.is_file()``/``exists()``/``os.access()`` are not proof of I/O
+        # (an ACL can deny the read after a successful stat); a real open+read
+        # attempt is. Without the proof, an unreadable template returned here
+        # degrades a clear renderer failure into a delayed, opaque window-load
+        # failure -- and a stale generated page must never be preferred over
+        # that failure either, because it may carry a different locale.
+        canonical = index_page.canonical_index_path()
+        try:
+            with canonical.open("rb") as fh:
+                fh.read(1)
+        except OSError as fallback_error:
+            raise index_page.IndexPageError(
+                "startup document unavailable: the startup page could not be "
+                f"generated ({e}) and the canonical template {canonical.name} "
+                "is not readable"
+            ) from fallback_error
+        print(
+            f"SAIPENVIEW: startup page generation failed ({e}); "
+            "using the canonical index.html",
+            file=sys.stderr,
+        )
+        return canonical
+    try:
+        index_page.write_index_lite(html)
+    except OSError as e:
+        print(
+            f"SAIPENVIEW: could not write {INDEX_LITE_NAME} ({e}); "
+            "using the canonical index.html",
+            file=sys.stderr,
+        )
+        return index_page.canonical_index_path()
+    return index_page.generated_index_path()
 
 _GA = ctypes.windll.user32.GetActiveWindow
 _WM_SETICON = 0x0080
@@ -112,9 +182,17 @@ class MainWindow:
         y = cfg.get("window_y")
         show_on_launch = cfg.get("show_on_launch", True)
 
+        # T-816/T-831: serve the EFFECTIVE startup document -- a generated
+        # page carrying only locale-en.js (fallback table) plus the configured
+        # locale's table, atomically written, with the canonical template as
+        # the fallback when generation or the write fails. A stale generated
+        # file is never silently selected. app.js loads any other locale on
+        # demand, so switching locale in Settings still works without a
+        # reload. The template itself is never rewritten.
+        index_path = _startup_document_path(cfg.get("locale") or "en")
         kwargs = {
             "title": "SAIPENVIEW",
-            "url": str(STATIC_DIR / "index.html"),
+            "url": str(index_path),
             "js_api": api_ref or api,
             "width": width,
             "height": height,

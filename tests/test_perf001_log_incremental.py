@@ -317,7 +317,11 @@ def test_protocol_read_single_pass(project, tmp_path):
             engine_mock.return_value = {"codec": codec}
             result = api.read_file_text(str(root / ".saipen" / "STATE.md"))
 
-    assert result == {"text": "phase: BUILD\n", "edit_version": "abc123"}
+    assert result == {
+        "text": "phase: BUILD\n",
+        "edit_version": "abc123",
+        "existed": True,
+    }
     assert not reads, "read_doc should not be called for protocol files"
 
 

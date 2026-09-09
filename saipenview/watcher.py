@@ -52,19 +52,29 @@ class _RootRouterHandler(FileSystemEventHandler):
         self._router = router
         self._debounce_delay = debounce_delay
         self._lock = threading.Lock()
-        self._timers: dict[str, threading.Timer] = {}
-        self._event_counts: dict[str, int] = {}
+        # PERF-001 (SRC-004:R014): debounce/count identity is the composite
+        # (canonical project root, relative path), not the filename alone --
+        # two projects' STATE.md beneath one scan root must never share
+        # debounce state, or one project's refresh can be silently swallowed
+        # by the other's.
+        self._timers: dict[tuple[str, str], threading.Timer] = {}
+        self._event_counts: dict[tuple[str, str], int] = {}
+        # PERF-002 (SRC-004:R015) + T-821: normalized candidate-root snapshot
+        # keyed by the live router table OBJECT plus its length. A bare
+        # (id(table), len) key is unsound: CPython may reuse a freed dict's id
+        # for a different same-length table (a rebuilt table after sync's
+        # replacement), which would serve the previous table's snapshot
+        # indefinitely. Holding the table reference makes the identity check
+        # exact (``is`` can never match a different object), and the length
+        # component keeps unwatch()'s in-place ``.pop`` invalidating.
+        self._snapshot_cache: tuple[dict[str, str], int, dict[str, str]] | None = None
         self._disposed = False
 
     def on_any_event(self, event) -> None:
-        if event.is_directory:
-            return
-        self._maybe_path(event.src_path)
-        dest = getattr(event, "dest_path", None)
-        if dest:
-            self._maybe_path(dest)
-
-    def on_moved(self, event) -> None:
+        # PERF-001 (SRC-004:R014): watchdog's dispatch() calls on_any_event
+        # and THEN on_<event_type>. Overriding on_moved here as well would
+        # process each moved endpoint twice, so moved handling lives ONLY in
+        # this method (src + dest), like the fallback handler's contract.
         if event.is_directory:
             return
         self._maybe_path(event.src_path)
@@ -73,26 +83,52 @@ class _RootRouterHandler(FileSystemEventHandler):
             self._maybe_path(dest)
 
     def _maybe_path(self, path_str: str) -> None:
+        # PERF-002 (SRC-004:R015): reject impossible events BEFORE any
+        # project lookup. The tracked-basename check is O(1) on the final
+        # component; the O(projects) resolution is paid only for events that
+        # can possibly produce a publish.
+        p = Path(path_str)
+        if p.name not in _TRACKED:
+            return
         project = self._resolve_project(path_str)
         if project is None:
             return
         try:
-            rel = Path(path_str).relative_to(Path(project) / ".saipen")
+            rel = p.relative_to(Path(project) / ".saipen")
         except ValueError:
             return
         if rel.name in _TRACKED:
             key = rel.as_posix()
+            ident = (project, key)
             with self._lock:
                 if self._disposed:
                     return
-                self._event_counts[key] = self._event_counts.get(key, 0) + 1
+                self._event_counts[ident] = self._event_counts.get(ident, 0) + 1
             self._debounce(project, key)
 
     def _resolve_project(self, path_str: str) -> str | None:
         norm = path_str.replace("\\", "/").lower()
+        # PERF-002 (SRC-004:R015): the candidate project root is the path
+        # prefix before the ``.saipen`` component that precedes a tracked
+        # basename -- O(path components), not O(registered projects), and no
+        # per-candidate normalization scan. The normalized snapshot is keyed
+        # by the live router table object (see T-821: an (id, len) key can
+        # alias a reused freed dict's id); a snapshot miss falls back to the
+        # longest-prefix scan, so correctness never depends on cache
+        # freshness (stale state costs one O(N) pass, never a lost project).
         projects = self._router.get(self._scope, {})
-        # Longest-prefix match: prefer the deepest known project root
-        # beneath the scan root.
+        parts = norm.split("/")
+        candidate = None
+        # Deepest ``.saipen`` first: a nested project's protocol files must
+        # attribute to the nested root, matching the longest-prefix contract.
+        for i in range(len(parts) - 2, -1, -1):
+            if parts[i] == ".saipen":
+                candidate = "/".join(parts[:i])
+                break
+        if candidate is not None:
+            hit = self._norm_snapshot(projects).get(candidate)
+            if hit is not None:
+                return hit
         best: tuple[int, str] | None = None
         for project in projects:
             proj_norm = project.replace("\\", "/").lower().rstrip("/")
@@ -101,26 +137,41 @@ class _RootRouterHandler(FileSystemEventHandler):
                     best = (len(proj_norm), project)
         return best[1] if best else None
 
+    def _norm_snapshot(self, projects: dict[str, str]) -> dict[str, str]:
+        # T-821: identity by held reference (``is``), never by id(); length
+        # still invalidates unwatch()'s in-place ``.pop`` mutations.
+        cached = self._snapshot_cache
+        if cached is not None and cached[0] is projects and cached[1] == len(projects):
+            return cached[2]
+        try:
+            snapshot = {k.replace("\\", "/").lower().rstrip("/"): v for k, v in projects.items()}
+        except RuntimeError:  # concurrent sync() mutation; fall back to scan
+            return {}
+        self._snapshot_cache = (projects, len(projects), snapshot)
+        return snapshot
+
     def _debounce(self, project: str, key: str) -> None:
+        ident = (project, key)
         with self._lock:
             if self._disposed:
                 return
-            timer = self._timers.get(key)
+            timer = self._timers.get(ident)
             if timer:
                 timer.cancel()
             t = threading.Timer(
                 self._debounce_delay, self._fire, args=(project, key)
             )
             t.daemon = True
-            self._timers[key] = t
+            self._timers[ident] = t
             t.start()
 
     def _fire(self, project: str, key: str) -> None:
+        ident = (project, key)
         with self._lock:
             if self._disposed:
                 return
-            self._timers.pop(key, None)
-            event_count = self._event_counts.pop(key, 0)
+            self._timers.pop(ident, None)
+            event_count = self._event_counts.pop(ident, 0)
         event_bus.publish(
             "saipen.project_changed",
             {
@@ -284,7 +335,17 @@ class SaipenWatcher:
         self._fallback_projects: dict[str, object] = {}
         self._lock = threading.Lock()
         self._stopped = False
+        # W2-002 (SRC-003:R006): topology lifecycle generation. stop() and
+        # revive() bump it; a sync() that captured an older generation may not
+        # commit a watch, because `Observer.schedule` can return AFTER stop()
+        # already cleared the maps -- which silently resurrected topology on a
+        # stopped watcher (ghost watches, duplicate observation after restart).
+        self._life_gen = 0
         self._debounce_delay = debounce_delay
+
+    def _gen_current(self, gen: int) -> bool:
+        with self._lock:
+            return not self._stopped and self._life_gen == gen
 
     def sync(self, roots: list[str], scan_roots: list[str] | None = None) -> None:
         """Reconcile the watch set with the current known projects.
@@ -296,12 +357,17 @@ class SaipenWatcher:
         project fallback. When ``scan_roots`` is None or empty the watcher
         falls back to the legacy per-project topology (still bounded by
         ``_MAX_FALLBACK_PER_PROJECT_WATCHES``).
+
+        W2-002 (SRC-003:R006): the lifecycle flag is read UNDER the lock and
+        the captured generation is rechecked before every commit.
         """
-        if self._stopped:
-            return
+        with self._lock:
+            if self._stopped:
+                return
+            gen = self._life_gen
         wanted = {r for r in roots if (Path(r) / ".saipen").is_dir()}
         if scan_roots:
-            self._sync_by_scan_roots(wanted, scan_roots)
+            self._sync_by_scan_roots(wanted, scan_roots, gen)
             return
         with self._lock:
             current = set(self._watches) | set(self._fallback_projects)
@@ -312,10 +378,10 @@ class SaipenWatcher:
                 continue
             if len(self._fallback_projects) >= self._MAX_FALLBACK_PER_PROJECT_WATCHES:
                 break
-            self._watch_project_fallback(root)
+            self._watch_project_fallback(root, gen)
 
     def _sync_by_scan_roots(
-        self, wanted: set[str], scan_roots: list[str]
+        self, wanted: set[str], scan_roots: list[str], gen: int
     ) -> None:
         """PERF-001: one recursive watch per scan root, router per project."""
         # Normalize scan roots to lowercase posix for prefix matching.
@@ -338,7 +404,7 @@ class SaipenWatcher:
 
         # Schedule / refresh scan-root watches.
         for scope, projects in projects_by_scan.items():
-            self._watch_scan_root(scope, projects)
+            self._watch_scan_root(scope, projects, gen)
 
         # Tear down stale per-project fallback watches.
         for project in list(self._fallback_projects):
@@ -357,7 +423,7 @@ class SaipenWatcher:
                 # Bound reached: drop this project from observation rather
                 # than exceed the limit. The next sync() will retry.
                 continue
-            self._watch_project_fallback(project)
+            self._watch_project_fallback(project, gen)
             current_fallback += 1
 
     def _matching_scan_root(
@@ -384,7 +450,7 @@ class SaipenWatcher:
     def _is_under(path_norm: str, scope_norm: str) -> bool:
         return path_norm == scope_norm or path_norm.startswith(scope_norm + "/")
 
-    def _watch_scan_root(self, scope: str, projects: list[str]) -> None:
+    def _watch_scan_root(self, scope: str, projects: list[str], gen: int = -1) -> None:
         if scope in self._root_router:
             # Already scheduled; just refresh the router.
             self._root_router[scope] = {p: p for p in projects}
@@ -396,7 +462,7 @@ class SaipenWatcher:
             # Configure-time scope no longer accessible; degrade to per-project.
             for project in projects:
                 if project not in self._watches and project not in self._fallback_projects:
-                    self._watch_project_fallback(project)
+                    self._watch_project_fallback(project, gen)
             return
         try:
             handler = _RootRouterHandler(
@@ -405,18 +471,48 @@ class SaipenWatcher:
             watch = self._observer.schedule(
                 handler, str(scan_path), recursive=True
             )
-            self._watches[scope] = watch
-            self._handlers[scope] = handler
-            self._root_router[scope] = {p: p for p in projects}
-            for p in projects:
-                self._project_to_scope[p] = scope
+            # W2-002 (SRC-003:R006): schedule() may have blocked long enough for
+            # stop()/revive() to run. Committing now would resurrect topology on
+            # a stopped watcher, so the stale generation unschedules instead.
+            if gen >= 0 and not self._commit_watch(scope, watch, handler, projects, gen):
+                handler.cancel()
+                try:
+                    self._observer.unschedule(watch)
+                except (OSError, KeyError, RuntimeError):
+                    pass
+                return
+            if gen < 0:
+                self._watches[scope] = watch
+                self._handlers[scope] = handler
+                self._root_router[scope] = {p: p for p in projects}
+                for p in projects:
+                    self._project_to_scope[p] = scope
         except OSError as e:
             print(
                 f"SAIPENVIEW: watcher failed to watch scan root {scope}: {e}",
                 file=sys.stderr,
             )
             for project in projects:
-                self._watch_project_fallback(project)
+                self._watch_project_fallback(project, gen)
+
+    def _commit_watch(
+        self,
+        scope: str,
+        watch: object,
+        handler: object,
+        projects: list[str],
+        gen: int,
+    ) -> bool:
+        """Publish one scan-root watch, or refuse because the generation moved."""
+        with self._lock:
+            if self._stopped or self._life_gen != gen:
+                return False
+            self._watches[scope] = watch
+            self._handlers[scope] = handler
+            self._root_router[scope] = {p: p for p in projects}
+            for p in projects:
+                self._project_to_scope[p] = scope
+            return True
 
     def _unwatch_scan_root(self, scope: str) -> None:
         watch = self._watches.pop(scope, None)
@@ -434,7 +530,7 @@ class SaipenWatcher:
                     file=sys.stderr,
                 )
 
-    def _watch_project_fallback(self, root: str) -> None:
+    def _watch_project_fallback(self, root: str, gen: int = -1) -> None:
         saipen_dir = Path(root) / ".saipen"
         if not saipen_dir.is_dir():
             return
@@ -443,6 +539,19 @@ class SaipenWatcher:
             watch = self._observer.schedule(
                 handler, str(saipen_dir), recursive=True
             )
+            # W2-002 (SRC-003:R006): same barrier as the scan-root path.
+            if gen >= 0:
+                with self._lock:
+                    if self._stopped or self._life_gen != gen:
+                        handler.cancel()
+                        try:
+                            self._observer.unschedule(watch)
+                        except (OSError, KeyError, RuntimeError):
+                            pass
+                        return
+                    self._fallback_projects[root] = watch
+                    self._handlers[root] = handler
+                return
             self._fallback_projects[root] = watch
             # Keep a parallel _handlers entry so cancel()/stop() can find it.
             self._handlers[root] = handler
@@ -507,6 +616,8 @@ class SaipenWatcher:
             if self._stopped:
                 return
             self._stopped = True
+            # W2-002 (SRC-003:R006): invalidate any in-flight sync generation.
+            self._life_gen += 1
             for handler in self._handlers.values():
                 handler.cancel()
             self._handlers.clear()
@@ -534,6 +645,9 @@ class SaipenWatcher:
             self._observer = Observer()
             self._observer.start()
             self._stopped = False
+            # W2-002 (SRC-003:R006): a sync generation captured before this
+            # revive belongs to the dead Observer and may not commit.
+            self._life_gen += 1
             self._handlers.clear()
             self._watches.clear()
             self._root_router.clear()

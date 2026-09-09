@@ -43,6 +43,7 @@ from saipenview.parser import (
 from saipenview.paths import canonical, dedupe, validate_file_path
 from saipenview.runtime import ProcessManager
 from saipenview.scanner import (
+    STARTUP_SCAN_GRACE_SECONDS,
     BackgroundScanner,
     _auto_roots,
     _is_garbage_root,
@@ -75,6 +76,29 @@ def _outbox_entry_to_dict(e: OutboxEntry) -> dict:
         "critical": e.critical,
         "severity": e.severity,
     }
+
+
+class _SubStatusShim:
+    """PERF-005 (SRC-004:R018): view of a cached transport sub row with the
+    SubStatus surface ``conformance.check_subs`` reads (name / next_action /
+    phase / outbox entries / board_counts). Lets the LOG-only fast path
+    regrade without re-reading every sub STATE/BOARD/OUTBOX from disk."""
+
+    def __init__(self, row: dict):
+        self._row = row
+        self.name = row.get("name", "")
+        self.next_action = row.get("next_action", "")
+        self.phase = row.get("phase", "?")
+        self.board_counts = dict(row.get("board_counts") or {})
+
+    @property
+    def outbox(self):
+        class _Entry:
+            def __init__(self, e):
+                self.entry_id = e.get("id", "")
+                self.status = e.get("status", "")
+
+        return [_Entry(e) for e in (self._row.get("outbox") or [])]
 
 
 class _EngineWithOverrides:
@@ -186,6 +210,19 @@ def _sub_to_dict(sub: SubStatus) -> dict:
         "next_action": sub.next_action,
         "board_counts": dict(sub.board_counts),
         "log_tail": list(sub.log_tail),
+    }
+
+
+def _sub_summary_to_dict(sub: SubStatus) -> dict:
+    """PERF-006 (SRC-004:R019): summary-grade sub row for the project LIST
+    transport -- the fields ``subRowHtml`` consumes (name/phase/task/path),
+    nothing else. Full outbox entries, board counts and log tails stay behind
+    ``get_project_detail``."""
+    return {
+        "name": sub.name,
+        "phase": sub.phase,
+        "task": sub.task,
+        "path": str(sub.path),
     }
 
 
@@ -359,6 +396,59 @@ def _project_to_dict(
     }
 
 
+def _project_summary_to_dict(row: dict) -> dict:
+    """PERF-006 (SRC-004:R019): the LIST transport. The project registry rows
+    are detail-grade; the sidebar consumes only identity, phase/task/blocker,
+    pin/time state, the git badge, collapse inputs, the compact conformance
+    badge (verdict/fails/warns + the six tooltip findings) and the minimal
+    sub rows. Everything else -- full outboxes, board details, log tails,
+    quick_actions, stale details -- is selected-project-only material served
+    by ``get_project_detail``. Transport size scales with VISIBLE list state,
+    not total outbox content."""
+    conf = row.get("conformance") or {}
+    findings = conf.get("findings") or []
+    return {
+        "root": row["root"],
+        "name": row.get("name", ""),
+        "phase": row.get("phase", "?"),
+        "task": row.get("task", ""),
+        "blocker": row.get("blocker", "none"),
+        "updated": row.get("updated"),
+        "updated_kind": row.get("updated_kind"),
+        "is_pinned": row.get("is_pinned", False),
+        "git_branch": row.get("git_branch", ""),
+        "git_dirty": row.get("git_dirty", False),
+        "subs_stale": row.get("subs_stale", False),
+        "conformance": {
+            "verdict": conf.get("verdict", "unknown"),
+            "fails": conf.get("fails", 0),
+            "warns": conf.get("warns", 0),
+            "baseline": conf.get("baseline", ""),
+            "findings": findings[:6],
+            "findings_total": conf.get("findings_total", len(findings)),
+        },
+        "subs": [
+            {
+                "name": s.get("name", ""),
+                "phase": s.get("phase", "?"),
+                "task": s.get("task", ""),
+                "path": s.get("path", ""),
+            }
+            for s in (row.get("subs") or [])
+        ],
+        "translate": (
+            {
+                "name": row["translate"].get("name", ""),
+                "phase": row["translate"].get("phase", "?"),
+                "task": row["translate"].get("task", ""),
+                "path": row["translate"].get("path", ""),
+            }
+            if row.get("translate")
+            else None
+        ),
+    }
+
+
 _cache_lock = threading.Lock()
 
 
@@ -497,6 +587,9 @@ class Api:
             extra_excludes=set(self._config.get("exclude_dirs", [])),
             on_scan_start=lambda: self._set_scanning(True),
             epoch_source=lambda: self._scan_epoch,
+            # PERF: rows come from the durable cache instantly, so the cold
+            # full-drive scan must not compete with window/WebView2 startup.
+            initial_delay=STARTUP_SCAN_GRACE_SECONDS,
         )
 
         # The watcher belongs to the Api/project registry, not the
@@ -595,18 +688,27 @@ class Api:
             self._do_root_refresh(root, gen)
 
     def _do_root_refresh(self, root: str, gen: int) -> None:
-        # W2-011: generation gate. If stop() incremented _stop_gen after this
-        # timer was scheduled, abort immediately — no cache mutation, no JS push.
-        if self._stop_gen != gen:
-            return
         """T-542: single coalesced refresh per root from debounced timer.
 
         Re-parses the project once, updates cache once, then pushes JS notifications
         for all accumulated files in deterministic sorted order.
+
+        W2-002 (SRC-003:R006): the generation is rechecked before EVERY side
+        effect, not once at entry. `stop()` bumps `_stop_gen` before it cancels
+        timers, and `Timer.cancel()` cannot stop a callback that already
+        started -- so a callback that passed a single entry check went on to
+        mutate the cache and push into a window belonging to a stopped (or
+        already restarted) lifecycle.
         """
+        # W2-011: generation gate. If stop() incremented _stop_gen after this
+        # timer was scheduled, abort immediately — no cache mutation, no JS push.
+        if self._stop_gen != gen:
+            return
         with self._root_refresh_lock:
             self._root_refresh_timers.pop(root, None)
             changed_dict = self._root_refresh_files.pop(root, {})
+        if self._stop_gen != gen:
+            return
         # PERF-004: tell the targeted refresh WHICH artifacts moved so it can
         # skip the ticket-index rebuild / cache pickle when only LOG or
         # transcript lines changed. A directory-level event with no specific
@@ -618,6 +720,8 @@ class Api:
         if not changed_dict or not self._window:
             return
         for fname in sorted(changed_dict.keys()):
+            if self._stop_gen != gen:
+                return
             origin = changed_dict[fname]
             try:
                 self._window.evaluate_js(
@@ -687,22 +791,15 @@ class Api:
             changed_files
             and all(_is_top_level_log_change(name) for name in changed_files)
         )
+        log_state: dict[str, str] | None = None
         if log_only_fast_path:
             # CORE-001: a coherent regrade requires current STATE for the
-            # ``state.last_event.*`` invariants and current SubSaipen/translation
-            # for ``check_subs``. A missing/unreadable STATE invalidates the
-            # STATE-aware contract; fall through to the full reload rather than
-            # silently downgrading.
+            # ``state.last_event.*`` invariants. A missing/unreadable STATE
+            # invalidates the STATE-aware contract; fall through to the full
+            # reload rather than silently downgrading.
             log_state = _read_state_for_log_check(Path(root))
             if log_state is None:
                 log_only_fast_path = False
-
-        pinned_set = set(self._config.get("pinned_roots") or [])
-        try:
-            proj = load_project(Path(root), with_git=False)
-        except (OSError, subprocess.SubprocessError) as e:
-            print(f"SAIPENVIEW: targeted refresh({root}) failed: {e}", file=sys.stderr)
-            return
 
         # CORE-001: a top-level LOG-only change is regraded coherently here,
         # not by splicing the previous transport JSON. `check_project` runs
@@ -715,34 +812,47 @@ class Api:
         # False for them), so nested component state is always rebuilt by the
         # full reload below (CORE-002).
         if log_only_fast_path:
-            if proj is None:
-                pass
-            else:
-                try:
-                    report = check_project(proj.root, proj.state, proj.subs).to_dict()
-                except Exception as e:  # noqa: BLE001 - a grader must never break the refresh
-                    print(
-                        f"SAIPENVIEW: targeted LOG refresh({root}) failed: {e}",
-                        file=sys.stderr,
-                    )
+            # PERF-005 (SRC-004:R018): the cached row already holds the parsed
+            # sub transport state; a LOG-only append cannot change any of it.
+            # Regrade through SubStatus views of the CACHED row instead of
+            # rebuilding a complete ProjectStatus (which re-reads BOARD and
+            # every sub STATE/BOARD/OUTBOX) -- targeted refresh cost now
+            # follows the changed artifact, not the project topology. The
+            # full load_project below is therefore never reached on this path.
+            with self._lock:
+                current = next(
+                    (p for p in self._projects if p["root"] == root), None
+                )
+                if current is None:
                     return
-                with self._lock:
-                    current = next(
-                        (p for p in self._projects if p["root"] == root), None
-                    )
-                    if current is None:
-                        return
-                    replacement = dict(current)
-                    replacement["conformance"] = report
-                    replacement_list = [
-                        replacement if p["root"] == root else p
-                        for p in self._projects
-                    ]
-                    replacement_list.sort(
-                        key=lambda x: _project_sort_key(x, self._sort_order())
-                    )
-                    self._replace_projects_locked(replacement_list)
+            try:
+                subs = [_SubStatusShim(s) for s in (current.get("subs") or [])]
+                report = check_project(Path(root), log_state, subs).to_dict()
+            except Exception as e:  # noqa: BLE001 - a grader must never break the refresh
+                print(
+                    f"SAIPENVIEW: targeted LOG refresh({root}) failed: {e}",
+                    file=sys.stderr,
+                )
                 return
+            with self._lock:
+                replacement = dict(current)
+                replacement["conformance"] = report
+                replacement_list = [
+                    replacement if p["root"] == root else p
+                    for p in self._projects
+                ]
+                replacement_list.sort(
+                    key=lambda x: _project_sort_key(x, self._sort_order())
+                )
+                self._replace_projects_locked(replacement_list)
+            return
+
+        pinned_set = set(self._config.get("pinned_roots") or [])
+        try:
+            proj = load_project(Path(root), with_git=False)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"SAIPENVIEW: targeted refresh({root}) failed: {e}", file=sys.stderr)
+            return
 
         # Phase 1: decide + mutate in-memory state under the lock.
         vanished = False
@@ -784,9 +894,10 @@ class Api:
             if not affects_cache:
                 return
         if affects_index:
-            # PERF-003: rebuild the ticket index for this root from the
-            # already-parsed Board, skipping BOARD file I/O.
-            pre_built = self._tickets_from_board(proj.board) if proj else None
+            # PERF-003/T-815: rebuild this root's COMPLETE ticket index from
+            # the already-parsed ProjectStatus -- parent + sub + translate
+            # boards, zero BOARD file I/O.
+            pre_built = self._tickets_from_project_status(proj) if proj else None
             self._build_ticket_index(root, pre_built=pre_built)
         if affects_cache:
             self._write_cache()
@@ -1007,14 +1118,19 @@ class Api:
         # Atomic write (temp + replace) via the shared helper -- a crash mid
         # plain write left truncated JSON that __init__'s json.load choked on.
         self._write_cache()
-        # PERF-003: rebuild ticket index for all current roots.  When the
-        # scan provided full ProjectStatus objects, extract indexes from the
-        # already-parsed Board data instead of re-reading BOARD files.
+        # PERF-003: rebuild ticket index for all current roots. T-815: when
+        # the scan provided full ProjectStatus objects, index the COMPLETE
+        # ticket set (parent + SubSaipen + saitranslate) from the boards
+        # load_project already parsed -- indexing only the parent board left
+        # sub-only ticket ids invisible to quick_search until an unrelated
+        # rebuild re-read every sub BOARD from disk (correctness defect, not
+        # merely a performance one). Roots without parsed data (preserved
+        # rows beneath unresolved roots, durable-cache rows) still take the
+        # disk-reading fallback.
         pre_built_indexes: dict[str, list[dict]] = {}
         if project_list:
             for p in project_list:
-                root_key = str(p.root)
-                pre_built_indexes[root_key] = self._tickets_from_board(p.board)
+                pre_built_indexes[str(p.root)] = self._tickets_from_project_status(p)
         with self._lock:
             roots = [p["root"] for p in self._projects]
         for r in roots:
@@ -1033,6 +1149,22 @@ class Api:
             removed = sorted(old_roots - new_roots)
             if removed:
                 evict_project_caches(removed)
+        else:
+            with self._lock:
+                old_roots = set(_pre_replace)
+                new_roots = {p["root"] for p in self._projects}
+            removed = sorted(old_roots - new_roots)
+        # PERF-003 (SRC-003:R011): the ticket index has to follow the same
+        # authoritative removal. Its only eviction used to be the targeted
+        # vanished-project path, so a full scan that dropped a root left that
+        # root's whole ticket payload resident until process shutdown -- and
+        # `quick_search` kept answering from it. `removed` is computed from the
+        # registry replacement, which already preserves rows beneath unresolved
+        # scan roots, so a partial scan cannot evict a root it did not cover.
+        if removed:
+            with self._lock:
+                for root in removed:
+                    self._ticket_index.pop(root, None)
         # Watch exactly what we know about (T-124).
         self._sync_watcher()
         # PERF-003: ScanOutcome rows were parsed by scanner._scan_one_root
@@ -1048,7 +1180,14 @@ class Api:
         hidden_set = set(self._config.get("hidden_roots") or [])
         with self._lock:
             # CORE-003: hidden_roots are canonical; rows carry raw paths.
-            return [p for p in self._projects if _canonical_or(p["root"]) not in hidden_set]
+            visible = [
+                p for p in self._projects if _canonical_or(p["root"]) not in hidden_set
+            ]
+        # PERF-006 (SRC-004:R019): the list transport is SUMMARY-grade. The
+        # rich per-project rows stay internal (detail pane, quick_search); the
+        # wire carries only what the sidebar renders. Payload scales with
+        # visible list state, not total outbox/log-tail content.
+        return [_project_summary_to_dict(p) for p in visible]
 
     def refresh_known(self, known_revision: int | None = None) -> list[dict] | dict:
         """Re-read the .saipen/ files of roots we ALREADY know about.
@@ -1072,9 +1211,15 @@ class Api:
         # never drop a discovered one).
         # PERF-002: snapshot the pending flag under the lock so a concurrent
         # _set_cache that flips it does not race with the idle-skip decision.
+        # CORE-001 (SRC-003:R001): the flag is only READ here. Clearing it at
+        # entry meant a transient load_project failure -- which deliberately
+        # keeps the previous row -- consumed the one-shot startup
+        # reconciliation obligation anyway, so a stale durable-cache row could
+        # stay authoritative until some unrelated watcher event or scan
+        # happened to repair it (worst with auto_scan off). The obligation is
+        # discharged at the bottom, and only after a clean commit.
         with self._lock:
             full_refresh_was_pending = self._full_refresh_pending
-            self._full_refresh_pending = False
             prev_by_root = {p["root"]: p for p in self._projects}
             rev0 = self._registry_rev
         # W2-005: when the caller supplied a stale known_revision, do one
@@ -1101,6 +1246,10 @@ class Api:
                     prev_by_root = {p["root"]: p for p in self._projects}
                     rev0 = self._registry_rev
             if not prev_by_root:
+                # Nothing known to reconcile: the obligation cannot be
+                # discharged by parsing zero rows, but it also cannot fail.
+                with self._lock:
+                    self._full_refresh_pending = False
                 return self.get_projects()
 
             pinned_set = set(self._config.get("pinned_roots") or [])
@@ -1110,6 +1259,13 @@ class Api:
             fresh: list[dict] = []
             changed_roots: list[str] = []
             had_transient_failure = False
+            # PERF-003/T-815: the COMPLETE parsed index per root, built from
+            # the ProjectStatus load_project just parsed, handed to
+            # _build_ticket_index below so the reconciliation neither re-reads
+            # the parent BOARD.md nor re-reads any sub/translate BOARD from
+            # disk. A root whose entry is missing (vanished) falls back to
+            # the disk path, which finds nothing and clears its entry.
+            parsed_index_parts: dict[str, list[dict]] = {}
             for root in list(prev_by_root.keys()):
                 prev = prev_by_root.get(root)
                 transient = False
@@ -1136,6 +1292,7 @@ class Api:
                         changed_roots.append(root)
                     continue
                 row = _project_to_dict(proj, pinned_set)
+                parsed_index_parts[root] = self._tickets_from_project_status(proj)
                 if prev:
                     row["root"] = prev["root"]
                     row["git_branch"] = prev.get("git_branch", "")
@@ -1164,12 +1321,33 @@ class Api:
                 # attempt re-reads the now-current registry).
         else:
             # Exhausted retries: trust the live registry, do not clobber it.
+            # CORE-001 (SRC-003:R001): the pending obligation is NOT cleared
+            # here -- three lost races are not a reconciliation, so the next
+            # poll must try again.
             return self.get_projects()
-        # CORE-007: rebuild the ticket-search index for changed roots so a
-        # SubSaipen-only change is reflected in search/UI immediately instead of
-        # staying invisible until an unrelated parent change occurs.
+        # CORE-001 (SRC-003:R001): the startup obligation is discharged only
+        # now, and only when every root actually reparsed. A transient read
+        # failure leaves it pending so a later poll retries the root whose
+        # previous row is still being carried forward.
+        if full_refresh_was_pending and not had_transient_failure:
+            with self._lock:
+                self._full_refresh_pending = False
+        # CORE-007: rebuild the ticket-search index so a SubSaipen-only change
+        # is reflected in search/UI immediately instead of staying invisible
+        # until an unrelated parent change occurs.
+        # PERF-003/T-815: the complete already-parsed index (parent + subs +
+        # translate -- zero BOARD reads) is rebuilt for EVERY root this
+        # reconciliation successfully reparsed, not only row-changed ones: a
+        # sub BOARD content edit that leaves the counts identical changes no
+        # transport field, yet its ticket ids must still become searchable.
+        # The build is pure in-memory work over boards load_project just
+        # parsed. A changed root without a parsed entry (vanished) falls back
+        # to the disk path, which finds nothing and clears its stale entry.
+        for root, parts in parsed_index_parts.items():
+            self._build_ticket_index(root, pre_built=parts)
         for root in changed_roots:
-            self._build_ticket_index(root)
+            if root not in parsed_index_parts:
+                self._build_ticket_index(root)
         if changed:
             self._write_cache()
         self._sync_watcher()
@@ -1291,19 +1469,28 @@ class Api:
                         continue
                 dropped_digests.add(digest)
 
-            # Build canonical-path -> root-key index for O(1) old-row
-            # lookup when applying surviving records.
-            canon_index: dict[str, str] = {
-                _canonical_or(root): root for root in list(by_root)
-            }
+            # ONE canonicalization + ONE digest per known root, computed
+            # once and reused by both the deletion path and the surviving-row
+            # path below. PERF-002 claimed "O(1) digest lookups", but the
+            # deletion loop re-hashed EVERY root for EVERY dropped digest:
+            # 160 rows with 80 tombstones cost 9800 canonicalizations, growing
+            # quadratically with the cache -- and a cold start applies every
+            # tombstone, which is exactly when the cost lands.
+            canon_index: dict[str, str] = {}
+            digest_index: dict[str, str] = {}
+            for root_key in list(by_root):
+                canon = _canonical_or(root_key)
+                canon_index[canon] = root_key
+                digest_index[
+                    hashlib.sha256(canon.encode("utf-8")).hexdigest()
+                ] = root_key
 
-            # Drop rows claimed by tombstones or deleted markers.
+            # Drop rows claimed by tombstones or deleted markers: O(1) per
+            # digest against the index above.
             for digest in dropped_digests:
-                for root_key in list(by_root):
-                    if hashlib.sha256(
-                        _canonical_or(root_key).encode("utf-8")
-                    ).hexdigest() == digest:
-                        by_root.pop(root_key, None)
+                root_key = digest_index.get(digest)
+                if root_key is not None:
+                    by_root.pop(root_key, None)
 
             # Apply surviving parsed records (each was already read once).
             for row in parsed.values():
@@ -1923,14 +2110,24 @@ class Api:
                 print(f"SAIPENVIEW: open_editor({root}) failed: {e}", file=sys.stderr)
         return False
 
-    def read_file_text(self, file_path: str) -> dict | str | None:
+    def read_file_text(self, file_path: str) -> dict | None:
         """Read a file's text content.
 
-        CORE-001: For protocol files (.saipen/), returns a dict
-        `{text, edit_version}` where edit_version is the canonical raw_hash
-        of the file at read time. The frontend MUST pass this edit_version
-        back on save to prevent stale-editor overwrites.
-        Non-protocol files return a plain string (backward compat).
+        CORE-001: returns the editable snapshot contract
+        ``{text, edit_version, existed}`` for EVERY mutable file. Protocol
+        files (.saipen/) carry the canonical raw_hash as edit_version;
+        ordinary files carry the SHA-256 of the exact bytes read -- the save
+        path CAS-compares against it, so a stale editor can no longer
+        silently overwrite a newer external revision (W2-001).
+        ``existed`` is the read-time existence baseline the save intent is
+        derived from: never re-derived from ``path.is_file()`` at save
+        entry, which reclassified a read-existing -> externally-deleted
+        -> saved file as a create.
+
+        A missing or unreadable file returns None -- the viewer opens no
+        editor session for it, so a save can never carry a fabricated
+        baseline. The request-time ``existed`` flag exists so a future
+        create flow can bind an explicit missing baseline.
         """
         ok, reason = validate_file_path(file_path, self._known_roots())
         if not ok:
@@ -1951,7 +2148,11 @@ class Api:
                         root = get_coordinator().root_for(path)
                         codec = saio.engine(root)["codec"]
                         doc = codec.read_document(path)
-                        return {"text": doc.text_norm, "edit_version": doc.raw_hash}
+                        return {
+                            "text": doc.text_norm,
+                            "edit_version": doc.raw_hash,
+                            "existed": True,
+                        }
                     except Exception as e:
                         # CORE-001: fail closed -- a plain string would look
                         # readable but its save would never carry a matching
@@ -1963,9 +2164,17 @@ class Api:
                             file=sys.stderr,
                         )
                         return None
-                # W2-017: ordinary (non-protocol) files return the decoded text.
+                # W2-001: ordinary files get the same snapshot contract -- the
+                # token is the hash of the EXACT bytes returned, so the save
+                # can bind to the baseline the user actually saw (W2-017 kept
+                # the decoded text; the token is what makes the save CAS-able).
+                raw = path.read_bytes()
                 text = read_doc(path)
-                return text
+                return {
+                    "text": text,
+                    "edit_version": hashlib.sha256(raw).hexdigest()[:16],
+                    "existed": True,
+                }
         except OSError as e:
             print(
                 f"SAIPENVIEW: read_file_text({file_path}) failed: {e}", file=sys.stderr
@@ -1973,7 +2182,11 @@ class Api:
         return None
 
     def write_file_text(
-        self, file_path: str, content: str, edit_version: str | None = None
+        self,
+        file_path: str,
+        content: str,
+        edit_version: str | None = None,
+        existed: bool | None = None,
     ) -> bool:
         """Write content to a file.
 
@@ -1981,6 +2194,14 @@ class Api:
         returned by read_file_text. A mismatch means the file changed since
         the user read it, and the write is refused (STALE_STATE) to prevent
         a stale editor from overwriting a newer revision.
+
+        W2-001 (SRC-004:R009): the save intent (edit vs create) is derived
+        from the READ baseline -- ``existed`` as returned by read_file_text
+        -- never from ``path.is_file()`` at save entry. Re-deriving it at
+        entry reclassified read-existing -> external-delete -> save as a
+        create, silently resurrecting a file the user had only ever read.
+        ``existed=None`` (legacy callers) falls back to the entry snapshot,
+        which preserves the W2-015 transition contract.
         """
         ok, reason = validate_file_path(file_path, self._known_roots())
         if not ok:
@@ -1993,6 +2214,16 @@ class Api:
         from saipenview.ownership import AgentOwnershipError
         from saipenview.protocol_write import get_coordinator
 
+        # W2-001: the baseline is the READ-time existence state. A token
+        # returned by read_file_text is only ever issued for an existing
+        # file, so a save carrying one is an edit intent BY CONSTRUCTION --
+        # including legacy callers that pass no `existed` flag. Re-deriving
+        # from path.is_file() here re-opens the audited defect (read ->
+        # external delete -> save becomes a create that resurrects the file).
+        if existed is not None:
+            had_baseline = existed
+        else:
+            had_baseline = bool(edit_version) or path.is_file()
         if get_coordinator().is_protocol_file(path):
             # CORE-001: protocol files are CAS-protected. A save without the
             # edit_version read token is a fail-open hole (tokenless editor
@@ -2002,7 +2233,7 @@ class Api:
             # coordinator so the OS writer lock, journal, recovery preflight,
             # byte-verification, and self-write registration all fire exactly
             # once -- never bypassed by the editor path.
-            if not edit_version and path.is_file():
+            if not edit_version and had_baseline:
                 print(
                     f"SAIPENVIEW: write_file_text refused {file_path!r}: "
                     "protocol file requires edit_version (read it first)",
@@ -2020,21 +2251,22 @@ class Api:
                 from saipenview import textio as _textio
                 from saipenview.protocol_write import _role_for
 
-                # W2-015: snapshot existence ONCE at entry. The planner may run
-                # later (under the coordinator lock, with stale_retry), and the
-                # file's existence can transition in between. Without a snapshot,
-                # missing->present is misclassified as edit (requires token ->
-                # STALE_STATE) and present->missing is misclassified as create
-                # (succeeds and overwrites nothing). One snapshot fixes both.
-                exists_at_entry = path.is_file()
-                expected = edit_version if exists_at_entry else None
+                # W2-001: edit intent comes from the read baseline. The
+                # planner still re-checks the live path for the transitions
+                # (baseline-existed -> now missing = stale; baseline-missing
+                # -> now present = stale), but it must never RECLASSIFY the
+                # intent from filesystem state the way the old
+                # exists_at_entry snapshot did.
+                expected = edit_version if had_baseline else None
                 rel = str(path.relative_to(root)).replace("\\", "/")
                 role = _role_for(rel)
 
                 def _planner(r, attempt):
-                    if exists_at_entry:
-                        # Edit intent: file existed when the write was requested.
-                        # If it disappeared, that's a stale transition -> refuse.
+                    if had_baseline:
+                        # Edit intent: the file existed when the user read it.
+                        # If it disappeared, that's a stale transition ->
+                        # refuse; never fall through to a create (which would
+                        # resurrect a file the user never wrote).
                         if not path.is_file():
                             return {
                                 "ok": False,
@@ -2077,8 +2309,9 @@ class Api:
                                 bom = bom_bytes
                                 break
                     else:
-                        # Create intent: file did not exist at entry.
-                        # If it appeared, that's a stale transition -> refuse.
+                        # Create intent: the file did not exist when the user
+                        # saved against a missing baseline. If it appeared
+                        # since, that's a stale transition -> refuse.
                         if path.is_file():
                             return {
                                 "ok": False,
@@ -2108,7 +2341,7 @@ class Api:
                         {"operation": f"viewer-{role}"},
                         [(rel, role, content, doc)],
                         {rel: raw_hash},
-                        missing_paths=[] if exists_at_entry else [rel],
+                        missing_paths=[] if had_baseline else [rel],
                     )
 
                 result = get_coordinator().mutate(
@@ -2145,40 +2378,93 @@ class Api:
                     file=sys.stderr,
                 )
                 return False
+            except Exception as e:  # noqa: BLE001 - a dead baseline must not crash the editor
+                # W2-001: a baseline whose target file was deleted cannot even
+                # resolve the canonical engine (saipen_home lives in
+                # STATE.md). That save is dead by definition -- refuse it
+                # closed instead of leaking SaioUnavailable into the bridge.
+                print(
+                    f"SAIPENVIEW: write_file_text({file_path}) refused: {e}",
+                    file=sys.stderr,
+                )
+                return False
         try:
             # CORE-003: ordinary files beneath a verified root must also
             # participate in the per-root ownership transaction so that a
             # live agent cannot be clobbered by a direct editor write.
             # WriteCoordinator.root_for() is protocol-only; for ordinary
             # files we find the owning root by canonical containment.
+            # W2-003 (SRC-004:R011): serialized, for the same reason as
+            # _git_mutation_tx -- two editor saves to one root must not
+            # interleave their read-encoding/write pass.
             path_str = str(path)
             owning_root = None
             for vr in self._verified_project_roots():
                 if path_str.startswith((vr + os.sep, vr + "/")):
                     if owning_root is None or len(vr) > len(owning_root):
                         owning_root = vr
-            if owning_root:
-                from saipenview.protocol_write import get_coordinator
 
-                ownership = get_coordinator().ownership
-                if not ownership.begin_app_tx(Path(owning_root)):
+            def _write_ordinary() -> bool:
+                # W2-001: CAS for ordinary files. A save bound to a read
+                # baseline (existed=True + token) refuses when the file
+                # disappeared, appeared, or its current bytes no longer hash
+                # to the token -- exactly one client may commit against one
+                # baseline, so a stale editor can never silently overwrite a
+                # newer external revision. Legacy callers (existed=None,
+                # no token) keep the plain write path.
+                if edit_version is None and existed is None:
+                    if path.is_file():
+                        _, enc, newline = read_doc_meta(path)
+                        write_doc(path, content, enc, newline)
+                    else:
+                        write_doc(path, content)
+                    return True
+                if existed and not path.is_file():
                     print(
-                        f"SAIPENVIEW: write_file_text refused {file_path!r}: "
-                        "Core agent is active on this root",
+                        f"SAIPENVIEW: write_file_text STALE {file_path!r}: "
+                        "file disappeared since it was read",
                         file=sys.stderr,
                     )
                     return False
-            try:
-                content = content.replace("\r\n", "\n").replace("\r", "\n")
+                if not existed and path.is_file():
+                    print(
+                        f"SAIPENVIEW: write_file_text STALE {file_path!r}: "
+                        "file appeared since the missing baseline was read",
+                        file=sys.stderr,
+                    )
+                    return False
+                if existed and path.is_file():
+                    current = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+                    if current != edit_version:
+                        print(
+                            f"SAIPENVIEW: write_file_text STALE {file_path!r}: "
+                            "file changed since it was read",
+                            file=sys.stderr,
+                        )
+                        return False
                 if path.is_file():
                     _, enc, newline = read_doc_meta(path)
                     write_doc(path, content, enc, newline)
                 else:
                     write_doc(path, content)
                 return True
-            finally:
-                if owning_root:
-                    ownership.end_app_tx(Path(owning_root))
+
+            if owning_root is None:
+                content = content.replace("\r\n", "\n").replace("\r", "\n")
+                return _write_ordinary()
+            from saipenview.protocol_write import get_coordinator
+
+            ownership = get_coordinator().ownership
+            with ownership.app_transaction(Path(owning_root)) as owned:
+                if not owned:
+                    print(
+                        f"SAIPENVIEW: write_file_text refused {file_path!r}: "
+                        "Core agent is active on this root",
+                        file=sys.stderr,
+                    )
+                    return False
+                content = content.replace("\r\n", "\n").replace("\r", "\n")
+                return _write_ordinary()
         except OSError as e:
             print(
                 f"SAIPENVIEW: write_file_text({file_path}) failed: {e}", file=sys.stderr
@@ -2291,17 +2577,24 @@ class Api:
     def _git_mutation_tx(self, root: str, fn, *args, **kwargs) -> dict:
         """Run a git_diff mutation under the per-root ownership transaction.
 
-        Acquires the RootOwnership lock before fingerprint verification and
-        retains it through the complete Git command. An agent reservation that
-        slips in after the pre-check blocks on this lock until the mutation
-        finishes, preventing the race where the guard passes and then a live
-        agent overwrites the tree before git runs (CORE-001).
+        Holds the RootOwnership lock across fingerprint verification and the
+        complete Git command. An agent reservation that slips in after the
+        pre-check blocks on this lock until the mutation finishes, preventing
+        the race where the guard passes and then a live agent overwrites the
+        tree before git runs (CORE-001).
+
+        W2-003 (SRC-004:R011): this used to call `begin_app_tx` bare, which
+        marks app activity and RELEASES the lock. Two app writers therefore
+        drove the depth counter to 2 and interleaved -- reproduced as
+        A:ENTER B:ENTER B:EXIT A:EXIT against the real RootOwnership. The
+        serialized context manager is the whole difference; app-vs-agent
+        behaviour is unchanged because it is the same reservation pair.
         """
         from saipenview.protocol_write import get_coordinator
 
         ownership = get_coordinator().ownership
-        try:
-            if not ownership.begin_app_tx(Path(root)):
+        with ownership.app_transaction(Path(root)) as owned:
+            if not owned:
                 return {
                     "ok": False,
                     "code": "WRITER_BUSY",
@@ -2312,8 +2605,6 @@ class Api:
                     ),
                 }
             return fn(root, *args, **kwargs)
-        finally:
-            ownership.end_app_tx(Path(root))
 
     def get_project_detail(self, root_str: str) -> dict | None:
         root = self._resolve_root(root_str)
@@ -2419,13 +2710,21 @@ class Api:
         self._mutate_config(lambda cfg: cfg.__setitem__("hotkeys", hotkeys))
         try:
             self._on_hotkeys_changed(hotkeys)
-        except (ValueError, KeyError):
-            # Bind failed: restore the previous hotkey binding and revert
-            # the persisted value so disk, memory, and runtime agree.
+        except Exception:  # noqa: BLE001 - defensive catch for hotkey binding failure
+            # W2-004 (SRC-003:R008): the callback's own contract raises
+            # ImportError when the `keyboard` backend is unavailable, and the
+            # narrower `(ValueError, KeyError)` let that class escape AFTER the
+            # config was already persisted -- live and disk claimed the new
+            # bindings while the listener kept the old ones, and the RPC saw an
+            # exception instead of the documented ok:false. Same contract as
+            # set_snap_hotkey below, so the two setters cannot drift again.
             try:
                 self._on_hotkeys_changed(previous)
-            except (ValueError, KeyError):
-                pass
+            except Exception as revert_err:  # noqa: BLE001 - rollback is best effort
+                print(
+                    f"SAIPENVIEW: hotkey rollback to {previous!r} also failed: {revert_err}",
+                    file=sys.stderr,
+                )
             self._mutate_config(lambda cfg: cfg.__setitem__("hotkeys", previous))
             return {"ok": False, "error": "hotkey binding failed; reverted to previous"}
         return self.get_config()
@@ -2579,11 +2878,9 @@ class Api:
         self._watcher.revive()
         self._auto_scan = self._config.get("auto_scan", True)
         if self._auto_scan:
-            self._set_scanning(True)
-            # PERF-005: the BackgroundScanner's scan() already collects
-            # linked worktrees in the same traversal (collect_worktrees=True),
-            # so the eager prewalk here is redundant. Let the first scan
-            # result establish both projects and worktrees.
+            # `_scanning` is set by the scanner's own on_scan_start when the
+            # cycle actually begins: with the startup grace period there is no
+            # scan yet, and claiming one made the indicator lie for seconds.
             self.background_scanner.start()
         self._sync_watcher()
 
@@ -2619,11 +2916,14 @@ class Api:
             "saipen.project_changed",
             getattr(self, "_wrapped_file_changed", self._on_file_changed),
         )
-        # T-536: clear all remaining subscribers so a stopped Api never
-        # retains dangling callbacks. Without this, subscriber lists grow
-        # across start/stop cycles in tests and leak memory in production
-        # when the app is embedded (service mode restarts).
-        event_bus.clear()
+        # CORE-003 (SRC-003:R003): teardown removes ONLY the callback this Api
+        # registered. The previous `event_bus.clear()` here turned a local
+        # lifecycle action into global state destruction: the bus is a module
+        # singleton, `service.py` subscribes `saipen.file_changed` on its own,
+        # and runtime/agent consumers subscribe `agent.finished`/`agent.output`
+        # -- stopping one Api silently severed every one of them. A process
+        # that really wants an empty bus (a test, a final shutdown) clears it
+        # from the owner, after all components are stopped.
         # CORE-005: stop is idempotent, but restart must subscribe a fresh
         # generation wrapper. Leaving this true made start() believe its
         # callback still existed after unsubscribe.
@@ -2819,14 +3119,51 @@ class Api:
                 )
         return tickets
 
+    @classmethod
+    def _tickets_from_project_status(cls, project) -> list[dict]:
+        """T-815: the COMPLETE ticket index for one parsed project.
+
+        Contract: parent-board tickets carry no ``sub_name``; SubSaipen and
+        saitranslate tickets carry ``sub_name`` = the instance's name. The
+        sub/translate entries come from the Boards ``load_project`` already
+        parsed into ``SubStatus.board`` (T-815 keeps that parse alive) -- so
+        this performs ZERO disk reads and is equivalent to what the
+        disk-reading rebuild produces: each entry is extracted by the same
+        ``_tickets_from_board`` over the same ``parse_board`` output, with
+        the same DOING/TODO/DONE/BLOCKED order and the same ``sub_name``
+        stamping the disk path applied.
+        """
+        tickets: list[dict] = cls._tickets_from_board(project.board)
+        for sub in project.subs or []:
+            for t in cls._tickets_from_board(sub.board):
+                t["sub_name"] = sub.name
+                tickets.append(t)
+        translate = project.translate
+        if translate is not None:
+            for t in cls._tickets_from_board(translate.board):
+                t["sub_name"] = translate.name or "saitranslate"
+                tickets.append(t)
+        return tickets
+
     def _build_ticket_index(
-        self, root: str, *, pre_built: list[dict] | None = None
+        self,
+        root: str,
+        *,
+        pre_built: list[dict] | None = None,
+        parent_board=None,
     ) -> None:
         """PERF-003/008: build in-memory ticket search index for one root.
 
         When *pre_built* is supplied (already-extracted from a parsed Board),
         skip all BOARD file I/O entirely.  Otherwise fall back to reading
         sub/translate boards from disk.
+
+        *parent_board* is the parsed parent ``Board`` when the caller already
+        has one. Re-reading `BOARD.md` in that case was the second parse of
+        the exact file the row was built from. T-815: complete callers now
+        pass *pre_built* from ``_tickets_from_project_status`` (parent + sub
+        + translate, zero disk reads); the disk-reading fallback here remains
+        the reference path for callers without parsed ProjectStatus data.
         """
         if pre_built is not None:
             with self._lock:
@@ -2834,8 +3171,11 @@ class Api:
             return
         tickets: list[dict] = []
         try:
-            board_path = Path(root) / ".saipen" / "BOARD.md"
-            tickets.extend(self._search_board_for_tickets(board_path, ""))
+            if parent_board is not None:
+                tickets.extend(self._tickets_from_board(parent_board))
+            else:
+                board_path = Path(root) / ".saipen" / "BOARD.md"
+                tickets.extend(self._search_board_for_tickets(board_path, ""))
             # Also index sub-agent and translate boards.
             proj = next((p for p in self._projects if p["root"] == root), None)
             if proj:

@@ -357,6 +357,70 @@ class TestBackgroundScanner:
         bs.rescan_now()  # Should return without calling scan
         assert len(events) == 0
 
+    def test_initial_delay_holds_the_first_cycle(self):
+        """A startup grace period must delay the FIRST scan, not skip it."""
+        import threading
+
+        from saipenview.scanner import BackgroundScanner
+
+        scanned = threading.Event()
+        bs = BackgroundScanner(
+            on_result=lambda p, **kw: scanned.set(),
+            scan_roots=[],
+            interval_seconds=60,
+            delay=0,
+            initial_delay=0.4,
+        )
+        try:
+            bs.start()
+            assert not scanned.wait(0.15), "scan ran before the grace period"
+            assert scanned.wait(3.0), "scan never ran after the grace period"
+        finally:
+            bs.stop()
+
+    def test_initial_delay_is_one_shot(self):
+        """A restart keeps its immediate rescan: the grace period is consumed."""
+        import threading
+
+        from saipenview.scanner import BackgroundScanner
+
+        scanned = threading.Event()
+        bs = BackgroundScanner(
+            on_result=lambda p, **kw: scanned.set(),
+            scan_roots=[],
+            interval_seconds=60,
+            delay=0,
+            initial_delay=0.4,
+        )
+        try:
+            bs.start()
+            assert scanned.wait(3.0)
+            bs.stop()
+            assert bs._initial_delay == 0.0
+            scanned.clear()
+            bs.start()
+            assert scanned.wait(1.0), "restart waited on a consumed grace period"
+        finally:
+            bs.stop()
+
+    def test_initial_delay_cancelled_by_stop(self):
+        """stop() during the grace period must abort before any scan."""
+        import threading
+
+        from saipenview.scanner import BackgroundScanner
+
+        scanned = threading.Event()
+        bs = BackgroundScanner(
+            on_result=lambda p, **kw: scanned.set(),
+            scan_roots=[],
+            interval_seconds=60,
+            delay=0,
+            initial_delay=1.5,
+        )
+        bs.start()
+        bs.stop()
+        assert not scanned.wait(0.5)
+
 
 class TestScanErrors:
     def test_get_scan_errors(self):

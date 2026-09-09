@@ -868,13 +868,26 @@ def load_sub_log_tail(sub_path: Path, max_lines: int = 3) -> list[str]:
 
 def load_sub_board(sub_path: Path) -> dict[str, int]:
     """Return board section counts for a subSaipen."""
+    return load_sub_board_parsed(sub_path).counts()
+
+
+def load_sub_board_parsed(sub_path: Path) -> Board:
+    """Parse a subSaipen/saitranslate BOARD.md ONCE into the full Board.
+
+    T-815: the ticket index needs the sub's ticket objects, and
+    ``board_counts`` must come from the same parse -- reading BOARD.md once
+    for counts and again for the index was the redundant second read this
+    ticket removes. Callers that only want counts use ``Board.counts()`` on
+    the result; the missing-file/OSError contract matches the old
+    ``load_sub_board`` (an all-zero Board).
+    """
     board_path = sub_path / "BOARD.md"
     if not board_path.is_file():
-        return {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
+        return Board()
     try:
-        return parse_board(read_doc(board_path)).counts()
+        return parse_board(read_doc(board_path))
     except OSError:
-        return {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
+        return Board()
 
 
 def load_outbox(kitchen_dir: Path) -> list[OutboxEntry]:
@@ -902,6 +915,12 @@ class SubStatus:
     board_counts: dict[str, int] = field(
         default_factory=lambda: {"doing": 0, "todo": 0, "done": 0, "blocked": 0}
     )
+    # T-815: the parsed Board this instance's counts were derived from.
+    # INTERNAL parsed state -- never serialized to the frontend or the durable
+    # cache (the transports build explicit dicts). Keeping it here lets the
+    # scan-publication path build the COMPLETE ticket index (parent + sub +
+    # translate tickets) without re-reading any BOARD from disk.
+    board: Board = field(default_factory=Board)
 
     @property
     def phase(self) -> str:
@@ -1022,7 +1041,9 @@ def load_subs(root: Path) -> list[SubStatus]:
             state = parse_frontmatter(read_doc(state_path))
             outbox = load_outbox(entry / "kitchen")
             log_tail = load_sub_log_tail(entry)
-            board_counts = load_sub_board(entry)
+            # T-815: parse the BOARD once; counts are derived from that same
+            # parse and the Board is retained for the ticket index.
+            board = load_sub_board_parsed(entry)
             subs.append(
                 SubStatus(
                     name=entry.name,
@@ -1030,7 +1051,8 @@ def load_subs(root: Path) -> list[SubStatus]:
                     state=state,
                     outbox=outbox,
                     log_tail=log_tail,
-                    board_counts=board_counts,
+                    board_counts=board.counts(),
+                    board=board,
                 )
             )
     return subs
@@ -1042,13 +1064,15 @@ def load_translate(root: Path) -> SubStatus | None:
         if state_path.is_file():
             state = parse_frontmatter(read_doc(state_path))
             log_tail = load_sub_log_tail(candidate)
-            board_counts = load_sub_board(candidate)
+            # T-815: same single-parse contract as load_subs.
+            board = load_sub_board_parsed(candidate)
             return SubStatus(
                 name="saitranslate",
                 path=candidate,
                 state=state,
                 log_tail=log_tail,
-                board_counts=board_counts,
+                board_counts=board.counts(),
+                board=board,
             )
     return None
 
@@ -1097,12 +1121,30 @@ class ProjectStatus:
 
 
 # --- Protocol staleness check ---
-# Files to compare when checking if a project's local subs/ copy
-# has drifted from the canonical version in saipen_home.
+# The SHARED INHERITED CONTRACT, and only that: the exact surface
+# `saipen sub sync` refreshes from `<saipen_home>/extensions/subs/`
+# (`saipen_engine.subs._SHARED_FILES` + `_SHARED_DIRS`). A file the engine does
+# not sync is not drift, and reporting it as drift is worse than silence --
+# there is no command that can clear it.
+#
+# `MANIFEST.md` used to be in this list and is the reason it matters. The
+# manifest is per-project STATE, not a shipped document: `sub spawn` appends the
+# new instance and `sub collect` records `last_collect: <digest>@<time>` on the
+# line. So any project that had ever spawned a sub or collected a package
+# reported "protocol stale" permanently, `sub sync` refreshed two other files
+# and changed nothing about the verdict, and the badge that means "your local
+# protocol copy is behind the home" became a badge that means "this project
+# uses subs". Measured here: after a clean `sub sync` the only remaining
+# difference was the manifest's own five spawned instances and four
+# `last_collect` markers.
+#
+# `crew.md` is in the list for the opposite reason -- it IS synced, it is where
+# the crew contract lives, and v7.251.0 added a 35-line applicability section to
+# it. Without it here, a project can miss a real contract change.
 _STALENESS_FILES = [
     "PROTOCOL.md",
     "README.md",
-    "MANIFEST.md",
+    "crew.md",
     "TEMPLATE/STATE.md",
     "TEMPLATE/BOARD.md",
     "TEMPLATE/LOG.md",

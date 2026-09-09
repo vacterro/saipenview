@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "derived_from": "SRC-005",
+  "source_sha256": "7a79a743d5dff88d3481808636f293990cd393006e3fcccce5330ca3036cf7e6",
+  "derived_at": "2026-09-09T00:10:48Z",
+  "interpretation_revision": 1,
+  "clauses": {
+    "SRC-005:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-001 saio.py engine/_load_codec_from/_load_freshness_from: the one-home-per-process authority must be atomic, not check-then-act, and must key its cache on one canonical home identity"
+    },
+    "SRC-005:R002": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-002 api.py refresh_known: the one-shot startup reconciliation obligation must survive a transient failure instead of being acknowledged before the reconciliation succeeded"
+    },
+    "SRC-005:R003": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-003 external_changes.py _load/unresolved: persisted rows must satisfy the registry's own semantic invariants, not only JSON shape, so corruption cannot become a fail-open collect boundary"
+    },
+    "SRC-005:R004": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-004 external_changes.py _mark_corrupt/_save/flush/is_degraded: the corrupt fail-closed state needs one reachable evidence-safe recovery transition inside the supported state machine"
+    },
+    "SRC-005:R005": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-005 watcher.py sync/_watch_scan_root/stop and api.py _do_root_refresh/stop: lifecycle invalidation must be rechecked at commit and side-effect boundaries so stop() is a real barrier"
+    },
+    "SRC-005:R006": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-006 api.py stop and events.py EventBus: teardown must unsubscribe only Api-owned callbacks and never clear the process-global bus"
+    },
+    "SRC-005:R007": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-007 api.py set_hotkeys and hotkey.py set_hotkeys/start: the persisted-config and runtime transactions must share one exception contract so a backend-unavailable failure cannot escape the rollback"
+    },
+    "SRC-005:R008": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-008 tests/test_audit_all3.py truncation regression: the >100-finding case must construct its condition independently of the wall clock instead of expiring on a hard-coded calendar date"
+    },
+    "SRC-005:R009": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-001 api.py read_file_text/write_file_text and app.js openFileViewer/save path: the file editor needs one authoritative editable-snapshot identity binding displayed bytes, existence state, save authorization and request generation, so an unseen revision cannot be overwritten and a stale OPEN response cannot replace a newer session"
+    },
+    "SRC-005:R010": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-002 runtime.py _schedule_reaper/_finalize/is_stuck: proven-death finalization must be the authoritative cleanup point for the stuck-agent marker so late death cannot leave a phantom live-writer state"
+    },
+    "SRC-005:R011": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-003 api.py _git_mutation_tx and ownership.py begin_app_tx/end_app_tx: two app writers on one root must be serialized across fingerprint verification and mutation, and the coverage asserting it must exercise the real transaction wrapper"
+    },
+    "SRC-005:R012": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-004 runtime.py send_input/_compact_terminal: liveness validation and stdin use must share one synchronization boundary and return a structured lifecycle outcome instead of an internal fault when finalization wins the race"
+    },
+    "SRC-005:R013": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-005 sessions.py finish/_retry_pending_final/history: retry admission must never silently discard a newly known terminal fact, and a bounded queue must surface a degraded durability state rather than let history fabricate an interrupted result"
+    },
+    "SRC-005:R014": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-001 watcher.py _RootRouterHandler: debounce identity must be (project, filename) rather than filename alone, and a moved event must dispatch once, so one project cannot cancel another's refresh and a single atomic move cannot be counted twice"
+    },
+    "SRC-005:R015": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-002 watcher.py _RootRouterHandler._resolve_project/_maybe_path: per-event project resolution must not be O(projects) in the hot path, so a noisy scan root cannot make event volume the CPU multiplier"
+    },
+    "SRC-005:R016": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-003 api.py _load_cache_records: deletion application must use one precomputed digest-to-root index so startup cost is O(N + D) rather than quadratic in rows times tombstones"
+    },
+    "SRC-005:R017": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-004 app.js render/loadDetail/poll and api.py get_project_detail: sidebar rendering must not own backend detail I/O, so typing, filtering and collapse stop triggering full project parsing, conformance work and Git subprocesses, and watcher/poll flows stop requesting the same detail twice"
+    },
+    "SRC-005:R018": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-005 api.py _refresh_one_project LOG fast path: a LOG-only change must not rebuild a complete ProjectStatus from disk, so targeted refresh cost follows the changed artifact rather than the whole project topology"
+    },
+    "SRC-005:R019": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-006 api.py _project_to_dict/_sub_to_dict/get_projects and app.js projectRowHtml: the list model must not be a detail-grade transport object, so registry refresh stops carrying detail-only SubSaipen and log tail state for every project"
+    }
+  }
+}

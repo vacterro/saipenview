@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-002:R1": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [CORE-001] saipenview/scanner.py::BackgroundScanner._do_scan -> saipenview/api.py::Api._set_cache -- audit finding carried verbatim from the SRC-002 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    }
+  },
+  "derived_at": "2026-09-09T14:30:24Z",
+  "derived_from": "SRC-002",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "8bec5ea8eff6f68ea5cce500f3ecd598d0f3dee1fe11040f17c35fb1ba9b9ca2"
+}

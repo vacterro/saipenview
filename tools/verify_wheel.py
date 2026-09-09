@@ -35,10 +35,28 @@ ROOT = Path(__file__).resolve().parent.parent
 VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 
 
-def _verify(wheel: Path, src_root: Path) -> int:
+# T-831: index.lite.html is runtime-generated state, never canonical package
+# data. It must never appear in a wheel/release package; .gitignore is not a
+# packaging mechanism, so the release contract enforces the exclusion here.
+GENERATED_INDEX_LITE = "saipenview/ui/static/index.lite.html"
+
+
+def _verify_with_target(wheel: Path, src_root: Path, target: Path) -> int:
+    """The verification body, with the install target supplied by the caller
+    so the given-wheel and built-wheel paths share ONE implementation."""
     with zipfile.ZipFile(wheel) as z:
-        meta_name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+        names = z.namelist()
+        meta_name = next(n for n in names if n.endswith(".dist-info/METADATA"))
         meta = z.read(meta_name).decode("utf-8", "replace")
+        leaked = [n for n in names if n == GENERATED_INDEX_LITE]
+    if leaked:
+        print(
+            "wheel verify FAIL: runtime-generated index.lite.html must never "
+            "ship in a release package (the canonical template is index.html; "
+            "the page is generated per-launch)",
+            file=sys.stderr,
+        )
+        return 1
     meta_match = re.search(r"^Version:\s*(.+)$", meta, re.MULTILINE)
     meta_ver = meta_match.group(1).strip()
 
@@ -52,7 +70,6 @@ def _verify(wheel: Path, src_root: Path) -> int:
         return 1
     src_ver = src_match.group(1)
 
-    target = wheel.parent / f"_verify_inst_{wheel.stem}"
     subprocess.run(
         [
             sys.executable,
@@ -155,96 +172,6 @@ def main() -> int:
         wheel = wheels[0]
         print(f"wheel: {wheel.name}")
         return _verify_with_target(wheel, checkout, base / "inst")
-
-
-def _verify_with_target(wheel: Path, src_root: Path, target: Path) -> int:
-    """The verification body, with the install target supplied by the caller
-    so the given-wheel and built-wheel paths share ONE implementation."""
-    with zipfile.ZipFile(wheel) as z:
-        meta_name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
-        meta = z.read(meta_name).decode("utf-8", "replace")
-    meta_match = re.search(r"^Version:\s*(.+)$", meta, re.MULTILINE)
-    meta_ver = meta_match.group(1).strip()
-
-    init = (src_root / "saipenview" / "__init__.py").read_text(encoding="utf-8")
-    src_match = VERSION_RE.search(init)
-    if not src_match:
-        print(
-            "wheel verify FAIL: checkout __init__.py has no __version__",
-            file=sys.stderr,
-        )
-        return 1
-    src_ver = src_match.group(1)
-
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "--no-deps",
-            "--target",
-            str(target),
-            str(wheel),
-        ],
-        check=True,
-    )
-
-    sys.path.insert(0, str(target))
-    import saipenview  # noqa: E402
-
-    pkg_ver = saipenview.__version__
-
-    print(f"source __version__:  {src_ver}")
-    print(f"wheel METADATA:      {meta_ver}")
-    print(f"installed __version__: {pkg_ver}")
-
-    if not (src_ver == meta_ver == pkg_ver):
-        print("wheel verify FAIL: version mismatch", file=sys.stderr)
-        return 1
-
-    # TAG identity (T-188): a release tag at HEAD names the expected
-    # version; a wheel that disagrees with it is stale-release evidence.
-    tags = subprocess.run(
-        ["git", "tag", "--points-at", "HEAD"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    tags_at_head = [t.strip() for t in (tags.stdout or "").splitlines() if t.strip()]
-    expected = [t[1:] for t in tags_at_head if t.startswith("v")]
-    if expected and src_ver not in expected:
-        print(
-            f"wheel verify FAIL: HEAD is tagged {tags_at_head} but the wheel "
-            f"is version {src_ver}",
-            file=sys.stderr,
-        )
-        return 1
-
-    if not saipenview.__file__.startswith(str(target)):
-        print(
-            "wheel verify FAIL: imported from the source tree, not the wheel",
-            file=sys.stderr,
-        )
-        return 1
-
-    for mod in (
-        "saipenview.config",
-        "saipenview.parser",
-        "saipenview.paths",
-        "saipenview.conformance",
-        "saipenview.protocol",
-    ):
-        __import__(mod)
-
-    tag_note = f" tag=({'/'.join(tags_at_head) if tags_at_head else 'none'})"
-    print(
-        "wheel verify PASS: version identity matches, installed wheel "
-        f"imports clean{tag_note}"
-    )
-    return 0
 
 
 if __name__ == "__main__":

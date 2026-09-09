@@ -1,4 +1,4 @@
-"""T-25 / W2-015: write_file_text existence-transition CAS.
+"""T-25 / W2-015 + SRC-004 R009: write_file_text existence-transition CAS.
 
 The planner checked path.is_file() independently from the entry-time check.
 A missing-at-entry file that appeared before the planner ran was reclassified
@@ -6,9 +6,11 @@ as edit (required edit_version -> STALE_STATE). A present-at-entry file that
 disappeared was reclassified as create (succeeded with no target). Both
 transitions reproduced against the actual planner path.
 
-Fix: snapshot exists_at_entry ONCE at the protocol-branch entry. The planner
-uses the snapshot: create intent fails stale if path appears; edit intent
-fails stale if path disappears or hash changes.
+Fix (W2-015): snapshot exists_at_entry ONCE at the protocol-branch entry.
+Fix (R009, supersedes): the intent comes from the READ baseline (`existed`
+as returned by read_file_text) -- read-existing -> external-delete -> save
+is a STALE edit refusal, never a create that resurrects the file.
+existed=None legacy callers fall back to the entry snapshot.
 """
 
 from __future__ import annotations
@@ -109,14 +111,17 @@ def test_edit_intent_fails_stale_when_file_disappears():
     assert result["code"] == "STALE_STATE"
 
 
-def test_write_file_text_snapshot_logic(api: Api, tmp_path: Path):
-    """Verify the actual write_file_text uses exists_at_entry snapshot."""
+def test_write_file_text_baseline_logic(api: Api, tmp_path: Path):
+    """R009 supersedes the W2-015 entry snapshot: the intent (create vs
+    edit) is derived from the READ baseline (`existed`), never from a live
+    path.is_file() re-derivation at save entry. existed=None falls back to
+    the entry snapshot for legacy callers, preserving W2-015's contract."""
     import inspect
 
     source = inspect.getsource(Api.write_file_text)
-    assert "exists_at_entry" in source, "write_file_text must snapshot existence"
+    assert "had_baseline" in source, "write_file_text must derive intent from the read baseline"
     # The planner still calls path.is_file() to detect transitions, but the
-    # intent (create vs edit) is determined by exists_at_entry, not by the
-    # live path.is_file() call at entry time.
+    # intent (create vs edit) is determined by had_baseline, not by the live
+    # path.is_file() call at entry time.
     planner_section = source.split("def _planner")[1].split("def ")[0]
-    assert "exists_at_entry" in planner_section, "planner must use snapshot"
+    assert "had_baseline" in planner_section, "planner must use the read baseline"

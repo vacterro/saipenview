@@ -193,6 +193,9 @@ class SessionStore:
         # degrade to "interrupted" on next startup.
         self._pending_final: dict[str, SessionRecord] = {}
         self._pending_final_lock = threading.Lock()  # W2-004: protect _pending_final mutations
+        # W2-005 (SRC-004:R013): raised when persistent disk failure forces a
+        # terminal-fact eviction from the bounded retry queue.
+        self._pending_degraded = False
 
     # ---- writing ---------------------------------------------------------
 
@@ -348,11 +351,29 @@ class SessionStore:
         # a transient disk blip permanently loses terminal status and
         # history() reports "interrupted" instead of "done"/"killed".
         if not self._write_meta(record):
-            with self._pending_final_lock:
-                # W2-004: cap the pending queue to prevent unbounded growth
-                # if disk writes consistently fail.
-                if len(self._pending_final) < self._MAX_PENDING_FINAL:
-                    self._pending_final[run_id] = record
+            # W2-005 (SRC-004:R013): retry the OLDER pending failures BEFORE
+            # deciding admission for the current write. At the saturation
+            # boundary the retries free capacity in this same call, so the
+            # newest authoritative terminal fact is never discarded behind
+            # entries that recover moments later. If the retry also proves
+            # the disk recovered, the current write itself is retried once
+            # more before anything is queued.
+            self._retry_pending_final()
+            if not self._write_meta(record):
+                with self._pending_final_lock:
+                    if len(self._pending_final) < self._MAX_PENDING_FINAL:
+                        self._pending_final[run_id] = record
+                    else:
+                        # True persistent saturation. Deterministic eviction:
+                        # the NEWEST known terminal fact wins the bounded
+                        # queue, the OLDEST is evicted -- never silently: the
+                        # eviction is journaled durably so nothing falsifies
+                        # history, and the degraded flag surfaces the state.
+                        oldest_id, oldest = next(iter(self._pending_final.items()))
+                        del self._pending_final[oldest_id]
+                        self._pending_final[run_id] = record
+                        self._pending_degraded = True
+                        self._journal_overflow(oldest_id, oldest)
         # W2-004: also retry any earlier failures opportunistically.
         self._retry_pending_final()
 
@@ -466,6 +487,33 @@ class SessionStore:
             # One unreadable run, not a lost history -- that is the whole
             # reason there is no shared index file.
             return None
+
+    def _journal_overflow(self, evicted_id: str, evicted: SessionRecord) -> None:
+        """W2-005 (SRC-004:R013): a terminal fact evicted from the bounded
+        retry queue is journaled durably beside the sessions dir -- the
+        evicted status must be recoverable from evidence, never falsified by
+        history(). Best-effort: if even the journal cannot be written, the
+        degraded flag remains the truthful signal."""
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            journal = self._dir / ".pending-final-overflow.log"
+            line = json.dumps(
+                {
+                    "evicted_run_id": evicted_id,
+                    "status": evicted.status,
+                    "exit_code": evicted.exit_code,
+                    "root": evicted.root,
+                    "finished_at": evicted.finished_at,
+                },
+                sort_keys=True,
+            )
+            with open(journal, "a", encoding="utf-8", newline="\n") as handle:
+                handle.write(line + "\n")
+        except OSError as exc:
+            print(
+                f"SAIPENVIEW: pending-final overflow journal write failed: {exc}",
+                file=sys.stderr,
+            )
 
     def _write_meta(self, record: SessionRecord) -> bool:
         path = self._dir / f"{record.run_id}.json"

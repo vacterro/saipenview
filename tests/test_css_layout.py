@@ -49,9 +49,25 @@ def test_body_is_the_query_container(css: str) -> None:
 
 def test_responsive_bands_are_present(css: str) -> None:
     bands = re.findall(r"@container app \(([^)]+)\)", css)
-    assert "min-width: 1100px" in bands, "wide band (cards side by side) missing"
     assert "max-width: 620px" in bands, "narrow band missing"
     assert "max-width: 420px" in bands, "very-narrow band missing"
+
+
+def test_the_wide_band_asks_the_pane_not_the_body(css: str) -> None:
+    """Multi-card layout is a PANE decision, and the body cannot answer it.
+
+    The wide band used to be `@container app (min-width: 1100px)`, so `body`
+    decided whether the detail cards went side by side. A 1100px window carries
+    a sidebar, which leaves roughly 750px of pane -- less than the two 360px
+    columns plus gap the band had just declared there was room for. The columns
+    were squeezed below their own stated minimum at exactly the width the band
+    turned on.
+    """
+    bands = re.findall(r"@container pane \(([^)]+)\)", css)
+    assert any(b.startswith("min-width:") for b in bands), (
+        "no pane band turns on the multi-card layout; a body band cannot know "
+        "how wide the pane actually is"
+    )
 
 
 @pytest.mark.parametrize(
@@ -143,6 +159,107 @@ def test_settings_is_a_grid_that_finds_its_own_column_count(css: str) -> None:
     assert "grid" in block.group(0)
     assert "auto-fit" in block.group(0), (
         "a fixed column count goes wrong at some width; auto-fit cannot"
+    )
+
+
+# --- Dead vertical space: the layout must not RESERVE room it has no use for --
+#
+# Every case below is the same failure with a different mechanism: a box states
+# a size independent of its content, and at some window size the difference
+# becomes a wall of nothing. They are separate tests because the mechanisms are
+# separate and a fix for one says nothing about the others.
+
+
+def test_detail_cards_flow_and_are_not_a_row_grid(css: str) -> None:
+    """A grid ROW is as tall as its tallest item. That is the whole bug.
+
+    `repeat(auto-fit, minmax(360px, 1fr))` with `align-self: start` on the cards
+    put Conformance (2 rows) next to Tickets (20 rows) and left a dead column
+    the height of the difference. `align-self: start` is what made it visible --
+    without it the short card stretches, which is ugly but not empty -- so the
+    pair is what this forbids. Multicol has no row concept: the only vertical
+    space between two cards is the margin.
+    """
+    band = re.search(
+        r"@container pane \(min-width:[^)]*\)\s*\{(.*?\n\})\s*\n", css, re.DOTALL
+    )
+    assert band, "the pane band that lays out the cards is gone"
+    rule = band.group(1)
+    assert "column-width" in rule, (
+        "the wide layout is not a multi-column flow; if it went back to a grid, "
+        "row height is back to being the tallest card in the row"
+    )
+    assert "grid-template-columns" not in rule, (
+        "a row grid is back -- a short card beside a tall one leaves a hole the "
+        "height of the difference"
+    )
+    assert "align-self" not in rule, (
+        "align-self:start is what turns unequal card heights into visible dead "
+        "space; nothing in a flow layout needs it"
+    )
+    assert "break-inside: avoid" in rule, (
+        "without this a card fragments mid-body across a column boundary"
+    )
+
+
+def test_full_width_rows_span_every_column(css: str) -> None:
+    """Header, NEXT and the unrecorded warning are not cards.
+
+    In a multicol flow an unspanned block becomes one more fragment in the
+    first column, so the project name would end up beside the cards instead of
+    above them, and the change warning would be as easy to miss as a footnote.
+    """
+    band = re.search(
+        r"@container pane \(min-width:[^)]*\)\s*\{(.*?\n\})\s*\n", css, re.DOTALL
+    )
+    assert band, "the pane band is gone"
+    rule = band.group(1)
+    for selector in (".detail-header", ".next-action-banner", ".unrecorded-bar"):
+        assert selector in rule, f"{selector} no longer spans the columns"
+    assert "column-span: all" in rule
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [r"\.modal-box-lg", r"\.modal-box-xl", r"\.agent-output-panel"],
+)
+def test_content_boxes_cap_their_height_and_never_fix_it(css: str, selector: str) -> None:
+    """`height` RESERVES; `max-height` CAPS. Only one of them is honest.
+
+    `.modal-box-lg { height: 80% }` meant a clean `git status` opened a dialog
+    80% of the window tall to say "no changes" -- one line of text over a wall
+    of empty panel, worse the larger the window. `.agent-output-panel` reserved
+    a flat 150px for a console with nothing in it. A cap gives the long case
+    exactly the same behaviour and the short case an honest one.
+    """
+    blocks = re.findall(selector + r"[^{]*\{[^}]*\}", css)
+    assert blocks, f"{selector} rule is gone"
+    for rule in blocks:
+        assert not re.search(r"(?<!max-)(?<!min-)height:\s*[\d.]+(%|px|lh|em|ch)", rule), (
+            f"{selector} states a fixed height, so it reserves that space "
+            f"whatever the content is: {rule.strip()}"
+        )
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ["#fileViewerContent", "#diffViewerContent", "#fleetDashboardContent",
+     r"\.agent-output-panel"],
+)
+def test_capped_scroll_regions_keep_a_floor(css: str, selector: str) -> None:
+    """The other half of removing a fixed height.
+
+    These regions are `flex: 1` inside a column that is now content-sized, so
+    with two lines of content they would collapse to two lines -- a scroll box
+    thinner than its own scrollbar. The floor is stated in `lh` because what
+    matters is how many LINES stay readable, not how many pixels.
+    """
+    blocks = re.findall(re.escape(selector).replace(r"\\", "") + r"[^{]*\{[^}]*\}", css)
+    blocks = [b for b in blocks if "min-height" in b] or blocks
+    assert blocks, f"{selector} has no rule at all"
+    assert any(re.search(r"min-height:\s*\d+lh", b) for b in blocks), (
+        f"{selector} can collapse to nothing once its parent stopped "
+        f"reserving a fixed height"
     )
 
 

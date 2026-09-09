@@ -1079,6 +1079,15 @@ class TestIdlePolling:
         class _FakeProj:
             def __init__(self, root):
                 self.root = Path(root)
+                # A double of ProjectStatus has to carry the fields the real
+                # type always has: `board` is a required field, and the ticket
+                # index is now built from the Board this parse already
+                # produced instead of re-reading BOARD.md (PERF-003). T-815:
+                # the complete index also reads the sub/translate boards the
+                # real parse retains.
+                self.board = Board()
+                self.subs = []
+                self.translate = None
 
         def fake_load(*args, **kwargs):
             calls["load"] += 1

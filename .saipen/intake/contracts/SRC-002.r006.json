@@ -1,0 +1,39 @@
+{
+  "clauses": {
+    "SRC-002:R1": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [CORE-001] saipenview/scanner.py::BackgroundScanner._do_scan -> saipenview/api.py::Api._set_cache -- audit finding carried verbatim from the SRC-002 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-002:R2": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P2] [CORE-002] saipenview/api.py::Api._set_cache linked-worktree cache -- audit finding carried verbatim from the SRC-002 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-002:R3": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P2] [CORE-003] saipenview/config.py::normalize_config/save_config + saipenview/api.py::Api._mutate_config -- audit finding carried verbatim from the SRC-002 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-002:R4": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P2] [CORE-004] saipenview/api.py::Api.toggle_pin/hide_project/unhide_project/browse_folder config read-modify-write boundary -- audit finding carried verbatim from the SRC-002 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-002:R5": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P2] [CORE-005] saipenview/api.py::Api.start/stop + saipenview/watcher.py::SaipenWatcher.stop -- audit finding carried verbatim from the SRC-002 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    },
+    "SRC-002:R6": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[P1] [CORE-006] saipenview/external_changes.py::ExternalChangeRegistry durability recovery -- audit finding carried verbatim from the SRC-002 handoff; implementation and verification evidence recorded under its wave ticket and the T-832 release carrier"
+    }
+  },
+  "derived_at": "2026-09-09T14:30:26Z",
+  "derived_from": "SRC-002",
+  "interpretation_revision": 6,
+  "schema_version": 1,
+  "source_sha256": "8bec5ea8eff6f68ea5cce500f3ecd598d0f3dee1fe11040f17c35fb1ba9b9ca2"
+}
