@@ -185,6 +185,14 @@ _control_run_ids = itertools.count(1)
 # Maximum lines to keep in the per-process output buffer.
 DEFAULT_OUTPUT_BUFFER_SIZE = 5000
 
+# T-834: maximum time kill() waits for a competing finalizer to complete
+# the lifecycle boundary (terminal status + ownership release). If the
+# timeout expires, the kill intent was recorded and the process is dead;
+# returning success would be WRONG -- lifecycle completion has not
+# happened, so kill() returns FINALIZATION_PENDING and leaves ownership
+# reserved so the real finalizer stays free to finish.
+_KILL_LIFECYCLE_WAIT_SECONDS = 30.0
+
 # T-597 / PERF-008: one logical stdout record is capped while it is being
 # READ, not after an unbounded string already exists -- a child that emits a
 # multi-megabyte record without a newline must not spike the reader's memory.
@@ -369,6 +377,13 @@ class AgentProcess:
     # EOF tail both reach the finalizer; only the first call may act.
     _finalize_lock: threading.Lock = field(default_factory=threading.Lock)
     _finalized: bool = False
+    # T-834: process-lifecycle completion. Set by the winning finalizer
+    # AFTER terminal status publication and ownership release -- the
+    # boundary a successful kill() must not outrun. On the normal drained
+    # path it also follows SessionStore.finish; on the W2-004
+    # deferred-reader path it deliberately fires while the transcript
+    # commit is still pending (never tied to pipe EOF).
+    _lifecycle_complete: threading.Event = field(default_factory=threading.Event)
     # W2-004: transcript finalization is separated from process finalization.
     # If the output reader is still alive when _finalize must commit terminal
     # status (a descendant inherited the stdout pipe and is keeping it open),
@@ -379,6 +394,13 @@ class AgentProcess:
     _transcript_lock: threading.Lock = field(default_factory=threading.Lock)
     _transcript_done: bool = False
     _transcript_pending: tuple[str, int | None] | None = None
+    # T-834: set by _on_reader_eof when it reached the transcript boundary
+    # BEFORE _finalize stored any deferred metadata (pending was None), so it
+    # declined and returned. Once set, no reader exists that could ever
+    # consume a later _transcript_pending -- the finalizer must commit the
+    # transcript directly instead of deferring. Both sides read/write this
+    # under _transcript_lock, so the pending-EOF race has no window.
+    _reader_eof_declined: bool = False
     # Set by kill() before terminate() so the finalizer labels a deliberate
     # stop as "killed" even when the reader thread's EOF tail gets there first.
     _kill_intent: bool = False
@@ -703,6 +725,16 @@ class ProcessManager:
             return {"ok": False, "error": "No agent process found"}
         if ap.status != "running":
             return {"ok": False, "error": f"Agent is not running (status={ap.status})"}
+        # T-834: the normal-path finalizer proves death and commits the
+        # session BEFORE publishing terminal status. In that internal window
+        # ap._finalized is True while ap.status is still "running" -- a late
+        # Stop click must not terminate the already-dead process or relabel a
+        # naturally-completed run as "killed". Reuse the closest lifecycle
+        # error contract rather than inventing a new public status.
+        with ap._finalize_lock:
+            finalized = ap._finalized
+        if finalized:
+            return {"ok": False, "error": "Agent is not running (status=finalizing)"}
         # W2-026: run-aware target identity
         if expected_run_id is not None and ap.run_id != expected_run_id:
             return {
@@ -727,11 +759,16 @@ class ProcessManager:
         # for the duration of this method.
         proc = ap.process
         if proc is None:
-            # The reader thread already finalized the process; nothing to
-            # terminate, but the kill intent is recorded so subsequent
-            # _finalize (if any) still reports "killed".
+            # T-834: a competing finalizer detached the Popen object, but
+            # that alone proves NOTHING about lifecycle completion -- the
+            # winner may still be parked inside SessionStore.finish with
+            # ownership reserved and _lifecycle_complete unset. This path
+            # MUST use the exact same lifecycle-completion decision as the
+            # normal competing-finalizer path below: finalize defensively,
+            # wait on the lifecycle primitive, return FINALIZATION_PENDING
+            # on timeout. Never return success merely because proc is None.
             self._finalize(ap, requested_status="killed")
-            return {"ok": True}
+            return self._kill_completion_result(ap)
         try:
             proc.terminate()
             # Give it 3s to die gracefully, then force kill.
@@ -751,13 +788,74 @@ class ProcessManager:
                         file=sys.stderr,
                     )
         except (OSError, subprocess.SubprocessError) as exc:
-            with ap._io_lock:
-                ap._kill_intent = False
-                ap.status = "running"  # still alive; the kill is what failed
+            # T-834: only reset the lifecycle state if finalization has not
+            # already won -- a kill that failed against a concurrently
+            # finalizing run must never resurrect a published terminal status
+            # back to "running" (the exactly-once token is spent; no finalizer
+            # pass would ever run again).
+            with ap._finalize_lock:
+                if not ap._finalized:
+                    with ap._io_lock:
+                        ap._kill_intent = False
+                        ap.status = "running"  # still alive; the kill is what failed
             print(f"SAIPENVIEW: kill agent failed: {exc}", file=sys.stderr)
             return {"ok": False, "error": str(exc)}
 
         self._finalize(ap, requested_status="killed")
+        return self._kill_completion_result(ap)
+
+    def _kill_completion_result(self, ap: "AgentProcess") -> dict:
+        """T-834: shared post-finalize lifecycle decision for kill().
+
+        Both the normal proc path and the proc-is-None race path route
+        through here so they share the exact same success/pending
+        semantics. The exit monitor may have claimed the exactly-once
+        token while kill() was proving death, making kill's own _finalize
+        call a no-op while the winner is still mid-publication
+        (SessionStore.finish -> terminal status -> ownership release).
+        Success must not be reported until that boundary completes -- an
+        immediate relaunch would otherwise be rejected by the old run.
+        If the token was never claimed, our own call took the CORE-002
+        slow-reap path (death unproven, reaper owns completion) and
+        blocking here would wait on a reservation that is intentionally
+        held until the OS proves death -- return success now.
+        """
+        if (
+            not getattr(ap, "_lifecycle_complete", None)
+            or ap._lifecycle_complete.is_set()
+        ):
+            return {"ok": True}
+        with ap._finalize_lock:
+            claimed = ap._finalized
+        if not claimed:
+            # Our own _finalize took the slow-reap path: death unproven,
+            # the reaper owns completion. Never wait on the reaper here.
+            return {"ok": True}
+        # A competing finalizer owns the terminal transition: wait on the
+        # lifecycle synchronization primitive -- never status polling,
+        # never ownership polling. A bounded wait that expires must NOT
+        # report success: lifecycle completion (terminal publication +
+        # ownership release, and on the drained path the SessionStore.finish
+        # commit) has not happened -- the winning finalizer is still parked
+        # inside it. Keep ownership reserved, keep _kill_intent/_finalized
+        # untouched: the real finalizer must stay free to complete later,
+        # and an immediate relaunch stays correctly refused until it does.
+        # This is a finalization-pending condition, not a failed terminate().
+        if not ap._lifecycle_complete.wait(_KILL_LIFECYCLE_WAIT_SECONDS):
+            print(
+                f"SAIPENVIEW: kill proved death but lifecycle "
+                f"publication did not complete within "
+                f"{_KILL_LIFECYCLE_WAIT_SECONDS}s",
+                file=sys.stderr,
+            )
+            return {
+                "ok": False,
+                "code": "FINALIZATION_PENDING",
+                "error": (
+                    "Agent process stopped, but lifecycle "
+                    "finalization is still pending"
+                ),
+            }
         return {"ok": True}
 
     def _finalize(self, ap: AgentProcess, requested_status: str | None = None) -> None:
@@ -784,6 +882,9 @@ class ProcessManager:
         if proc is None:
             # _compact_terminal already detached; finalize already ran.
             # Mark as finalized defensively so _evict_finalized can drop it.
+            # DO NOT set _lifecycle_complete here: process detachment alone
+            # is NEVER sufficient evidence that the lifecycle boundary
+            # (terminal status + ownership release) has completed.
             with ap._finalize_lock:
                 ap._finalized = True
             return
@@ -858,9 +959,15 @@ class ProcessManager:
             reader_alive = rt.is_alive()
 
         with ap._io_lock:
+            # T-834 DIRECT-PATH STATE ORDER: internal final fields are
+            # populated here, but ap.status -- the public terminal lifecycle
+            # authority -- deliberately stays "running" until the session
+            # commit returns, so get_status() exposes no partial terminal
+            # transition. Publication happens after _commit_transcript below
+            # (or, on the W2-004 deferred-reader path only, before the
+            # deferred transcript close -- the one intentional exception).
             ap.exit_code = exit_code
             ap.finished_at = datetime.now(timezone.utc)
-            ap.status = status
             ap._psutil_proc = None
             # W2-002 (SRC-004:R010): a finalized process retains no stale
             # reaper metadata -- the lifecycle transition owns both the stuck
@@ -871,17 +978,56 @@ class ProcessManager:
         # -- cancel it so a dead root never fires a notification afterwards.
         self._output_notifier.cancel(ap.project_root)
 
-        # W2-004: transcript close is separated from process finalization. If
-        # the reader is STILL alive after the bounded join (a descendant
-        # inherited the stdout pipe and is holding it open), defer the
-        # transcript close and metadata to the reader's EOF path -- closing
-        # now would drop the late tail from history. Process lifecycle and
-        # ownership are already terminal; only the transcript waits.
+        # W2-004 (publication order revised by T-834): transcript close is
+        # separated from process finalization. If the reader is STILL alive
+        # after the bounded join (a descendant inherited the stdout pipe and
+        # is holding it open), the transcript close and metadata are deferred
+        # to the reader's EOF path -- closing now would drop the late tail
+        # from history. In THIS special path the process lifecycle publishes
+        # terminal first by design; the transcript finishes later on EOF.
+        # On the normal drained path the order is inverted (T-834): the
+        # session commit runs BEFORE terminal status publication, so the
+        # first externally observable done/failed/killed implies
+        # SessionStore.finish has already returned.
         if reader_alive:
+            deferred = False
             with ap._transcript_lock:
-                ap._transcript_pending = (status, exit_code)
+                if ap._transcript_done:
+                    pass  # already committed elsewhere; nothing to defer
+                elif ap._reader_eof_declined:
+                    # T-834 pending-EOF race, closed: the reader already hit
+                    # EOF, saw no pending metadata, and declined -- it will
+                    # never consume a pending stored now. Commit directly.
+                    pass
+                else:
+                    ap._transcript_pending = (status, exit_code)
+                    rt_after = ap._reader_thread
+                    deferred = bool(rt_after is not None and rt_after.is_alive())
+            if deferred:
+                # DEFERRED READER PATH (W2-004, intentional exception):
+                # publish terminal process status now; the transcript commit
+                # happens later at reader EOF. A dead process must not stay
+                # "running" for an indefinitely-held pipe.
+                with ap._io_lock:
+                    ap.status = status
+            else:
+                # NORMAL DRAINED PATH (or the reader vanished mid-window):
+                # commit the session BEFORE publishing terminal status.
+                self._commit_transcript(ap, status, exit_code)
+                with ap._io_lock:
+                    ap.status = status
+                self._compact_terminal(ap)
         else:
-            self._finalize_transcript(ap, status, exit_code)
+            # T-834 NORMAL DRAINED PATH: the session commit is the
+            # publication boundary. SessionStore.finish returning is what
+            # makes terminal status externally observable -- history status
+            # and exit_code are final and the transcript tail is flushed
+            # before any observer can see done/failed/killed. No second
+            # eventual-consistency wait is ever needed.
+            self._commit_transcript(ap, status, exit_code)
+            with ap._io_lock:
+                ap.status = status
+            self._compact_terminal(ap)
 
         rollback = getattr(ap, "_rollback", False)
         if rollback:
@@ -903,6 +1049,21 @@ class ProcessManager:
             # later launch/write for it is refused until it truly dies.
             _schedule_reaper(self, ap, status)
 
+        # T-834: the lifecycle boundary is complete -- terminal status
+        # published, ownership released (transcript committed or deferred per
+        # W2-004). Signal any kill() that lost the exactly-once race BEFORE
+        # the synchronous agent.finished subscribers run: EventBus.publish
+        # calls them inline, so a slow or blocking subscriber would otherwise
+        # delay the boundary -- and kill()'s success -- arbitrarily. The
+        # Event now means exactly what kill() waits for. On the rollback path
+        # agent.finished stays suppressed but the completion primitive is
+        # still set: lifecycle completion is never tied to notification
+        # publication. Use getattr because tests inject lightweight fakes
+        # (DummyAgent) that never carried this primitive; without it those
+        # tests would crash on this reachability despite being unaffected by
+        # T-834.
+        getattr(ap, "_lifecycle_complete", None) and ap._lifecycle_complete.set()
+
         if not rollback:
             event_bus.publish(
                 "agent.finished",
@@ -915,12 +1076,18 @@ class ProcessManager:
                 },
             )
 
-    def _finalize_transcript(self, ap: AgentProcess, status: str, exit_code: int | None) -> None:
-        """W2-004: exactly-once transcript close.
+    def _commit_transcript(self, ap: AgentProcess, status: str, exit_code: int | None) -> None:
+        """T-834: exactly-once transcript/session commit -- and nothing else.
 
-        Called directly when the reader reached EOF within the bounded drain,
-        or from the reader's EOF path when the reader outlived the drain
-        window. Never closes the transcript while the reader can still append.
+        Commits the session boundary via SessionStore.finish. Resource
+        compaction deliberately lives in _compact_terminal and runs only
+        after the caller has published terminal status, so the first
+        externally observable done/failed/killed implies this commit has
+        returned (history terminal, transcript flushed and closed).
+
+        Called directly on the normal drained path, or from the reader's EOF
+        path when the reader outlived the drain window (W2-004). Never closes
+        the transcript while the reader can still append.
         """
         with ap._transcript_lock:
             if ap._transcript_done:
@@ -929,26 +1096,36 @@ class ProcessManager:
             ap._transcript_pending = None
         if ap.run_id:
             self.sessions.finish(ap.run_id, status, exit_code)
-        # Transcript is durably finalized: now release the output deque,
-        # Popen handle, and reader-thread reference (PERF-002/PERF-007).
+
+    def _finalize_transcript(self, ap: AgentProcess, status: str, exit_code: int | None) -> None:
+        """Backward-compatible alias: commit + compact, old W2-004 shape.
+
+        Kept so any external caller of the pre-T-834 name keeps the exact old
+        semantics (commit, then compact). Production paths use the split
+        _commit_transcript / _compact_terminal pair directly.
+        """
+        self._commit_transcript(ap, status, exit_code)
         self._compact_terminal(ap)
 
     def _on_reader_eof(self, ap: AgentProcess) -> None:
         """W2-004: reader-completion path. The reader reached EOF; if _finalize
         deferred the transcript close because the reader outlived the drain
         window, finalize it now -- exactly once, race-safe against the direct
-        _finalize_transcript call."""
+        _commit_transcript call."""
         with ap._transcript_lock:
             if ap._transcript_done:
                 return
             pending = ap._transcript_pending
             if pending is None:
-                return  # _finalize has not deferred -- direct path owns it
-            status, exit_code = pending
-            ap._transcript_done = True
+                # _finalize has not deferred -- direct path owns it. T-834:
+                # record the decline so a later pending store cannot be
+                # orphaned by our exit; the finalizer will commit directly.
+                ap._reader_eof_declined = True
+                return
             ap._transcript_pending = None
-        if ap.run_id:
-            self.sessions.finish(ap.run_id, status, exit_code)
+        # The guard flag is not yet set, so this commit proceeds here exactly
+        # once; _commit_transcript re-takes the guard lock itself.
+        self._commit_transcript(ap, pending[0], pending[1])
         self._compact_terminal(ap)
 
     def _compact_terminal(self, ap: AgentProcess) -> None:

@@ -56,6 +56,10 @@ class DummyAgent:
         self._transcript_done = False
         self._transcript_pending = None
         self.output_lines = collections.deque(maxlen=5000)
+        # T-834: lifecycle completion primitive. The proc-none defensive
+        # finalize branch must NEVER set this; only the real boundary
+        # (terminal status + ownership release) may.
+        self._lifecycle_complete = threading.Event()
 
     def elapsed_seconds(self):
         return 0.0
@@ -229,7 +233,13 @@ def test_exit_monitor_after_compact_no_crash():
 def test_kill_after_compact_no_crash():
     """W2-002: kill() must capture a stable proc reference. If the reader
     thread already finalized + compacted ap.process = None before kill()
-    runs, kill() must not dereference the cleared field."""
+    runs, kill() must not dereference the cleared field.
+
+    T-834: under the new publication order compaction happens AFTER the
+    lifecycle boundary (terminal status + ownership release, which sets
+    _lifecycle_complete), so a genuinely "compacted" process means the
+    winning finalizer already crossed that boundary -- the lifecycle Event
+    is set and kill() returns success without waiting."""
     from saipenview.runtime import ProcessManager
 
     registry = ProcessManager()
@@ -237,6 +247,7 @@ def test_kill_after_compact_no_crash():
     registry._processes[registry._key(ap.project_root)] = ap
     ap.process = None  # compact already happened
     ap._kill_intent = True  # a prior finalizer recorded intent
+    ap._lifecycle_complete.set()  # winning finalizer crossed the boundary
 
     with (
         patch.object(registry, "ownership") as mock_ownership,
@@ -247,3 +258,130 @@ def test_kill_after_compact_no_crash():
 
     assert result == {"ok": True}, result
     assert ap._kill_intent is True
+
+
+def test_proc_none_finalize_does_not_signal_lifecycle():
+    """T-834 invariant: _finalize() reaching a detached process (proc is
+    None) must mark _finalized defensively but MUST NOT set _lifecycle_complete.
+    Process detachment alone is never sufficient evidence that the lifecycle
+    boundary (terminal status + ownership release) has completed. The old
+    code set the Event here, manufacturing completion while ownership was
+    still reserved."""
+    from saipenview.runtime import ProcessManager
+
+    registry = ProcessManager()
+    ap = DummyAgent()
+    ap.process = None  # detached, but lifecycle not yet complete
+    ap.status = "running"
+    ap._lifecycle_complete.clear()
+
+    with (
+        patch.object(registry, "ownership") as mock_ownership,
+        patch.object(registry, "sessions") as mock_sessions,
+        patch("saipenview.runtime.event_bus") as mock_bus,
+    ):
+        registry._finalize(ap)
+
+    assert ap._finalized is True
+    assert ap._lifecycle_complete.is_set() is False
+    # No terminal state was fabricated: no session commit, no event publish,
+    # ownership stays reserved.
+    mock_sessions.finish.assert_not_called()
+    mock_bus.publish.assert_not_called()
+    mock_ownership.release_agent.assert_not_called()
+    assert ap.status == "running"
+
+
+def test_kill_proc_none_race_pending_while_lifecycle_unset(monkeypatch):
+    """T-834 invariant: kill() reaching a detached process (proc is None)
+    while the lifecycle Event is still unset and ownership reserved must NOT
+    return success. The OLD code returned {"ok": True} here. The NEW kill
+    waits on the lifecycle primitive and returns FINALIZATION_PENDING when the
+    bounded wait expires, leaving the winning finalizer free to complete."""
+    import saipenview.runtime as rt_module
+
+    from saipenview.runtime import ProcessManager
+
+    monkeypatch.setattr(rt_module, "_KILL_LIFECYCLE_WAIT_SECONDS", 0.3)
+
+    registry = ProcessManager()
+    ap = DummyAgent()
+    registry._processes[registry._key(ap.project_root)] = ap
+    ap.process = None  # competing finalizer detached the process
+    ap.status = "running"
+    ap._lifecycle_complete.clear()  # boundary NOT yet crossed
+
+    with (
+        patch.object(registry, "ownership") as mock_ownership,
+        patch.object(registry, "sessions") as mock_sessions,
+        patch("saipenview.runtime.event_bus") as mock_bus,
+    ):
+        result = registry.kill(ap.project_root)
+
+    assert result["ok"] is False
+    assert result.get("code") == "FINALIZATION_PENDING"
+    # kill must not manufacture lifecycle completion or release ownership.
+    assert ap._lifecycle_complete.is_set() is False
+    mock_ownership.release_agent.assert_not_called()
+    mock_bus.publish.assert_not_called()
+
+
+def test_kill_proc_none_race_ok_when_lifecycle_set():
+    """T-834: when the lifecycle Event is already set (the winning finalizer
+    crossed the boundary before kill() captured proc=None), kill() returns
+    success immediately -- no wait, no fabrication."""
+    from saipenview.runtime import ProcessManager
+
+    registry = ProcessManager()
+    ap = DummyAgent()
+    registry._processes[registry._key(ap.project_root)] = ap
+    ap.process = None
+    ap.status = "running"
+    ap._lifecycle_complete.set()  # boundary already crossed
+
+    with (
+        patch.object(registry, "ownership") as mock_ownership,
+        patch.object(registry, "sessions") as mock_sessions,
+        patch("saipenview.runtime.event_bus") as mock_bus,
+    ):
+        result = registry.kill(ap.project_root)
+
+    assert result == {"ok": True}, result
+    assert ap._lifecycle_complete.is_set() is True
+
+
+def test_kill_proc_none_race_blocks_until_lifecycle_event(monkeypatch):
+    """T-834: kill() must NOT return before the lifecycle Event is set, even
+    though proc is None. A winning finalizer that completes only after kill
+    has parked must unblock it with success (ownership then released)."""
+    import saipenview.runtime as rt_module
+
+    from saipenview.runtime import ProcessManager
+
+    monkeypatch.setattr(rt_module, "_KILL_LIFECYCLE_WAIT_SECONDS", 5.0)
+
+    registry = ProcessManager()
+    ap = DummyAgent()
+    root = ap.project_root
+    registry._processes[registry._key(root)] = ap
+    ap.process = None
+    ap.status = "running"
+    ap._lifecycle_complete.clear()
+
+    result: dict = {}
+    returned = threading.Event()
+
+    def run_kill():
+        result.update(registry.kill(root))
+        returned.set()
+
+    worker = threading.Thread(target=run_kill, daemon=True)
+    worker.start()
+
+    # Kill is parked on the lifecycle primitive, not returned.
+    assert not returned.wait(0.5), "kill returned before lifecycle completion"
+    assert result == {}, "kill must not have produced a result yet"
+    # The winning finalizer crosses the boundary now.
+    ap._lifecycle_complete.set()
+    assert returned.wait(5), "kill never returned after lifecycle completion"
+    assert result == {"ok": True}, result
