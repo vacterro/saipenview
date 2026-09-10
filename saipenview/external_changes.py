@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import time as _time
@@ -159,6 +160,11 @@ class ExternalChangeRegistry:
         self._persist_path: Path | None = None
         self._load_corrupt: bool = False
         self._write_degraded: bool = False
+        # Recovery-only mode: while True, _save() may commit the replacement
+        # generation despite _load_corrupt, and it must NOT remove the corrupt
+        # marker (marker removal is the recovery lifecycle's explicit last
+        # step, with its own fail-closed failure handling). NEVER persisted.
+        self._recovery_commit: bool = False
         self._load()
 
     def _set_persist_path(self, path: Path) -> None:
@@ -167,6 +173,7 @@ class ExternalChangeRegistry:
         self._entries.clear()
         self._load_corrupt = False
         self._write_degraded = False
+        self._recovery_commit = False
         self._load()
 
     def _persist_file(self) -> Path:
@@ -281,8 +288,13 @@ class ExternalChangeRegistry:
         When ``_load_corrupt`` is True, DO NOT write -- the in-memory
         set is partial and must not replace the corrupt evidence file.
         Returns False (no-op) in that case.
+
+        CORE-001 recovery exception: while the registry is inside
+        ``recover_from_corrupt`` (``_recovery_commit`` True), the write is
+        allowed because the recovery lifecycle keeps the corrupt marker in
+        place until this commit is durable, and removes it only afterwards.
         """
-        if self._load_corrupt:
+        if self._load_corrupt and not self._recovery_commit:
             return False
         path = self._persist_file()
         tmp: Path | None = None
@@ -307,11 +319,14 @@ class ExternalChangeRegistry:
             self._write_degraded = False
             # If a corrupt marker exists from a previous corrupt load that
             # was later reconciled, clear it now that a successful save proves
-            # the registry is valid.
-            try:
-                self._corrupt_marker().unlink(missing_ok=True)
-            except OSError:
-                pass
+            # the registry is valid. Recovery does NOT go through this branch:
+            # it clears the marker itself and needs a marker-removal failure
+            # to stay fail-closed across restart.
+            if not self._recovery_commit:
+                try:
+                    self._corrupt_marker().unlink(missing_ok=True)
+                except OSError:
+                    pass
             return True
         except OSError as exc:
             print(
@@ -404,12 +419,15 @@ class ExternalChangeRegistry:
         refused forever -- the only escape was manual filesystem surgery,
         which is exactly the destructive act with no evidence behind it.
 
-        This is deliberate, caller-authorized, and evidence-preserving:
-        the corrupt artifact is ARCHIVED under a timestamped name (never
-        deleted), any PendingChange observed after corruption is retained and
-        written into the new generation, and the marker is cleared only
-        because a durable commit already succeeded. A failed commit leaves the
-        degraded state and the artifact exactly as they were.
+        CORE-001 (SRC-006): recovery is failure-atomic and restart-safe. The
+        corrupt artifact is ARCHIVED (copied, never destructively moved), the
+        canonical corruption marker stays authoritative while the replacement
+        generation is committed through the recovery-specific `_save` path,
+        and only AFTER that durable commit succeeds is the marker removed and
+        `_load_corrupt` cleared. A failed commit leaves the marker in place,
+        the registry degraded, the archive retained and every post-corruption
+        PendingChange in memory. A failed marker removal keeps the registry
+        degraded for this process AND the next, never faking success.
         """
         if not self._load_corrupt:
             return {"ok": True, "recovered": False, "detail": "registry is not corrupt"}
@@ -417,31 +435,59 @@ class ExternalChangeRegistry:
         archived: str | None = None
         with self._lock:
             retained = len(self._entries)
+            # 1. Preserve the corrupt artifact by COPY -- the marker must keep
+            #    naming the untrusted state until the replacement commit is
+            #    durable, so it is never destructively moved away first.
+            if marker.exists():
+                target = marker.with_name(
+                    f"{marker.name}.{_time.strftime('%Y%m%dT%H%M%SZ', _time.gmtime())}"
+                )
+                while target.exists():
+                    target = target.with_name(f"{target.name}.1")
+                try:
+                    shutil.copy2(marker, target)
+                except OSError as exc:
+                    return {
+                        "ok": False,
+                        "recovered": False,
+                        "archived": archived,
+                        "detail": f"corrupt evidence could not be archived: {exc}",
+                    }
+                archived = str(target)
+            # 2. Commit the replacement generation while corruption is still
+            #    flagged. On failure the marker was never touched: it stays the
+            #    durable untrusted-state indicator, so any later process
+            #    re-enters the degraded state instead of reading EMPTY/HEALTHY.
+            self._recovery_commit = True
             try:
-                if marker.exists():
-                    target = marker.with_name(
-                        f"{marker.name}.{_time.strftime('%Y%m%dT%H%M%SZ', _time.gmtime())}"
-                    )
-                    while target.exists():
-                        target = target.with_name(f"{target.name}.1")
-                    marker.replace(target)
-                    archived = str(target)
-            except OSError as exc:
-                return {
-                    "ok": False,
-                    "recovered": False,
-                    "detail": f"corrupt evidence could not be archived: {exc}",
-                }
-            # Let _save() run: it refuses while _load_corrupt is True.
-            self._load_corrupt = False
-            if not self._save():
-                self._load_corrupt = True
+                committed = self._save()
+            finally:
+                self._recovery_commit = False
+            if not committed:
                 return {
                     "ok": False,
                     "recovered": False,
                     "archived": archived,
-                    "detail": "recovery write failed; registry stays fail-closed",
+                    "detail": "recovery write failed; marker retained, registry stays fail-closed",
                 }
+            # 3. Only a durable replacement generation may clear the marker.
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError as exc:
+                # 4. Marker removal failure stays fail-closed: the replacement
+                #    generation may exist, but the untrusted indicator is still
+                #    authoritative, so a restart must classify degraded.
+                return {
+                    "ok": False,
+                    "recovered": False,
+                    "archived": archived,
+                    "detail": (
+                        "corruption marker removal failed after the replacement "
+                        f"commit; registry stays degraded across restart: {exc}"
+                    ),
+                }
+            # 5. Only after marker removal succeeds may _load_corrupt clear.
+            self._load_corrupt = False
         return {
             "ok": True,
             "recovered": True,

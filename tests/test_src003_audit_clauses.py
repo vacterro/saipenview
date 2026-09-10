@@ -187,6 +187,9 @@ class TestCorruptRegistryRecovery:
         archived = Path(result["archived"])
         assert archived.exists(), "corrupt artifact must be archived, never deleted"
         assert archived.read_text(encoding="utf-8").startswith("{ not json")
+        assert not persist.with_suffix(".corrupt").exists(), (
+            "canonical corruption marker must be gone after successful recovery"
+        )
         assert reg.is_degraded() is False
 
         fresh = ExternalChangeRegistry()
@@ -201,12 +204,82 @@ class TestCorruptRegistryRecovery:
         again._set_persist_path(persist)
         assert again.pending() == []
 
+    def test_failed_replacement_write_survives_restart(self, tmp_path, monkeypatch):
+        """CORE-001 A: a failed replacement commit must not become healthy
+        evidence after restart."""
+        reg, persist = self._corrupt(tmp_path)
+        marker = persist.with_suffix(".corrupt")
+        monkeypatch.setattr(ExternalChangeRegistry, "_save", lambda self: False)
+        result = reg.recover_from_corrupt()
+        assert result["ok"] is False and result["recovered"] is False
+        assert marker.exists(), (
+            "canonical marker or equivalent durable untrusted indicator must "
+            "still exist after a failed replacement commit"
+        )
+        assert reg.is_degraded() is True, "same process stays degraded"
+
+        fresh = ExternalChangeRegistry()
+        fresh._set_persist_path(persist)
+        assert fresh.is_degraded() is True, (
+            "a fresh registry on the same path must still see the untrusted state"
+        )
+        assert fresh.load_untrusted() is True
+        assert fresh.pending() == []
+
+    def test_corrupt_evidence_archive_survives_failed_recovery(self, tmp_path, monkeypatch):
+        """CORE-001 B: the original corrupt bytes must still be recoverable
+        from the archived artifact after a failed recovery."""
+        reg, persist = self._corrupt(tmp_path)
+        marker = persist.with_suffix(".corrupt")
+        monkeypatch.setattr(ExternalChangeRegistry, "_save", lambda self: False)
+        result = reg.recover_from_corrupt()
+        assert result["ok"] is False
+        assert result["archived"] is not None, "evidence must be archived first"
+        archived = Path(result["archived"])
+        assert archived.exists() and archived != marker
+        assert archived.read_text(encoding="utf-8").startswith("{ not json"), (
+            "original corrupt bytes must survive the failed recovery"
+        )
+        assert marker.read_text(encoding="utf-8").startswith("{ not json"), (
+            "the canonical marker (evidence holder) must also survive"
+        )
+
     def test_failed_recovery_write_stays_fail_closed(self, tmp_path, monkeypatch):
         reg, persist = self._corrupt(tmp_path)
+        marker = persist.with_suffix(".corrupt")
         monkeypatch.setattr(ExternalChangeRegistry, "_save", lambda self: False)
         result = reg.recover_from_corrupt()
         assert result["ok"] is False and result["recovered"] is False
         assert reg.is_degraded() is True, "a failed commit may not clear the state"
+        assert marker.exists(), "failed recovery must not delete the canonical marker"
+
+    def test_marker_removal_failure_stays_fail_closed_across_restart(
+        self, tmp_path, monkeypatch
+    ):
+        """CORE-001 D: a marker-removal failure after a durable replacement
+        commit must remain fail-closed -- this process and the next."""
+        reg, persist = self._corrupt(tmp_path)
+        marker = persist.with_suffix(".corrupt")
+
+        class _RefuseUnlink(type(marker)):
+            def unlink(self, *args, **kwargs):
+                raise OSError("injected marker-removal failure")
+
+        monkeypatch.setattr(
+            ExternalChangeRegistry,
+            "_corrupt_marker",
+            lambda self: _RefuseUnlink(marker),
+        )
+        result = reg.recover_from_corrupt()
+        assert result["ok"] is False and result["recovered"] is False
+        assert persist.exists(), "the replacement generation may exist"
+        assert reg.load_untrusted() is True, "recovery must report degraded"
+
+        fresh = ExternalChangeRegistry()
+        fresh._set_persist_path(persist)
+        assert fresh.is_degraded() is True, (
+            "a restart must still classify the state as degraded"
+        )
 
     def test_recovery_on_a_healthy_registry_is_a_no_op(self, tmp_path):
         reg = ExternalChangeRegistry()
