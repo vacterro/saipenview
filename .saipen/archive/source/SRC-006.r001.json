@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-006:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-001: ExternalChangeRegistry.recover_from_corrupt must be failure-atomic -- a failed durable commit after marker archival must restore the canonical corrupt marker and degraded state exactly as the method's own contract (lines 407-412) states; a fresh registry after restart must not observe a falsely healthy state"
+    }
+  },
+  "derived_at": "2026-09-14T08:11:45Z",
+  "derived_from": "SRC-006",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "a173d609d2d2cad3f06c591c9e1ed4e8cc4c2fcec670fe0f8134d03f92a9d36c"
+}

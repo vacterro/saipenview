@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -107,14 +108,73 @@ class TestLifecycle:
         svc.start()
         port = svc.bound_port
         svc.stop()
-        # A second service on the SAME port must bind cleanly — if the first
-        # listener survived stop() this raises OSError: address in use.
         svc2 = SaipenViewService(port=port, token="t2", auto_scan=False)
         try:
             svc2.start()
             assert svc2.bound_port == port
         finally:
             svc2.stop()
+
+    def test_start_thread_failure_releases_port_and_preserves_exception(
+        self, tmp_config_path, monkeypatch
+    ):
+        svc = SaipenViewService(port=0, token="t", auto_scan=False)
+        original_start = threading.Thread.start
+        failure = RuntimeError("ORIGINAL_START_FAILURE")
+
+        def fail_start(thread):
+            if thread.name == "saipenview-service":
+                raise failure
+            original_start(thread)
+
+        monkeypatch.setattr(threading.Thread, "start", fail_start)
+        with pytest.raises(RuntimeError, match="ORIGINAL_START_FAILURE"):
+            svc.start()
+
+        assert svc._state == "stopped"
+        assert svc._server is None
+        assert svc._thread is None
+        assert svc._api is None
+
+        monkeypatch.setattr(threading.Thread, "start", original_start)
+        svc.start()
+        try:
+            assert svc.bound_port > 0
+        finally:
+            svc.stop()
+
+    def test_start_cleanup_failure_preserves_startup_exception(
+        self, tmp_config_path, monkeypatch
+    ):
+        import saipenview.service as service_module
+
+        class FakeApi:
+            def __init__(self):
+                self._auto_scan = True
+                self._config = {}
+
+            def start(self):
+                pass
+
+            def stop(self):
+                raise ValueError("CLEANUP_FAILURE")
+
+        svc = SaipenViewService(port=0, token="t", auto_scan=False)
+        original_start = threading.Thread.start
+
+        def fail_start(thread):
+            if thread.name == "saipenview-service":
+                raise RuntimeError("ORIGINAL_START_FAILURE")
+            original_start(thread)
+
+        monkeypatch.setattr(service_module, "Api", FakeApi)
+        monkeypatch.setattr(threading.Thread, "start", fail_start)
+        with pytest.raises(RuntimeError, match="ORIGINAL_START_FAILURE"):
+            svc.start()
+        assert svc._state == "stopped"
+        assert svc._server is None
+        assert svc._thread is None
+        assert svc._api is None
 
     def test_rpc_rejected_when_stopped(self, tmp_config_path):
         svc = SaipenViewService(port=0, token="t", auto_scan=False)
@@ -199,6 +259,46 @@ class TestAllowlist:
                 "browse_folder",
             }
 
+    def test_every_sai_api_method_is_either_service_allowlisted_or_desktop_only(self):
+        import re
+
+        from saipenview.service import _DESKTOP_ONLY_METHODS
+
+        sai_api_path = (
+            Path(__file__).resolve().parent.parent / "saipenview" / "ui" / "static" / "sai-api.js"
+        )
+        text = sai_api_path.read_text(encoding="utf-8")
+        start = text.index("var SAI_API_METHODS =")
+        decl = text[start : text.index("];", start) + 2]
+        names = re.findall(r'"([A-Za-z_]+)"', decl)
+        assert names, "SAI_API_METHODS not parsed from sai-api.js"
+        assert len(set(names)) == len(names), f"SAI_API_METHODS has duplicates: {names}"
+        assert not ALLOWED_RPC_METHODS & _DESKTOP_ONLY_METHODS, (
+            "allowlisted and desktop-only classifications overlap: "
+            f"{ALLOWED_RPC_METHODS & _DESKTOP_ONLY_METHODS}"
+        )
+        missing = [
+            n for n in names if n not in ALLOWED_RPC_METHODS and n not in _DESKTOP_ONLY_METHODS
+        ]
+        assert not missing, (
+            "shared frontend methods with no service classification (neither "
+            f"ALLOWED_RPC_METHODS nor _DESKTOP_ONLY_METHODS): {missing}"
+        )
+        assert "running_agent_count" in ALLOWED_RPC_METHODS
+
+    def test_running_agent_count_authenticated_dispatch_and_nonzero_boundary(self, service):
+        original = service._api._process_manager.count_running
+        service._api._process_manager.count_running = lambda: 3  # type: ignore[assignment]
+        try:
+            body = _rpc(service, "running_agent_count")
+            assert body["ok"] is True
+            assert body["result"] == 3
+        finally:
+            service._api._process_manager.count_running = original
+        body = _rpc(service, "running_agent_count")
+        assert body["ok"] is True
+        assert isinstance(body["result"], int)
+
 
 # ── happy path RPC (transport parity surface) ──────────────────────────────
 
@@ -221,6 +321,32 @@ class TestRpc:
         assert body["ok"] is True
         assert isinstance(body["result"], dict)
         assert "scan_roots" in body["result"]
+
+    def test_registry_status_and_recovery_are_authenticated_rpc(self, service, tmp_path):
+        from saipenview.external_changes import get_registry
+
+        registry = get_registry()
+        persist = Path(tmp_path) / "ec.json"
+        persist.write_text("{ corrupt", encoding="utf-8")
+        registry._set_persist_path(persist)
+
+        status = _rpc(service, "get_external_change_registry_status")
+        assert status["ok"] is True
+        assert status["result"]["state"] == "corrupt"
+
+        recovery = _rpc(service, "recover_external_change_registry")
+        assert recovery["ok"] is True
+        assert recovery["result"]["ok"] is True
+        assert recovery["result"]["status"]["state"] == "healthy"
+        assert "archived" not in recovery["result"]
+
+        for method in (
+            "get_external_change_registry_status",
+            "recover_external_change_registry",
+        ):
+            code, body = _rpc(service, method, token=None, raw=True)
+            assert code == 401
+            assert body["ok"] is False
 
     def test_malformed_body_rejected(self, service):
         req = urllib.request.Request(

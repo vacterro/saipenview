@@ -14,6 +14,65 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## 0.1.32 - 2026-09-14
+
+### Fixed
+
+- **Corrupt-registry recovery made failure-atomic and restart-safe
+  (T-836, CORE-001 from SRC-006).**
+  `ExternalChangeRegistry.recover_from_corrupt` no longer leaves the
+  canonical corrupt marker archived away while the durable commit failed:
+  a failed recovery restores the marker and degraded state exactly as the
+  method's contract states, and a fresh registry after restart can no
+  longer observe a falsely healthy state.
+
+- **Corrupt-registry status and explicit recovery exposed through the
+  public boundary (T-837, CORE-002 from SRC-006).** API status now
+  distinguishes healthy-empty / healthy-pending / load-corrupt /
+  write-degraded; recovery success and failure stay durable across
+  restart; fail-closed collect is preserved; unauthenticated recovery RPC
+  is rejected.
+
+- **HTTP transport parity for `running_agent_count` (T-838, CORE-003 from
+  SRC-006).** Explicit service allowlist entry with authenticated RPC
+  coverage, unauthenticated/private rejection, and an inverse
+  facade/service classification regression that prevents unclassified
+  `SaiApi` methods from silently shipping.
+
+- **SaipenViewService.start exception rollback closes every constructed
+  server socket (T-841, W2-003 from SRC-006).** `_server` and `_thread`
+  are cleared unconditionally and the original exception is preserved, so
+  a failed start leaves the port immediately rebindable.
+
+- **`_OutputNotifier` lifecycle repaired against two re-entrancy defects
+  (T-842, PERF-001 from SRC-006).** Re-entrant cancellation arriving from
+  inside notifier publication can no longer form a publisher-to-publisher
+  wait cycle (mutual cross-root deadlock), and `touch()` can no longer
+  re-arm a Timer inside an active cancellation barrier. External
+  cancellation keeps its strong blocking drain semantics; zero-allocation
+  unsubscribed path, bounded cadence and complete root-state reclamation
+  preserved.
+
+### Performance
+
+- **PERF-002..PERF-005 wave from SRC-006 (T-843..T-846).**
+  Per-row root canonicalization collapsed to one canonical pass with a
+  canonical membership key (T-843); `SessionStore.append` caps before
+  encoding and encodes stored lines once (T-844); historical transcript
+  DOM insertion batched into one DocumentFragment per restore (T-845);
+  `_refresh_changed_roots` replaced by an insertion-ordered O(1)-membership
+  mailbox with atomic snapshot-and-clear (T-846).
+
+- **Launch-admission lifecycle gate (T-839, W2-001 from SRC-006).**
+  `stop_all` closes launch admission and waits for in-flight launch
+  tokens; a launch admitted before shutdown either commits before the
+  barrier or aborts without spawning.
+
+- **One file-boundary resolver (T-840, W2-002 from SRC-006).**
+  `.saipen/STATE.md` liveness is freshly verified by the same resolver for
+  reads and ordinary writes; the PERF-009 verified-root warm cache is
+  retained; access fails closed when the matched root loses STATE.
+
 ## 0.1.31 - 2026-09-09
 
 ### Fixed

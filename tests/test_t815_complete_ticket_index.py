@@ -150,7 +150,7 @@ def _bare_api(tmp_path: Path, rows: list[dict]) -> Api:
     api._dirty_roots = set()
     api._cache_deleted_roots = set()
     api._registry_rev = 0
-    api._refresh_changed_roots = []
+    api._refresh_changed_roots = {}
 
     def replace(items, replace_all=False):
         changed = api._projects != list(items)

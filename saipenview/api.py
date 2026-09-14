@@ -18,6 +18,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
+from typing import NamedTuple
 
 from saipenview import themes
 from saipenview.config import config_path, load_config, save_config
@@ -40,7 +41,7 @@ from saipenview.parser import (
     parse_frontmatter,
     update_state,
 )
-from saipenview.paths import canonical, dedupe, validate_file_path
+from saipenview.paths import canonical, dedupe, is_inside, validate_file_path
 from saipenview.runtime import ProcessManager
 from saipenview.scanner import (
     STARTUP_SCAN_GRACE_SECONDS,
@@ -65,6 +66,18 @@ def _canonical_or(root_str: str) -> str:
         return root_str
 
 _OUTBOX_STATUS_ORDER = {"ready": 0, "blocked": 1, "draft": 2, "stale": 3, "reviewed": 4}
+
+
+class _FileBoundary(NamedTuple):
+    """T-840 authoritative file-boundary decision: the canonical target path
+    plus the ONE authoritative owning verified root. Both ``read_file_text``
+    and ``write_file_text`` -- including the ordinary-file ownership
+    transaction -- must derive everything from this single result, so no
+    caller can authorize through one root and take ownership through another.
+    Immutable tuple: nothing to mutate, nothing to misuse."""
+
+    path: str
+    root: str
 
 
 def _outbox_entry_to_dict(e: OutboxEntry) -> dict:
@@ -544,7 +557,7 @@ class Api:
                 self._has_scanned = False
 
         self._linked_worktrees: list[dict] = []
-        self._refresh_changed_roots: list[str] = []  # PERF-002
+        self._refresh_changed_roots: dict[str, None] = {}  # PERF-005
         self._load_cache_records()
         self._last_cache_snapshot = {p["root"]: p for p in self._projects}
         # PERF-008: in-memory ticket search index, keyed by root.
@@ -952,9 +965,7 @@ class Api:
         self._registry_rev += 1
         self._dirty_roots.update(roots)
         self._verified_roots_cache = {"key": None, "list": [], "set": set()}
-        for root in roots:
-            if root not in self._refresh_changed_roots:
-                self._refresh_changed_roots.append(root)
+        self._refresh_changed_roots.update(dict.fromkeys(roots))
 
     def _replace_projects_locked(
         self, projects: list[dict], replace_all: bool = False
@@ -1179,10 +1190,10 @@ class Api:
     def get_projects(self) -> list[dict]:
         hidden_set = set(self._config.get("hidden_roots") or [])
         with self._lock:
-            # CORE-003: hidden_roots are canonical; rows carry raw paths.
-            visible = [
-                p for p in self._projects if _canonical_or(p["root"]) not in hidden_set
-            ]
+            rows = list(self._projects)
+        visible = [
+            p for p in rows if _canonical_or(p["root"]) not in hidden_set
+        ]
         # PERF-006 (SRC-004:R019): the list transport is SUMMARY-grade. The
         # rich per-project rows stay internal (detail pane, quick_search); the
         # wire carries only what the sidebar renders. Payload scales with
@@ -1353,9 +1364,7 @@ class Api:
         self._sync_watcher()
         # PERF-002: expose changed_roots for the frontend to skip rebuild.
         with self._lock:
-            for root in changed_roots:
-                if root not in self._refresh_changed_roots:
-                    self._refresh_changed_roots.append(root)
+            self._refresh_changed_roots.update(dict.fromkeys(changed_roots))
             revision = self._registry_rev
         projects = self.get_projects()
         if known_revision is not None:
@@ -1668,7 +1677,7 @@ class Api:
         """Return changed roots mailbox, preserving delivery until consumed."""
         with self._lock:
             changed = list(self._refresh_changed_roots)
-            self._refresh_changed_roots = []
+            self._refresh_changed_roots.clear()
             return changed
 
     def get_linked_worktrees(self) -> list[dict]:
@@ -2037,7 +2046,7 @@ class Api:
         # Pinned flag may have changed since the row was built; recompute cheaply.
         pinned_set = set(self._config.get("pinned_roots") or [])
         for r in rows:
-            r["is_pinned"] = r["root"] in pinned_set
+            r["is_pinned"] = _canonical_or(r["root"]) in pinned_set
         return rows
 
     def open_folder(self, root_str: str) -> bool:
@@ -2136,7 +2145,20 @@ class Api:
                 file=sys.stderr,
             )
             return None
-        path = Path(canonical(file_path))
+        # T-840 / W2-002: containment in a cached verified root is not
+        # authorization -- the authoritative (longest containing) root must
+        # still hold a live .saipen/STATE.md before any byte leaves the
+        # boundary. One resolver result is the single decision object.
+        boundary = self._resolve_verified_root_for_file(file_path)
+        if boundary is None:
+            print(
+                f"SAIPENVIEW: read_file_text rejected {file_path!r}: "
+                "owning root is not a live verified project "
+                "(.saipen/STATE.md missing)",
+                file=sys.stderr,
+            )
+            return None
+        path = Path(boundary.path)
         try:
             if path.exists():
                 from saipenview.protocol_write import get_coordinator
@@ -2210,7 +2232,22 @@ class Api:
                 file=sys.stderr,
             )
             return False
-        path = Path(canonical(file_path))
+        # T-840 / W2-002: same file-boundary liveness proof as the read
+        # path -- the cache hit on a root that lost its STATE.md grants
+        # nothing, fail closed before any mutation is planned. The one
+        # resolver result drives both authorization and the ordinary-write
+        # ownership transaction below: same authoritative root, no second
+        # recomputation from the cache.
+        boundary = self._resolve_verified_root_for_file(file_path)
+        if boundary is None:
+            print(
+                f"SAIPENVIEW: write_file_text rejected {file_path!r}: "
+                "owning root is not a live verified project "
+                "(.saipen/STATE.md missing)",
+                file=sys.stderr,
+            )
+            return False
+        path = Path(boundary.path)
         from saipenview.ownership import AgentOwnershipError
         from saipenview.protocol_write import get_coordinator
 
@@ -2393,16 +2430,14 @@ class Api:
             # participate in the per-root ownership transaction so that a
             # live agent cannot be clobbered by a direct editor write.
             # WriteCoordinator.root_for() is protocol-only; for ordinary
-            # files we find the owning root by canonical containment.
+            # files the owning root is the T-840 boundary result itself --
+            # the same authoritative root this call was just authorized
+            # through. Never recomputed from the cached registry here
+            # (authorization and ownership would be allowed to diverge).
             # W2-003 (SRC-004:R011): serialized, for the same reason as
             # _git_mutation_tx -- two editor saves to one root must not
             # interleave their read-encoding/write pass.
-            path_str = str(path)
-            owning_root = None
-            for vr in self._verified_project_roots():
-                if path_str.startswith((vr + os.sep, vr + "/")):
-                    if owning_root is None or len(vr) > len(owning_root):
-                        owning_root = vr
+            owning_root = boundary.root
 
             def _write_ordinary() -> bool:
                 # W2-001: CAS for ordinary files. A save bound to a read
@@ -2449,11 +2484,9 @@ class Api:
                     write_doc(path, content)
                 return True
 
-            if owning_root is None:
-                content = content.replace("\r\n", "\n").replace("\r", "\n")
-                return _write_ordinary()
-            from saipenview.protocol_write import get_coordinator
-
+            # boundary is never None here (the resolver already returned
+            # False above), so the ownership transaction always runs on the
+            # exact root authorization was granted through.
             ownership = get_coordinator().ownership
             with ownership.app_transaction(Path(owning_root)) as owned:
                 if not owned:
@@ -2508,6 +2541,40 @@ class Api:
             "set": set(verified),
         }
         return verified
+
+    def _resolve_verified_root_for_file(
+        self, file_path: str
+    ) -> _FileBoundary | None:
+        """The single authoritative file-boundary resolver (T-840 / W2-002).
+
+        Returns ``_FileBoundary(canonical_path, owning_root)`` or ``None`` when
+        the path sits outside every known root or the authoritative root lost
+        its ``.saipen/STATE.md`` since it was cached.
+
+        Why this exists: ``_verified_project_roots`` is PERF-009-cached -- a
+        root whose ``STATE.md`` is deleted keeps its authorization until the
+        next scan revs the cache, so ``validate_file_path`` alone green-lights
+        a file in a project that no longer exists. This resolver reuses the
+        cached candidates (no whole-registry re-stat) and picks the LONGEST
+        containing cached root as the single authoritative owner -- with
+        nested registered roots, the longest match is the project that owns
+        the file; a shorter ancestor must never shadow it (W2-002). Only that
+        one root gets a fresh ``STATE.md`` liveness stat, so a dead
+        authoritative root fails the boundary closed while a live one stays
+        permitted. ``_resolve_root`` remains the twin for root-taking RPCs;
+        behavior unchanged.
+        """
+        path = canonical(file_path)
+        owner = None
+        for r in self._verified_project_roots():
+            if is_inside(r, path) and (owner is None or len(r) > len(owner)):
+                owner = r
+        if owner is None:
+            return None
+        # One fresh liveness proof for exactly the authoritative root.
+        if not (Path(owner) / ".saipen" / "STATE.md").is_file():
+            return None
+        return _FileBoundary(path, owner)
 
     def _known_roots(self) -> list[str]:
         """Canonical set of roots the file viewer may open files under.
@@ -2626,6 +2693,9 @@ class Api:
         d["pending_external_changes"] = [
             c.to_dict() for c in get_registry().pending(root)
         ]
+        d["external_change_registry_status"] = (
+            self.get_external_change_registry_status()
+        )
         from saipenview.protocol_write import get_coordinator
 
         d["recovery"] = get_coordinator().recovery_status(root)
@@ -2876,6 +2946,10 @@ class Api:
         # CORE-005: a stopped watcher cannot be revived in place -- give it a
         # fresh Observer, then re-watch the currently known roots.
         self._watcher.revive()
+        # T-839 W2-001: explicitly begin a fresh ProcessManager lifecycle so a
+        # restarted Api reopens launch admission under a NEW generation. Any
+        # stale pre-stop launch token can never become valid again.
+        self._process_manager.begin_lifecycle()
         self._auto_scan = self._config.get("auto_scan", True)
         if self._auto_scan:
             # `_scanning` is set by the scanner's own on_scan_start when the
@@ -3006,6 +3080,39 @@ class Api:
         from saipenview.external_changes import get_registry
 
         return [c.to_dict() for c in get_registry().pending()]
+
+    def get_external_change_registry_status(self) -> dict:
+        from saipenview.external_changes import get_registry
+
+        registry = get_registry()
+        load_untrusted = registry.load_untrusted()
+        degraded = registry.is_degraded()
+        pending_count = len(registry.pending())
+        if load_untrusted:
+            state = "corrupt"
+        elif degraded:
+            state = "write_degraded"
+        elif pending_count:
+            state = "pending"
+        else:
+            state = "healthy"
+        return {
+            "state": state,
+            "trusted": not load_untrusted,
+            "degraded": degraded,
+            "load_untrusted": load_untrusted,
+            "write_degraded": degraded and not load_untrusted,
+            "pending_count": pending_count,
+        }
+
+    def recover_external_change_registry(self) -> dict:
+        from saipenview.external_changes import get_registry
+
+        result = get_registry().recover_from_corrupt()
+        public_result = {key: value for key, value in result.items() if key != "archived"}
+        public_result["evidence_archived"] = bool(result.get("archived"))
+        public_result["status"] = self.get_external_change_registry_status()
+        return public_result
 
     def acknowledge_external_change(
         self, root_str: str, path: str, token: int | None = None

@@ -44,15 +44,18 @@ dispositioned, so the executor commits them on ship:
 | Kind | Location | Contents | Travels |
 |------|----------|----------|---------|
 | Authority receipts | `.saipen/intake/`, `.saipen/archive/source/`, `.saipen/kitchen/release_scope/` | audit-handoff source receipts, requirement contracts, coverage dispositions, per-ticket release scope records | via git, committed by the release executor |
+| Closure travel | `.saipen/STATE.md`, `.saipen/BOARD.md`, `.saipen/LOG.md`, `.saipen/logs/` (sealed segments), `.saipen/kitchen/digest.md`, `.saipen/kitchen/release_receipt.json` | canonical phase state, board, event history, digest and the published release receipt | via git, committed by the release executor in the closure commit |
 
 These files are immutable audit evidence pinned by content digests
 (`verify_integrity` refuses any body drift) and are committed exactly as
 received — receipt prose may quote the machine paths the audit observed,
-which is inert description, not live state. Everything else under
-`.saipen/` remains machine-local: `.saipen/BOARD.md`, `.saipen/LOG.md`,
-`.saipen/STATE.md`, `.saipen/recovery/`, `.saipen/logs/` and the kitchen
-scratch never travel via git and continue to move only through the
-export/import handoff below.
+which is inert description, not live state. The closure-travel row exists
+because the release executor's closure commit must carry the canonical
+memory: a released tag without the E-### history cannot run recovery from a
+fresh clone (the sealed-segment incident class). `.saipen/recovery/`, the
+kitchen scratch, `.saipen/saitranslate/` and the sub-instance state remain
+machine-local: they never travel via git and continue to move only through
+the export/import handoff below.
 
 ## Handoff (deterministic export / import)
 

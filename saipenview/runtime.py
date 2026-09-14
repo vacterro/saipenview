@@ -182,8 +182,40 @@ from saipenview.sessions import SessionStore
 
 _control_run_ids = itertools.count(1)
 
+# T-839 W2-001: bounded time stop_all() waits for every in-flight launch to
+# resolve before it snapshots and kills the registered processes. Every launch
+# path resolves its token (committed or cancelled) on exit, so this is a safety
+# net against a stuck engine, not the correctness mechanism.
+_LAUNCH_BARRIER_WAIT_SECONDS = 30.0
+
 # Maximum lines to keep in the per-process output buffer.
 DEFAULT_OUTPUT_BUFFER_SIZE = 5000
+
+
+class _LaunchToken:
+    """One admitted-but-not-yet-resolved launch, tracked by the barrier.
+
+    T-839 W2-001: a launch admitted while the lifecycle is open registers a
+    token so ``stop_all`` can wait for it instead of snapshotting only the
+    already-registered ``_processes``. The token resolves exactly once: either
+    ``committed`` (spawn+register won, so stop_all will kill the process) or
+    ``cancelled`` (the launch observed closed admission and aborted before
+    Popen, releasing its reservation).
+    """
+
+    __slots__ = ("gen", "committed", "_event")
+
+    def __init__(self, gen: int) -> None:
+        self.gen = gen
+        self.committed = False
+        self._event = threading.Event()
+
+    def resolve(self, committed: bool) -> None:
+        self.committed = committed
+        self._event.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._event.wait(timeout)
 
 # T-834: maximum time kill() waits for a competing finalizer to complete
 # the lifecycle boundary (terminal status + ownership release). If the
@@ -294,6 +326,38 @@ def _bounded_output_lines(
 OUTPUT_NOTIFY_INTERVAL_SECONDS = 0.25
 
 
+class _RootNoticeState:
+    """Per-root coalesced-notification lifecycle (PERF-001).
+
+    One object owns the whole state machine for a single root:
+
+    1. ``timer`` -- the one coalesced pending ``Timer`` (``None`` when idle),
+    2. ``gen`` -- a globally-unique token identifying the cycle that armed the
+       current pending/in-flight notification,
+    3. ``publishers`` -- ``{thread ident: count}`` of publications currently
+       in-flight for this cycle (transitions pending -> in-flight -> done).
+
+    T-842 B: ``draining`` is the explicit cancellation barrier. It is set by
+    ``cancel()`` while that cancellation is still waiting for in-flight
+    publishers, and it blocks ``touch()`` from arming a new Timer out of the
+    cancelled lifecycle. It is cleared only when the lifecycle fully drains,
+    so a genuinely later fresh touch starts a clean cycle.
+
+    The object is disposable: when it holds no timer or in-flight publisher,
+    it is dropped from the notifier's map entirely. Cancellation state stays
+    proportional to live work, and ``cancel()`` on an idle root allocates
+    nothing. All fields are accessed under ``_OutputNotifier._cond``.
+    """
+
+    __slots__ = ("timer", "gen", "publishers", "draining")
+
+    def __init__(self) -> None:
+        self.timer: threading.Timer | None = None
+        self.gen = -1
+        self.publishers: dict[int, int] = {}
+        self.draining = False
+
+
 class _OutputNotifier:
     """Coalesces output arrivals into bounded-cadence root notifications.
 
@@ -302,6 +366,18 @@ class _OutputNotifier:
     lines collapses into <= 4 notifications per second for that root. When
     nothing listens to the coalesced (or legacy per-line) event, ``touch``
     allocates nothing.
+
+    PERF-001: cancellation is a real, per-root barrier -- never a global
+    dictionary sweep. Each root owns a disposable :class:`_RootNoticeState`;
+    ``cancel(root)`` synchronizes only with that root's lifecycle, while
+    ``cancel(None)`` is the explicit all-roots barrier. A ``Timer`` callback
+    that already reached ``_fire`` releases the pending slot and becomes an
+    in-flight publisher, so a ``cancel()`` that returns either waits for that
+    SAME root's already-running publication or suppresses a publication that
+    had not started, but it never waits for -- or marks -- an unrelated root.
+    Arbitrary event-bus subscriber callbacks run outside the notifier mutex,
+    so a callback for root B may enter notifier code for root A (or even
+    re-enter for B itself) without deadlocking finalization.
     """
 
     def __init__(
@@ -312,33 +388,161 @@ class _OutputNotifier:
         self._bus = bus
         self._interval = interval
         self._lock = threading.Lock()
-        self._timers: dict[str, threading.Timer] = {}
+        self._cond = threading.Condition(self._lock)
+        self._roots: dict[str, _RootNoticeState] = {}
+        self._tokens = itertools.count()
 
     def touch(self, root: str) -> None:
         if not self._bus.has_subscribers("agent.output_available"):
             return
-        with self._lock:
-            if root in self._timers:
+        with self._cond:
+            st = self._roots.get(root)
+            if st is None:
+                st = _RootNoticeState()
+                self._roots[root] = st
+            # T-842 B: a touch arriving inside the active cancellation barrier
+            # must not silently arm another notification from the cancelled
+            # lifecycle. The draining flag is cleared only on complete drain,
+            # after which a genuinely later fresh touch works normally.
+            if st.draining:
                 return
-            t = threading.Timer(self._interval, self._fire, args=(root,))
+            # A fresh touch starts a new notification cycle (e.g. the same
+            # root relaunched after a drain), so the old cycle's cancellation
+            # token can never suppress this one: the new gen token is unique.
+            if st.timer is not None:
+                return  # coalesce: at most one pending Timer per root
+            st.gen = next(self._tokens)
+            t = threading.Timer(self._interval, self._fire, args=(root, st.gen))
             t.daemon = True
-            self._timers[root] = t
+            st.timer = t
             t.start()
 
-    def _fire(self, root: str) -> None:
-        with self._lock:
-            self._timers.pop(root, None)
-        if self._bus.has_subscribers("agent.output_available"):
-            self._bus.publish("agent.output_available", {"root": root})
+    def _fire(self, root: str, gen: int) -> None:
+        # Transition pending -> in-flight for THIS cycle only. A cancel() that
+        # marked exactly this gen wins the race and suppresses the
+        # publication; a fresh cycle (different gen) is never touched.
+        me = threading.get_ident()
+        with self._cond:
+            st = self._roots.get(root)
+            if st is None or st.gen != gen:
+                return  # cycle already drained/superseded: nothing to publish
+            st.timer = None
+            st.publishers[me] = st.publishers.get(me, 0) + 1
+        try:
+            if self._bus.has_subscribers("agent.output_available"):
+                self._bus.publish("agent.output_available", {"root": root})
+        finally:
+            with self._cond:
+                st = self._roots.get(root)
+                if st is not None:
+                    count = st.publishers.get(me, 0) - 1
+                    if count > 0:
+                        st.publishers[me] = count
+                    else:
+                        st.publishers.pop(me, None)
+                    self._reclaim_locked(root, st)
+                self._cond.notify_all()
 
     def cancel(self, root: str | None = None) -> None:
-        """Cancel the pending timer for *root* (or all roots)."""
-        with self._lock:
-            keys = [root] if root is not None else list(self._timers)
-            timers = [self._timers.pop(k, None) for k in keys]
+        """Cancel the pending notification for *root* (or all roots).
+
+        PERF-001 barrier, scoped per root. For ``cancel(root)`` the target is
+        exactly that root: it never unions unrelated roots from in-flight
+        state, never waits for an unrelated publication and never marks an
+        unrelated root. ``cancel(None)`` snapshots every live root and drains
+        that whole set as the explicit global operation.
+
+        Ordering guarantee: cancel returns only after the targeted cycle's
+        already-running publication has completed (or it is suppressed before
+        it started). A publication that a *different* thread is running is
+        waited out.
+
+        Re-entrancy rules (subscriber callbacks run outside the mutex):
+        * Cross-root: a callback publishing B may ``cancel(A)``; the wait is
+          scoped to A, so it never blocks on B -- no cross-root deadlock.
+        * Same-root: a callback reached synchronously from root R's own
+          publication may ``cancel(R)`` without self-deadlock. cancel() marks
+          R's cycle and removes its pending timer but must NOT wait for R's
+          in-flight publication, because that publication IS the calling
+          thread's own stack frame -- it is already past the transition. No
+          *new* publication for the cancelled cycle can start afterwards
+          (its gen is barriered), so the ordering guarantee holds for every
+          publication except the one the caller is itself causing.
+
+        T-842 A (mutual cross-root deadlock): any cancel() issued from inside
+        a notifier publication -- the calling thread is an in-flight publisher
+        for SOME root, not merely the target -- must never synchronously wait
+        for another publisher. Two active publishers whose callbacks cancel
+        each other would otherwise form a publisher-to-publisher wait cycle
+        in which neither callback can return and neither ``_fire`` reaches
+        cleanup. Re-entrant cancellation therefore invalidates/barriers the
+        target lifecycle (draining flag + gen barrier + timer removal) and
+        returns without waiting. External cancellation -- the caller owns no
+        publication -- retains the strong blocking drain semantics.
+
+        T-842 B (touch re-arm during cancellation): ``draining`` is set on
+        every target BEFORE the mutex is released to wait, so a concurrent
+        ``touch()`` cannot silently arm a new Timer out of a lifecycle that
+        is being cancelled. The flag is reclaimed with the state itself once
+        the lifecycle fully drains, after which a fresh touch works normally.
+        """
+        me = threading.get_ident()
+        with self._cond:
+            # T-842 A: is this cancel() itself arriving from inside a notifier
+            # publication? If this thread is an in-flight publisher for any
+            # root, waiting for another publisher risks a wait cycle; barrier
+            # the targets instead. Scanning under the held mutex is race-free.
+            reentrant = any(
+                me in st.publishers for st in self._roots.values()
+            )
+            if root is None:
+                targets: list[tuple[str, _RootNoticeState]] = list(
+                    self._roots.items()
+                )
+            else:
+                st = self._roots.get(root)
+                targets = [] if st is None else [(root, st)]
+            timers: list[threading.Timer] = []
+            waits: list[tuple[str, _RootNoticeState, set[int]]] = []
+            for r, st in targets:
+                # T-842 B: raise the explicit cancellation barrier FIRST, while
+                # the mutex is still held, so no concurrent touch() can re-arm
+                # this lifecycle during the drain wait.
+                st.draining = True
+                if st.timer is not None:
+                    timers.append(st.timer)
+                    st.timer = None
+                    # Establish the logical barrier before waiting. A Timer
+                    # callback already queued on the Condition will observe a
+                    # generation mismatch and cannot become a publisher.
+                    st.gen = -1
+                # Only wait for publications owned by OTHER threads -- and
+                # only from an EXTERNAL cancel (see T-842 A above): a cancel
+                # arriving from inside any publication never waits.
+                owners: set[int] = set()
+                if not reentrant:
+                    owners = {ident for ident in st.publishers if ident != me}
+                waits.append((r, st, owners))
+            for r, st, owners in waits:
+                while owners and any(o in st.publishers for o in owners):
+                    self._cond.wait(timeout=0.5)
+                    st2 = self._roots.get(r)
+                    if st2 is None or st2 is not st:
+                        owners = set()
+                        break
+                    owners = {o for o in owners if o in st.publishers}
+                self._reclaim_locked(r, st)
         for t in timers:
-            if t is not None:
-                t.cancel()
+            t.cancel()
+
+    def _reclaim_locked(self, root: str, st: _RootNoticeState) -> None:
+        # Caller holds the Condition. Drop a root's lifecycle object once it
+        # owns no pending timer, no in-flight publication and no cancellation
+        # knowledge still needed -- a fully drained cycle leaves no residue.
+        if self._roots.get(root) is not st:
+            return
+        if st.timer is None and not st.publishers:
+            del self._roots[root]
 
 
 @dataclass
@@ -523,12 +727,51 @@ class ProcessManager:
         # reservation is deliberately retained (never released while liveness is
         # unresolved) so a second writer cannot claim a possibly-live project.
         self._stuck_agents: set[str] = set()
+        # T-839 W2-001: launch-admission lifecycle barrier. Every launch is
+        # admitted under the barrier lock against the CURRENT generation and
+        # registers an in-flight token; stop_all atomically closes admission,
+        # then waits for every in-flight token to resolve before it accounts
+        # and kills. _processes alone was never a valid representation of
+        # launches in progress (a reserved-but-unspawned launch is invisible
+        # to a snapshot taken from it).
+        self._admission_lock = threading.Lock()
+        self._admission_gen = 0
+        self._admission_open = True
+        self._in_flight: set[_LaunchToken] = set()
         # PERF-009: coalesced output-availability notifications (no-op unless
         # something subscribes to "agent.output_available").
         self._output_notifier = _OutputNotifier()
 
     def _key(self, project_root: str) -> str:
         return canonical_key(project_root)
+
+    def _admit_launch(self, key: str) -> _LaunchToken | None:
+        """T-839 W2-001: admission gate for a launch.
+
+        Returns a fresh token registered in-flight when admission is open, or
+        None when the lifecycle is already shutting down (the caller must
+        refuse with SHUTTING_DOWN before touching RootOwnership).
+        """
+        with self._admission_lock:
+            if not self._admission_open:
+                return None
+            token = _LaunchToken(self._admission_gen)
+            self._in_flight.add(token)
+            return token
+
+    def _resolve_launch(self, token: _LaunchToken, committed: bool) -> None:
+        """Resolve and retire an in-flight token (every launch exit path)."""
+        with self._admission_lock:
+            self._in_flight.discard(token)
+        token.resolve(committed)
+
+    def _shutting_down_result(self) -> dict:
+        """T-839 W2-001: the one stable controlled-cancellation contract."""
+        return {
+            "ok": False,
+            "code": "SHUTTING_DOWN",
+            "error": "Agent launch cancelled because SAIPENVIEW is stopping",
+        }
 
     def launch(
         self,
@@ -558,12 +801,20 @@ class ProcessManager:
                     f"(engine={existing.engine.name}, "
                     f"elapsed={existing.elapsed_seconds():.0f}s)",
                 }
+        # T-839 W2-001: admit under the lifecycle barrier BEFORE reserving
+        # RootOwnership. A launch admitted here registers an in-flight token
+        # so stop_all() can wait for it instead of snapshotting only
+        # _processes (which cannot see a reserved-but-unspawned launch).
+        token = self._admit_launch(key)
+        if token is None:
+            return self._shutting_down_result()
         # Reservation is the ATOMIC ownership decision: checked and marked
         # under the same per-root lock the write coordinator mutates under.
         # A UI mutation in flight makes this refuse; a successful reservation
         # makes every later mutation refuse. Refusal also covers a second
         # launch for the same root (one reservation per root, ever).
         if not self.ownership.reserve_agent(Path(project_root)):
+            self._resolve_launch(token, committed=False)
             return {
                 "ok": False,
                 "error": (
@@ -583,6 +834,7 @@ class ProcessManager:
                 # release the reservation and return the structured error -- it
                 # must never leak ownership or mask the original cause.
                 self.ownership.release_agent(Path(project_root))
+                self._resolve_launch(token, committed=False)
                 return {"ok": False, "error": f"engine build failed: {exc}"}
 
             env = None
@@ -591,58 +843,85 @@ class ProcessManager:
 
                 env = {**os.environ, **engine.default_env}
 
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=project_root,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.PIPE
-                    if engine.supports_stdin
-                    else subprocess.DEVNULL,
-                    env=env,
-                    # PERF-008: stdout is read as bounded binary chunks with an
-                    # incremental decoder (see _bounded_output_lines) so an
-                    # oversized record can never materialize in full.
-                    bufsize=0,
+            # T-839 W2-001: lifecycle-gated commit section. The admission
+            # recheck and the spawn/register MUST be one critical section
+            # under _admission_lock: either this launch sees admission open
+            # and commits (so stop_all, which holds the lock while closing
+            # admission, observes the committed token and then kills the
+            # registered process), or it sees admission closed and aborts
+            # here -- releasing the reservation and never reaching Popen.
+            # Checking before build_command() alone would race with a
+            # shutdown immediately afterward; checking only after Popen
+            # would leave a live child that must join proven-death cleanup.
+            with self._admission_lock:
+                if not self._admission_open or token.gen != self._admission_gen:
+                    # OUTCOME A: shutdown won the ordering before spawn, or the
+                    # token's generation went stale across a stop/restart.
+                    self.ownership.release_agent(Path(project_root))
+                    self._in_flight.discard(token)
+                    token.resolve(committed=False)
+                    return self._shutting_down_result()
+
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=project_root,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.PIPE
+                        if engine.supports_stdin
+                        else subprocess.DEVNULL,
+                        env=env,
+                        # PERF-008: stdout is read as bounded binary chunks with an
+                        # incremental decoder (see _bounded_output_lines) so an
+                        # oversized record can never materialize in full.
+                        bufsize=0,
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    print(
+                        f"SAIPENVIEW: failed to launch {engine.name}: {exc}",
+                        file=sys.stderr,
+                    )
+                    self.ownership.release_agent(Path(project_root))
+                    self._resolve_launch(token, committed=False)
+                    return {"ok": False, "error": str(exc)}
+
+                # CORE-004: Windows Job Object containment -- child dies when
+                # the parent exits, no matter how (Task Manager, Ctrl+C, etc.).
+                _assign_job_object(proc)
+
+                ap = AgentProcess(
+                    engine=engine,
+                    project_root=project_root,
+                    instruction=instruction,
+                    process=proc,
+                    output_lines=deque(maxlen=self._buffer_size),
+                    # W2-002: always mint a non-null control_id so the stale-run
+                    # guard never skips its check. SessionStore may provide a
+                    # different ID; run_id is set below.
+                    control_id=f"ctrl-{next(_control_run_ids)}-{proc.pid}",
                 )
-            except (OSError, subprocess.SubprocessError) as exc:
-                print(
-                    f"SAIPENVIEW: failed to launch {engine.name}: {exc}",
-                    file=sys.stderr,
+
+                record = self.sessions.start(
+                    project_root,
+                    engine.name,
+                    engine.display_name,
+                    instruction,
+                    pid=proc.pid,
                 )
-                self.ownership.release_agent(Path(project_root))
-                return {"ok": False, "error": str(exc)}
+                # W2-002: run_id is always non-null. Use the session's ID when
+                # persistence succeeded, otherwise fall back to the control_id.
+                ap.run_id = record.run_id if record is not None else ap.control_id
 
-            # CORE-004: Windows Job Object containment -- child dies when
-            # the parent exits, no matter how (Task Manager, Ctrl+C, etc.).
-            _assign_job_object(proc)
-
-            ap = AgentProcess(
-                engine=engine,
-                project_root=project_root,
-                instruction=instruction,
-                process=proc,
-                output_lines=deque(maxlen=self._buffer_size),
-                # W2-002: always mint a non-null control_id so the stale-run
-                # guard never skips its check. SessionStore may provide a
-                # different ID; run_id is set below.
-                control_id=f"ctrl-{next(_control_run_ids)}-{proc.pid}",
-            )
-
-            record = self.sessions.start(
-                project_root,
-                engine.name,
-                engine.display_name,
-                instruction,
-                pid=proc.pid,
-            )
-            # W2-002: run_id is always non-null. Use the session's ID when
-            # persistence succeeded, otherwise fall back to the control_id.
-            ap.run_id = record.run_id if record is not None else ap.control_id
-
-            with self._lock:
-                self._processes[key] = ap
+                with self._lock:
+                    self._processes[key] = ap
+                # OUTCOME B: commit complete -- the process is now observable
+                # to stop_all()'s post-barrier snapshot and will be killed
+                # through the proven-death path. (Resolution is inlined:
+                # _admission_lock is already held here and Lock is not
+                # reentrant.)
+                self._in_flight.discard(token)
+                token.resolve(committed=True)
 
             # Start background reader thread
             reader = threading.Thread(
@@ -683,6 +962,7 @@ class ProcessManager:
                 "run_id": ap.run_id,
             }
         except Exception:  # noqa: BLE001 - reservation must not leak on any path
+            self._resolve_launch(token, committed=False)
             if proc is None:
                 self.ownership.release_agent(Path(project_root))
                 raise
@@ -1415,8 +1695,51 @@ class ProcessManager:
         state the coordinator's authoritative guard enforces."""
         return self.ownership.agent_owns(Path(project_root))
 
+    def begin_lifecycle(self) -> None:
+        """T-839 W2-001: begin/reopen a fresh launch-admission lifecycle.
+
+        Called by Api.start() so a restartable Api explicitly reopens admission.
+        The generation is bumped BEFORE reopening, so any stale token captured
+        before a stop can never be re-validated: an old generation can never
+        become valid again after restart. Idempotent for a freshly constructed
+        (already-open) manager.
+        """
+        with self._admission_lock:
+            self._admission_gen += 1
+            self._in_flight.clear()
+            self._admission_open = True
+
     def stop_all(self) -> None:
-        """Kill all running agents.  Called on app shutdown."""
+        """Kill all running agents. Called on app shutdown.
+
+        T-839 W2-001: the authoritative launch-admission barrier. Ordering:
+
+        1. atomically close launch admission under the barrier lock -- a
+           launch inside its commit section holds the same lock, so closing
+           waits for it to finish (it has then committed into _processes);
+           a launch not yet committed will see admission closed and abort;
+        2. wait for every already-admitted in-flight launch to resolve --
+           either it committed into _processes (and is killed below) or it
+           observed the closed admission, released its reservation and
+           returned SHUTTING_DOWN without spawning;
+        3. account for and terminate the registered live processes through
+           the existing proven-death path.
+
+        No launch admitted by the stopped lifecycle can spawn a process after
+        this method returns, and no committed process is missed. Idempotent:
+        a second call finds admission already closed, no in-flight tokens,
+        and only terminal/no processes.
+        """
+        with self._admission_lock:
+            self._admission_open = False
+            pending = set(self._in_flight)
+        for token in pending:
+            if not token.wait(_LAUNCH_BARRIER_WAIT_SECONDS):
+                print(
+                    "SAIPENVIEW: launch admission barrier timed out waiting for "
+                    "an in-flight launch",
+                    file=sys.stderr,
+                )
         with self._lock:
             roots = [r for r, ap in self._processes.items() if ap.status == "running"]
         for root in roots:

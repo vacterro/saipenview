@@ -23,7 +23,7 @@
   --borderDark:#100E08; --borderHighlight:#F0D060; --bevelLight:#75663D; --borderMuted:#5A5040;
   --textPrimary:#D4C89A; --textSecondary:#9C9371; --textMuted:#6E674E;
   --accentTeal:#008080; --accentTealDeep:#004C4C;
-  --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020; --dangerText:#D66464; --dangerText:#D66464;
+  --success:#4A7A20; --warning:#7A7A20; --danger:#7A2020; --dangerText:#D66464; --dangerText:#D66464; --dangerText:#D66464;
   --selection:#3D372A; --compareBack:#14120C; --link:#F0D060;
   --goldStar:#FFC107;
   /* Red for TEXT. --danger stays what it is -- a fill/border colour, fine
@@ -332,6 +332,8 @@ body.collapsed .toggle-btn { position:fixed !important; top:2px !important; righ
   text-overflow: ellipsis; white-space: nowrap; }
 .unrecorded-summary button { flex: 0 0 auto; font-size: 9px; padding: 1px 4px; }
 .unrecorded-summary #recordManualWorkBtn { color: var(--success); }
+.registry-corrupt-bar { border-color: var(--dangerText); color: var(--dangerText); }
+.registry-corrupt-bar #recoverRegistryBtn { color: var(--dangerText); }
 .unrecorded-items { display: none; }
 .unrecorded-bar.expanded .unrecorded-items { display: flex; flex-wrap: wrap; gap: 2px;
   max-height: 76px; overflow-y: auto; overflow-x: hidden;

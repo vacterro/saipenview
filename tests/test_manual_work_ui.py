@@ -28,6 +28,13 @@ STYLE_CSS = (
     / "static"
     / "style.css"
 )
+SAI_API_JS = (
+    Path(__file__).resolve().parent.parent
+    / "saipenview"
+    / "ui"
+    / "static"
+    / "sai-api.js"
+)
 
 
 def test_unrecorded_bar_and_record_button_exist():
@@ -64,6 +71,19 @@ def test_record_button_calls_the_backend():
 def test_no_frontend_self_write_calls_remain():
     src = APP_JS.read_text(encoding="utf-8")
     assert "markSelfWrite(" not in src
+
+
+def test_registry_corruption_recovery_is_explicit_and_visible():
+    app = APP_JS.read_text(encoding="utf-8")
+    facade = SAI_API_JS.read_text(encoding="utf-8")
+    assert '"get_external_change_registry_status"' in facade
+    assert '"recover_external_change_registry"' in facade
+    assert 'id="registryCorruptBar"' in app
+    assert 'id="recoverRegistryBtn"' in app
+    assert 'status.load_untrusted' in app
+    assert 'window.SaiApi.recover_external_change_registry()' in app
+    assert 'showToast("Registry recovery failed: "' in app
+    assert "recover_external_change_registry();" not in app
 
 
 def test_unrecorded_bar_is_bounded_not_inline_chips():

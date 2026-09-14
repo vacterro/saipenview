@@ -1,0 +1,104 @@
+{
+  "requirements": {
+    "SRC-006:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-836 PASS conf: high E-1290..E-1308 finish-0c4dec45b6a84541bffd879c1dc7727b",
+      "text": "CORE-001: ExternalChangeRegistry.recover_from_corrupt must be failure-atomic -- a failed durable commit after marker archival must restore the canonical corrupt marker and degraded state exactly as the method's own contract (lines 407-412) states; a fresh registry after restart must not observe a falsely healthy state",
+      "verification": "tests/test_src004_audit_clauses.py fresh-restart failure-atomic recovery regression green; compileall green; focused battery green",
+      "work": "T-836"
+    },
+    "SRC-006:R002": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-837 PASS conf: high E-1309..E-1322 finish-715fc5c0c1fc",
+      "text": "CORE-002: corrupt ExternalChangeRegistry status and explicit recovery must be reachable through the supported public boundary (Api -> service allowlist -> SaiApi -> UI); fail-closed collect is preserved; recovery success and failure stay durable across restart",
+      "verification": "authenticated/unauthenticated RPC + restart-durability regressions green; collect guards unchanged; suite green",
+      "work": "T-837"
+    },
+    "SRC-006:R003": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-838 PASS conf: high E-1323..E-1334 finish-a4dad33ce0df",
+      "text": "CORE-003: running_agent_count must be HTTP-transport parity: explicit service allowlist entry, authenticated RPC coverage, unauthenticated/private rejection, inverse facade/service classification regression",
+      "verification": "allowlist parity + inverse facade/service classification regression green; PERF-014 preserved",
+      "work": "T-838"
+    },
+    "SRC-006:R004": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-839 PASS conf: high E-1335..E-1365 finish-630dc4e63def",
+      "text": "W2-001: ProcessManager launch-admission lifecycle gate: stop_all closes admission, waits for in-flight launch tokens, and a launch admitted before shutdown either commits before the barrier or aborts without spawning",
+      "verification": "tests/test_t839_launch_stop_barrier.py deterministic barrier regressions green; full battery green",
+      "work": "T-839"
+    },
+    "SRC-006:R005": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-840 PASS conf: high E-1366..E-1379 finish-dd127e6b6c9d",
+      "text": "W2-002: one file-boundary resolver freshly verifies .saipen/STATE.md liveness in read_file_text and ordinary write_file_text; PERF-009 verified-root cache retained; fail closed when the matched root loses STATE",
+      "verification": "tests/test_file_boundary.py 22/22 green: nested dead-child fail-closed, warm-cache single stat, stale-liveness revocation",
+      "work": "T-840"
+    },
+    "SRC-006:R006": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-841 PASS conf: high E-1380..E-1390 finish-f1788d73af16",
+      "text": "W2-003: SaipenViewService.start exception rollback closes every constructed server socket, clears _server/_thread unconditionally, and preserves the original exception so the port is immediately rebindable",
+      "verification": "service 29 passed: injected Thread.start failure leaves port rebindable; retry start succeeds; ruff clean",
+      "work": "T-841"
+    },
+    "SRC-006:R007": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-842 PASS conf: high E-1456..E-1461 checkpoint-t842-pass",
+      "text": "PERF-001: _OutputNotifier per-root synchronized lifecycle: pending callback cannot escape cancellation invisibly; bounded cadence and zero-allocation unsubscribed path preserved",
+      "verification": "tests/test_perf009_output_events.py 24 passed x3 incl. mutual cross-root deadlock + cancel-vs-touch re-arm regressions red-before/green-after; focused battery 112; full suite 0 new failures; packaged artifact hash-verified",
+      "work": "T-842"
+    },
+    "SRC-006:R008": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-843 PASS conf: high E-1426..E-1449 finish-a913eebc3ce6",
+      "text": "PERF-002: canonicalize each project root once on registry entry with internal canonical membership key; normalization outside global lock",
+      "verification": "zero per-row resolution instrumentation regression + slow-resolver concurrency regression green",
+      "work": "T-843"
+    },
+    "SRC-006:R009": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-844 PASS conf: high E-1425..E-1437 finish-7b7df88cb561",
+      "text": "PERF-003: SessionStore.append caps before encode: acquire entry.lock and check capped before UTF-8 conversion; encode stored lines once",
+      "verification": "cap-before-encode regressions: capped transcript 1000 appends zero encodes; boundary crossed once; multibyte valid",
+      "work": "T-844"
+    },
+    "SRC-006:R010": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-845 PASS conf: high E-1413..E-1425 finish-4e2883445d6d",
+      "text": "PERF-004: batch historical transcript DOM insertion into one DocumentFragment per restore preserving textContent, order, header, scroll and stale guards",
+      "verification": "Node DOM-shim: 2000 lines single fragment append; 500-line restore single commit; stale-guard green",
+      "work": "T-845"
+    },
+    "SRC-006:R011": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-846 PASS conf: high E-1391..E-1412 finish-2885fc00ee1b",
+      "text": "PERF-005: _refresh_changed_roots becomes insertion-ordered O(1)-membership mailbox; get_changed_roots snapshots and clears atomically",
+      "verification": "mailbox dup-collapse/order/12k-insert regression green; frontend revision path green",
+      "work": "T-846"
+    }
+  },
+  "schema_version": 1
+}

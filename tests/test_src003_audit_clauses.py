@@ -288,6 +288,91 @@ class TestCorruptRegistryRecovery:
         assert result["ok"] is True and result["recovered"] is False
 
 
+class TestPublicCorruptRegistryRecovery:
+    @staticmethod
+    def _install(monkeypatch, registry):
+        import saipenview.external_changes as external_changes
+
+        monkeypatch.setattr(external_changes, "get_registry", lambda: registry)
+
+    def test_public_success_survives_restart(self, tmp_path, monkeypatch):
+        persist = tmp_path / "ec.json"
+        persist.write_text("{ corrupt", encoding="utf-8")
+        registry = ExternalChangeRegistry()
+        registry._set_persist_path(persist)
+        registry.record(str(tmp_path), ".saipen/STATE.md", "beef")
+        self._install(monkeypatch, registry)
+        api = Api()
+        try:
+            status = api.get_external_change_registry_status()
+            assert status == {
+                "state": "corrupt",
+                "trusted": False,
+                "degraded": True,
+                "load_untrusted": True,
+                "write_degraded": False,
+                "pending_count": 1,
+            }
+            result = api.recover_external_change_registry()
+            assert result["ok"] is True
+            assert result["recovered"] is True
+            assert result["retained_pending"] == 1
+            assert result["evidence_archived"] is True
+            assert "archived" not in result
+            assert result["status"]["state"] == "pending"
+            assert api.get_external_change_registry_status()["degraded"] is False
+        finally:
+            api.stop()
+
+        fresh = ExternalChangeRegistry()
+        fresh._set_persist_path(persist)
+        assert fresh.is_degraded() is False
+        assert len(fresh.pending()) == 1
+
+    def test_public_failure_stays_corrupt_across_restart(
+        self, tmp_path, monkeypatch
+    ):
+        persist = tmp_path / "ec.json"
+        persist.write_text("{ corrupt", encoding="utf-8")
+        registry = ExternalChangeRegistry()
+        registry._set_persist_path(persist)
+        self._install(monkeypatch, registry)
+        monkeypatch.setattr(ExternalChangeRegistry, "_save", lambda self: False)
+        api = Api()
+        try:
+            result = api.recover_external_change_registry()
+            assert result["ok"] is False
+            assert result["status"]["state"] == "corrupt"
+            assert api.get_external_change_registry_status()["degraded"] is True
+        finally:
+            api.stop()
+
+        fresh = ExternalChangeRegistry()
+        fresh._set_persist_path(persist)
+        assert fresh.is_degraded() is True
+        assert fresh.load_untrusted() is True
+
+    def test_public_status_distinguishes_all_four_states(self, tmp_path, monkeypatch):
+        registry = ExternalChangeRegistry()
+        registry._set_persist_path(tmp_path / "healthy.json")
+        self._install(monkeypatch, registry)
+        api = Api()
+        try:
+            assert api.get_external_change_registry_status()["state"] == "healthy"
+            registry.record(str(tmp_path), ".saipen/STATE.md", "beef")
+            assert api.get_external_change_registry_status()["state"] == "pending"
+            registry._load_corrupt = True
+            assert api.get_external_change_registry_status()["state"] == "corrupt"
+            registry._load_corrupt = False
+            registry._write_degraded = True
+            status = api.get_external_change_registry_status()
+            assert status["state"] == "write_degraded"
+            assert status["trusted"] is True
+            assert status["write_degraded"] is True
+        finally:
+            api.stop()
+
+
 # ── R007 / W2-003: persisted rows must satisfy the registry's invariants ──────
 
 

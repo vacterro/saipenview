@@ -292,6 +292,10 @@ def test_protocol_read_single_pass(project, tmp_path):
 
     api = object.__new__(Api)
     api._known_roots = lambda: [str(root)]
+    # T-840: read_file_text authorizes through the boundary resolver, which
+    # consults the PERF-009 verified-roots cache -- a bare __new__ instance
+    # has none, so hand the resolver the seeded project root directly.
+    api._verified_project_roots = lambda: [str(root)]
 
     reads = []
     orig_read_doc = textio.read_doc

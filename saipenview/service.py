@@ -44,6 +44,8 @@ ALLOWED_RPC_METHODS: frozenset[str] = frozenset(
         "refresh_known",
         "get_changed_roots",
         "acknowledge_external_change",
+        "get_external_change_registry_status",
+        "recover_external_change_registry",
         "rescan",
         "get_status",
         "get_scan_progress",
@@ -79,6 +81,7 @@ ALLOWED_RPC_METHODS: frozenset[str] = frozenset(
         "get_agent_transcript",
         "get_last_agent_transcript",
         "list_running_agents",
+        "running_agent_count",
         # diff / commit / revert
         "get_diff",
         "commit_agent_work",
@@ -199,6 +202,9 @@ class SaipenViewService:
 
             api_created = False
             event_subscribed = False
+            server = None
+            thread = None
+            thread_started = False
             try:
                 if self._api is None:
                     self._api = Api()
@@ -222,29 +228,47 @@ class SaipenViewService:
                         f"failed to bind port {self._port}: {exc}", 503
                     ) from exc
                 server.handle_error = self._handle_server_error
-                self._server = server
-                self._thread = threading.Thread(
+                thread = threading.Thread(
                     target=server.serve_forever, name="saipenview-service", daemon=True
                 )
-                self._thread.start()
+                self._server = server
+                self._thread = thread
+                thread.start()
+                thread_started = True
                 self._state = "running"
             except Exception:  # noqa: BLE001
-                # Unwind successfully-started resources in reverse.
+                # T-841: failure-atomic rollback preserving startup exception.
                 self._state = "stopped"
-                if self._thread and self._thread.is_alive():
+                if thread_started and thread is not None:
                     try:
-                        self._server.shutdown()
-                        self._server.server_close()
-                    except OSError:
+                        server.shutdown()
+                    except Exception:  # noqa: BLE001
                         pass
-                    self._thread.join(timeout=2)
-                    self._thread = None
+                    try:
+                        thread.join(timeout=2)
+                    except Exception:  # noqa: BLE001
+                        pass
+                if server is not None:
+                    try:
+                        server.server_close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._thread = None
                 self._server = None
-                if event_subscribed and self._api is not None:
-                    event_bus.unsubscribe("saipen.file_changed", self._on_file_changed)
+                if event_subscribed:
+                    try:
+                        event_bus.unsubscribe(
+                            "saipen.file_changed", self._on_file_changed
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                 if api_created and self._api is not None:
-                    self._api.stop()
+                    api = self._api
                     self._api = None
+                    try:
+                        api.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
                 raise
 
     def stop(self) -> None:
@@ -393,6 +417,19 @@ class SaipenViewService:
     # ── RPC dispatch ────────────────────────────────────────────────────────
 
     def _dispatch(self, method: str, args: list[Any]) -> Any:
+        # T-839 W2-001: service-admission guard. Once the service lifecycle has
+        # entered "stopping", a new launch_agent RPC must not begin a launch at
+        # all -- the authoritative barrier lives in ProcessManager, but this
+        # guard prevents a fresh admission from racing close behind shutdown.
+        # An RPC that already passed dispatch before stop() began is still
+        # turned back by the ProcessManager barrier itself.
+        if method == "launch_agent":
+            with self._state_lock:
+                if self._state != "running":
+                    raise _ServiceError(
+                        "SAIPENVIEW is stopping",
+                        503,
+                    )
         if method not in ALLOWED_RPC_METHODS:
             if method in _DESKTOP_ONLY_METHODS:
                 raise _ServiceError(

@@ -1251,6 +1251,16 @@ function renderDetailPane(detail) {
     let _pending = detail.pending_external_changes || [];
     let _pendingBarHtml = "";
     const _legacyPending = _pending.length === 0 && unrecordedChangeRoot === detail.root;
+    let _registryCorruptHtml = "";
+    if (detail.external_change_registry_status && detail.external_change_registry_status.load_untrusted) {
+      _registryCorruptHtml = `<div id="registryCorruptBar" class="unrecorded-bar registry-corrupt-bar">
+        <div class="unrecorded-summary">
+          <span class="unrecorded-flag">!</span>
+          <span class="unrecorded-text">External-change registry is corrupt. Pending state is untrusted.</span>
+          <button id="recoverRegistryBtn">Recover</button>
+        </div>
+      </div>`;
+    }
     if (_pending.length > 0 || _legacyPending) {
       const _shown = _pending.slice(0, UNRECORDED_CHIP_CAP);
       const _rest = _pending.length - _shown.length;
@@ -1275,6 +1285,7 @@ function renderDetailPane(detail) {
       </div>`;
     }
     contentDiv.innerHTML = `
+      ${_registryCorruptHtml}
       ${_pendingBarHtml}
       <div class="detail-header">
         <div class="detail-title">
@@ -1705,6 +1716,41 @@ function renderDetailPane(detail) {
       const bar = document.getElementById("unrecordedBar");
       if (bar) bar.classList.toggle("expanded", willExpand);
       unrecordedToggle.textContent = t(willExpand ? "agent.unrecorded.hide" : "agent.unrecorded.files");
+    });
+  }
+
+  const recoverRegistryBtn = document.getElementById("recoverRegistryBtn");
+  if (recoverRegistryBtn) {
+    recoverRegistryBtn.addEventListener("click", () => {
+      recoverRegistryBtn.disabled = true;
+      recoverRegistryBtn.textContent = "Recovering...";
+      window.SaiApi.recover_external_change_registry().then((result) => {
+        return Promise.all([
+          window.SaiApi.get_external_change_registry_status(),
+          window.SaiApi.get_project_detail(detail.root),
+        ]).then(([status, refreshedDetail]) => {
+          if (refreshedDetail) {
+            refreshedDetail.external_change_registry_status = status;
+            renderDetailPane(refreshedDetail);
+          }
+          if (!result || !result.ok) {
+            showToast("Registry recovery failed: " + ((result && result.detail) || "unknown"), "error");
+          } else {
+            showToast("External-change registry recovered", "success");
+          }
+        });
+      }).catch((error) => {
+        window.SaiApi.get_external_change_registry_status().then((status) => {
+          return window.SaiApi.get_project_detail(detail.root).then((refreshedDetail) => {
+            if (refreshedDetail) {
+              refreshedDetail.external_change_registry_status = status;
+              renderDetailPane(refreshedDetail);
+            }
+          });
+        }).finally(() => {
+          showToast("Registry recovery failed: " + String(error), "error");
+        });
+      });
     });
   }
 
@@ -4512,6 +4558,7 @@ function restoreLastTranscript(root, container) {
     if (status && status.status === "running") return;
 
     const run = res.run || {};
+    const frag = document.createDocumentFragment();
     const head = document.createElement("div");
     head.className = "agent-output-restored";
     head.textContent = t("agent.restored", {
@@ -4519,14 +4566,16 @@ function restoreLastTranscript(root, container) {
       status: run.status || "?",
       when: run.started_at ? formatLocalTime(run.started_at) : "?",
     });
-    linesContainer.appendChild(head);
+    frag.appendChild(head);
 
     (res.lines || []).forEach((line) => {
       const div = document.createElement("div");
       div.className = "agent-output-line";
       div.textContent = line;
-      linesContainer.appendChild(div);
+      frag.appendChild(div);
     });
+
+    linesContainer.appendChild(frag);
 
     const meta = document.getElementById("agentOutputMeta");
     if (meta) {
@@ -4603,16 +4652,18 @@ function loadAgentRun(root, runId) {
     if (!linesContainer) return;
     linesContainer.innerHTML = "";
     if (res && res.found) {
+      const frag = document.createDocumentFragment();
       const head = document.createElement("div");
       head.className = "agent-output-restored";
       head.textContent = t("agent.restoredHistory", { count: res.total || 0 });
-      linesContainer.appendChild(head);
+      frag.appendChild(head);
       (res.lines || []).forEach((line) => {
         const div = document.createElement("div");
         div.className = "agent-output-line";
         div.textContent = line;
-        linesContainer.appendChild(div);
+        frag.appendChild(div);
       });
+      linesContainer.appendChild(frag);
       const meta = document.getElementById("agentOutputMeta");
       if (meta) meta.textContent = t("agent.output.lines") + ": " + (res.total || 0);
       const panel = linesContainer.parentElement;
@@ -4696,7 +4747,6 @@ function _fetchAgentOutputDelta(root) {
         // limit while that buffer (and the transcript 5MiB cap) have long since
         // stopped storing the head. Batch into a fragment, then prune the oldest
         // excess -- parseTestLine still sees every delivered line before pruning.
-        const frag = document.createDocumentFragment();
         appendOutputLines(linesContainer, res.lines, root);
 
         if (isScrolledToBottom) {

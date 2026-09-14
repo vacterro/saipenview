@@ -30,10 +30,22 @@ const agentStatusCache = {{}};
 const appended = [];
 const datasetRoot = {{ value: "A" }};
 const document = {{
+  createDocumentFragment: () => ({{
+    __kind: "fragment",
+    children: [],
+    appendChild(el) {{ this.children.push(el); }},
+  }}),
+  createElement: (tag) => ({{ __kind: tag, className: "", textContent: "", appendChild(){{}} }}),
   getElementById: (id) => {{
     if (id === "agentOutputLines") return {{
       childElementCount: 0,
-      appendChild: (el) => appended.push(el.__kind || "node"),
+      appendChild: (el) => {{
+        if (el && el.__kind === "fragment") {{
+          for (const c of el.children) appended.push(c.__kind || "node");
+        }} else {{
+          appended.push(el.__kind || "node");
+        }}
+      }},
       parentElement: {{ scrollTop: 0, scrollHeight: 100 }},
     }};
     if (id === "agentOutputMeta") return null;
@@ -47,7 +59,6 @@ const document = {{
     }};
     return null;
   }},
-  createElement: (tag) => ({{ __kind: tag, className: "", textContent: "", appendChild(){{}} }}),
 }};
 const window = {{ SaiApi: {{ get_last_agent_transcript: () => Promise.resolve({{ found: false }}), ready: true }} }};
 function t() {{ return "RESTORED"; }}

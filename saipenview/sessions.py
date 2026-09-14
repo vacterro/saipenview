@@ -280,14 +280,6 @@ class SessionStore:
             entry = self._open.get(run_id)
         if entry is None or entry.handle is None:
             return
-        # W2-010: truncate one logical record to MAX_OUTPUT_LINE_BYTES.
-        raw_bytes = line.encode("utf-8", errors="replace")
-        if len(raw_bytes) > MAX_OUTPUT_LINE_BYTES:
-            # Write as much as fits, plus a truncation marker.
-            truncated = raw_bytes[:MAX_OUTPUT_LINE_BYTES].decode(
-                "utf-8", errors="ignore"
-            )
-            line = truncated + " [... truncated]"
         with entry.lock:
             if entry.bytes_written >= MAX_TRANSCRIPT_BYTES:
                 if not entry.record.truncated:
@@ -302,11 +294,19 @@ class SessionStore:
                         pass
                     self._write_meta(entry.record)
                 return
+            raw_bytes = line.encode("utf-8", errors="replace")
+            if len(raw_bytes) > MAX_OUTPUT_LINE_BYTES:
+                truncated = raw_bytes[:MAX_OUTPUT_LINE_BYTES].decode(
+                    "utf-8", errors="ignore"
+                )
+                line = truncated + " [... truncated]"
+                raw_bytes = line.encode("utf-8", errors="replace")
+            payload_len = len(raw_bytes) + 1
             try:
                 entry.handle.write(line + "\n")
             except (OSError, ValueError):
                 return
-            entry.bytes_written += len(line.encode("utf-8", "replace")) + 1
+            entry.bytes_written += payload_len
             entry.record.line_count += 1
             entry.since_flush += 1
             if entry.since_flush >= _FLUSH_EVERY:

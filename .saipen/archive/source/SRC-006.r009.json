@@ -1,0 +1,54 @@
+{
+  "clauses": {
+    "SRC-006:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-001: ExternalChangeRegistry.recover_from_corrupt must be failure-atomic -- a failed durable commit after marker archival must restore the canonical corrupt marker and degraded state exactly as the method's own contract (lines 407-412) states; a fresh registry after restart must not observe a falsely healthy state"
+    },
+    "SRC-006:R002": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-002: corrupt ExternalChangeRegistry status and explicit recovery must be reachable through the supported public boundary (Api -> service allowlist -> SaiApi -> UI); fail-closed collect is preserved; recovery success and failure stay durable across restart"
+    },
+    "SRC-006:R003": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-003: running_agent_count must be HTTP-transport parity: explicit service allowlist entry, authenticated RPC coverage, unauthenticated/private rejection, inverse facade/service classification regression"
+    },
+    "SRC-006:R004": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-001: ProcessManager launch-admission lifecycle gate: stop_all closes admission, waits for in-flight launch tokens, and a launch admitted before shutdown either commits before the barrier or aborts without spawning"
+    },
+    "SRC-006:R005": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-002: one file-boundary resolver freshly verifies .saipen/STATE.md liveness in read_file_text and ordinary write_file_text; PERF-009 verified-root cache retained; fail closed when the matched root loses STATE"
+    },
+    "SRC-006:R006": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-003: SaipenViewService.start exception rollback closes every constructed server socket, clears _server/_thread unconditionally, and preserves the original exception so the port is immediately rebindable"
+    },
+    "SRC-006:R007": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-001: _OutputNotifier per-root synchronized lifecycle: pending callback cannot escape cancellation invisibly; bounded cadence and zero-allocation unsubscribed path preserved"
+    },
+    "SRC-006:R008": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-002: canonicalize each project root once on registry entry with internal canonical membership key; normalization outside global lock"
+    },
+    "SRC-006:R009": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-003: SessionStore.append caps before encode: acquire entry.lock and check capped before UTF-8 conversion; encode stored lines once"
+    }
+  },
+  "derived_at": "2026-09-14T08:12:09Z",
+  "derived_from": "SRC-006",
+  "interpretation_revision": 9,
+  "schema_version": 1,
+  "source_sha256": "a173d609d2d2cad3f06c591c9e1ed4e8cc4c2fcec670fe0f8134d03f92a9d36c"
+}

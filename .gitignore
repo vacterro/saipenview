@@ -36,12 +36,18 @@ saipenview/_data/
 !.saipen/kitchen/
 .saipen/kitchen/*
 !.saipen/kitchen/release_scope/
-# The own-`.saipen` CI snapshot is TRACKED by deliberate exception (repair
-# mission P1): CI cannot validate the gitignored live memory, so it validates
-# this sanitized, mechanically-generated fixture instead. Regenerate with
-# tools/snapshot_saipen.py --write.
-!tests/fixtures/own_saipen_snapshot/.saipen/
-!tests/fixtures/own_saipen_snapshot/.saipen/**
+# Release-closure exception (T-832/T-833 ship convergence): the closure commit
+# must carry the canonical memory (STATE/BOARD/LOG + sealed log segments +
+# digest + published release receipt) so a fresh clone at the release tag can
+# run recovery and prove the release (docs/saipen-persistence.md, "Closure
+# travel" section).
+!.saipen/STATE.md
+!.saipen/BOARD.md
+!.saipen/LOG.md
+!.saipen/logs/
+!.saipen/logs/**
+!.saipen/kitchen/digest.md
+!.saipen/kitchen/release_receipt.json
 # The own-`.saipen` CI snapshot is TRACKED by deliberate exception (repair
 # mission P1): CI cannot validate the gitignored live memory, so it validates
 # this sanitized, mechanically-generated fixture instead. Regenerate with

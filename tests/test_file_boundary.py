@@ -17,6 +17,7 @@ import pytest
 
 from saipenview.api import Api
 from saipenview.config import DEFAULTS
+from saipenview.paths import canonical
 
 pytestmark = pytest.mark.skipif(
     __import__("conftest", fromlist=["canonical_home"]).canonical_home() is None,
@@ -243,3 +244,181 @@ class TestSymlinkEscape:
         # canonical() resolves the symlink to its target, which lives outside
         # every verified root, so the boundary must reject it.
         assert api.read_file_text(str(link)) is None
+
+
+class TestStateDeletionFailsClosed:
+    """T-840 / W2-002: a cached verified root that lost its .saipen/STATE.md
+    must fail the file boundary closed -- the PERF-009 cache may keep the root
+    authorized until the next registry revision, but a dead project grants
+    neither reads nor writes."""
+
+    @staticmethod
+    def _prime(api: Api, target: Path) -> dict:
+        # First access primes the PERF-009 verified-roots cache with the root
+        # alive; the deletion below must NOT invalidate that cache (we only
+        # delete STATE.md, never call refresh/scan), so a pass proves the
+        # resolver re-stat rather than a cache miss.
+        read = api.read_file_text(str(target))
+        assert read is not None  # cache primed with the root live
+        return read
+
+    def test_state_deletion_blocks_read_and_write_md(self, api, tmp_path):
+        root = _register(api, _seed_project(tmp_path / "proj"))
+        f = root / "notes.md"
+        f.write_text("x\n", encoding="utf-8")
+        read = self._prime(api, f)
+        (root / ".saipen" / "STATE.md").unlink()
+        assert api.read_file_text(str(f)) is None
+        assert (
+            api.write_file_text(str(f), "pwned\n", read["edit_version"], True)
+            is False
+        )
+        assert f.read_text(encoding="utf-8") == "x\n"  # bytes unchanged
+
+    def test_state_deletion_blocks_read_and_write_json(self, api, tmp_path):
+        root = _register(api, _seed_project(tmp_path / "proj"))
+        f = root / "data.json"
+        f.write_text("{}", encoding="utf-8")
+        read = self._prime(api, f)
+        (root / ".saipen" / "STATE.md").unlink()
+        assert api.read_file_text(str(f)) is None
+        assert (
+            api.write_file_text(str(f), '{"pwned":1}', read["edit_version"], True)
+            is False
+        )
+        assert f.read_text(encoding="utf-8") == "{}"
+
+    def test_live_root_still_reads_and_writes_after_peer_died(self, api, tmp_path):
+        dead = _seed_project(tmp_path / "dead")
+        live = _seed_project(tmp_path / "live")
+        api._config["pinned_roots"] = [str(dead), str(live)]
+        (dead / "notes.md").write_text("d\n", encoding="utf-8")
+        f = live / "notes.md"
+        f.write_text("l\n", encoding="utf-8")
+        self._prime(api, f)  # cache holds both roots
+        (dead / ".saipen" / "STATE.md").unlink()
+        # The still-live project keeps ordinary CAS read/write.
+        read = api.read_file_text(str(f))
+        assert read is not None
+        assert api.write_file_text(str(f), "l2\n", read["edit_version"], True)
+        assert f.read_text(encoding="utf-8") == "l2\n"
+
+    def test_restored_state_does_not_grant_access_from_unknown_root(
+        self, api, tmp_path
+    ):
+        # Restoring STATE.md must not grant access from a root the registry
+        # does not know -- authorization comes from the verified set, not from
+        # the filesystem alone. Deregister first, restore second: still denied
+        # until normal verification (a scan/pin) puts the root back.
+        root = _register(api, _seed_project(tmp_path / "proj"))
+        f = root / "notes.md"
+        f.write_text("s\n", encoding="utf-8")
+        self._prime(api, f)
+        state = root / ".saipen" / "STATE.md"
+        backup = state.read_bytes()
+        state.unlink()
+        api._config["pinned_roots"] = []  # the root is now unknown
+        state.write_bytes(backup)  # STATE restored on disk
+        assert api.read_file_text(str(f)) is None
+        assert api.write_file_text(str(f), "pwned\n", None, None) is False
+        assert f.read_text(encoding="utf-8") == "s\n"
+
+
+class TestNestedRootAuthority:
+    """T-840 / W2-002: with nested registered roots, the LONGEST containing
+    cached root owns the file. A dead child must not inherit access from a
+    live parent, and a dead ancestor must not shadow a deeper live project."""
+
+    @staticmethod
+    def _prime(api: Api, target: Path) -> dict:
+        read = api.read_file_text(str(target))
+        assert read is not None
+        return read
+
+    def test_dead_child_fails_closed_under_live_parent(self, api, tmp_path):
+        parent = _seed_project(tmp_path / "parent")
+        nested = _seed_project(parent / "nested")
+        api._config["pinned_roots"] = [str(parent), str(nested)]
+        f = nested / "notes.md"
+        f.write_text("x\n", encoding="utf-8")
+        read = self._prime(api, f)  # both roots cached, cache primed
+        (nested / ".saipen" / "STATE.md").unlink()
+        assert api.read_file_text(str(f)) is None
+        assert (
+            api.write_file_text(str(f), "pwned\n", read["edit_version"], True)
+            is False
+        )
+        assert f.read_text(encoding="utf-8") == "x\n"
+
+    def test_live_child_survives_dead_ancestor(self, api, tmp_path):
+        parent = _seed_project(tmp_path / "parent")
+        nested = _seed_project(parent / "nested")
+        api._config["pinned_roots"] = [str(parent), str(nested)]
+        f = nested / "notes.md"
+        f.write_text("x\n", encoding="utf-8")
+        read = self._prime(api, f)  # both roots cached, cache primed
+        (parent / ".saipen" / "STATE.md").unlink()
+        # resolver must pick the deepest live root, not the dead ancestor
+        boundary = api._resolve_verified_root_for_file(str(f))
+        assert boundary is not None and boundary.root == canonical(str(nested))
+        assert api.read_file_text(str(f)) is not None
+        assert api.write_file_text(str(f), "y\n", read["edit_version"], True) is True
+        assert f.read_text(encoding="utf-8") == "y\n"
+
+
+class TestProtocolFileLiveness:
+    """T-840 / W2-002: protocol-file read/write must also fail closed when the
+    owning project's STATE.md is gone, before the coordinator/CAS pipeline
+    ever plans a mutation."""
+
+    def test_protocol_read_write_refused_after_state_loss(self, api, tmp_path):
+        root = _register(api, _seed_project(tmp_path / "proj"))
+        board = root / ".saipen" / "BOARD.md"
+        read = api.read_file_text(str(board))
+        assert isinstance(read, dict) and read["edit_version"]
+        seeded = board.read_bytes()
+        (root / ".saipen" / "STATE.md").unlink()
+        assert api.read_file_text(str(board)) is None
+        assert (
+            api.write_file_text(
+                str(board), "pwned\n", read["edit_version"], True
+            )
+            is False
+        )
+        assert board.read_bytes() == seeded
+
+
+class TestBoundaryPerfWarmCache:
+    """T-840 / PERF-009: on a warm verified-roots cache, one file access must
+    stat .saipen/STATE.md only for the single authoritative matched root, not
+    for every cached root."""
+
+    def test_warm_access_stats_only_authoritative_root(self, api, tmp_path):
+        alpha = _seed_project(tmp_path / "alpha")
+        beta = _seed_project(tmp_path / "beta")
+        gamma = _seed_project(tmp_path / "gamma")
+        api._config["pinned_roots"] = [str(alpha), str(beta), str(gamma)]
+        f = beta / "notes.md"
+        f.write_text("x\n", encoding="utf-8")
+        assert api.read_file_text(str(f)) is not None  # cold: cache built
+
+        state_targets: list[Path] = []
+        real_is_file = Path.is_file
+
+        def spy_is_file(self):
+            p = Path(self)
+            if p.name.lower() == "state.md" and p.parent.name == ".saipen":
+                state_targets.append(p)
+            return real_is_file(self)
+
+        patch.object(Path, "is_file", spy_is_file).start()
+        try:
+            # warm read: verified_roots() returns cache, resolver stats 1 STATE
+            assert api.read_file_text(str(f)) is not None
+            assert len(state_targets) == 1, state_targets
+            assert state_targets[0] == Path(canonical(str(beta))) / ".saipen" / "STATE.md"
+            # second warm read: one more STATE stat, still exactly one per call
+            assert api.read_file_text(str(f)) is not None
+            assert len(state_targets) == 2
+        finally:
+            patch.object(Path, "is_file", spy_is_file).stop()

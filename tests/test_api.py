@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1201,6 +1202,54 @@ class TestIdlePolling:
         # refresh_known response must still have carried the changed set.
         result_before = api.refresh_known(revision)
         assert result_before["changed_roots"] == ["/mock/project"]
+
+    def test_changed_roots_preserve_insertion_order_and_deduplicate(self, idle_api):
+        api, _ = idle_api
+        api._refresh_changed_roots.clear()
+        with api._lock:
+            api._mark_registry_mutation_locked(["A", "B", "A", "C"])
+        assert api.get_changed_roots() == ["A", "B", "C"]
+        assert api.get_changed_roots() == []
+
+    def test_refresh_known_does_not_drain_changed_roots(self, idle_api):
+        api, _ = idle_api
+        api._refresh_changed_roots.clear()
+        with api._lock:
+            api._mark_registry_mutation_locked(["A"])
+        revision = api.get_status()["revision"]
+        api._full_refresh_pending = False
+        assert api.refresh_known(revision)["changed_roots"] == ["A"]
+        assert api.get_changed_roots() == ["A"]
+
+    def test_changed_roots_handles_12000_unique_inserts(self, idle_api):
+        api, _ = idle_api
+        api._refresh_changed_roots.clear()
+        roots = [f"root-{index}" for index in range(12_000)]
+        with api._lock:
+            api._mark_registry_mutation_locked(roots)
+        assert api.get_changed_roots() == roots
+
+    def test_concurrent_publish_and_drain_loses_no_changed_roots(self, idle_api):
+        api, _ = idle_api
+        api._refresh_changed_roots.clear()
+        roots = [f"root-{index}" for index in range(1_000)]
+        published = threading.Event()
+
+        def publish():
+            for root in roots:
+                with api._lock:
+                    api._mark_registry_mutation_locked([root])
+            published.set()
+
+        thread = threading.Thread(target=publish)
+        thread.start()
+        observed = set()
+        while not published.is_set() or thread.is_alive():
+            observed.update(api.get_changed_roots())
+        thread.join()
+        observed.update(api.get_changed_roots())
+
+        assert observed == set(roots)
 
 
 # ── T-590 / PERF-001: scan worktrees must pass through, not be re-walked ──
