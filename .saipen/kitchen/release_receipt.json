@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "operation": "release_receipt",
+  "op_id": "release-5e9ebe47def14ba8ae6ba2047cc41e28",
+  "version": "0.1.32",
+  "tag": "v0.1.32",
+  "ticket_id": "T-847",
+  "source_head": "7645fb7bfd28a13e78b3aeb169e622a4fd606fe0",
+  "source_tree_fingerprint": "git-delta-v1:75bfac0b126c7951352a33213b0bc83f8dd9394e9738e54f53b0cac35305258f",
+  "mode": "full",
+  "crew_epoch": "",
+  "cohort_id": "",
+  "project_lineage": "lineage-3d3c3d12923e46d5808f1545a72e3c6c",
+  "recorded_at": "2026-09-14T10:08:25Z"
+}
