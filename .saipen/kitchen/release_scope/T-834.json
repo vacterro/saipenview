@@ -1,0 +1,13 @@
+{
+  "op_id": "scope-9b9331f361cf4f2087e960d4dc6503a1",
+  "paths": {
+    "_fix_verify.py": null
+  },
+  "project_identity": "v:\\___vac\\__k\\__code\\_py\\_saipenview",
+  "project_lineage": "lineage-3d3c3d12923e46d5808f1545a72e3c6c",
+  "recorded_at": "2026-09-10T17:18:21Z",
+  "schema_version": 1,
+  "source_head": "4b6a8cf3e52bf99808408ffe73fe1ddc017cbb50",
+  "source_tree_fingerprint": "git-delta-v1:53ccaca4474da18e299af5676e99d10d8429264aeeee99da330e8e4fc3989d8c",
+  "ticket": "T-834"
+}

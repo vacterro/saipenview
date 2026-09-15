@@ -1,0 +1,14 @@
+{
+  "op_id": "scope-9efc26b81d334ac985450cde818ec6ac",
+  "paths": {
+    "saipenview/external_changes.py": "7503743cb722e4ad",
+    "tests/test_src003_audit_clauses.py": "076954e9175a3285"
+  },
+  "project_identity": "v:\\___vac\\__k\\__code\\_py\\_saipenview",
+  "project_lineage": "lineage-3d3c3d12923e46d5808f1545a72e3c6c",
+  "recorded_at": "2026-09-10T19:35:56Z",
+  "schema_version": 1,
+  "source_head": "f86c147ffd88bab570d885f41caf4906162221b2",
+  "source_tree_fingerprint": "git-delta-v1:85c4008b289aff67239ecef33775faa257e5e452e4ab4a1cf50c8a41ba64a29f",
+  "ticket": "T-836"
+}
