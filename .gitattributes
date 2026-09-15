@@ -21,6 +21,16 @@
 *.json  text
 *.txt   text
 
+# Authority receipts are immutable audit evidence pinned by content digests
+# (docs/saipen-persistence.md, "Authority receipts"); the engine verifies them
+# byte-exactly (verify_integrity / release_scope_matches). They must survive a
+# fresh clone byte-for-byte, so eol handling is DISABLED for them - text
+# normalization would rewrite LF to CRLF on a Windows clone and break every
+# digest pinned in the journal.
+.saipen/intake/**             -text
+.saipen/archive/source/**     -text
+.saipen/kitchen/release_scope/** -text
+
 # Binary -- never touch.
 *.png   binary
 *.ico   binary
