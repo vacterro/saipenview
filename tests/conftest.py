@@ -398,25 +398,6 @@ def canonical_home() -> Path | None:
     return None
 
 
-def conformance_home() -> Path:
-    """The SAIPEN home this repository's own memory is written against.
-
-    T-911: the project's ``.saipen/STATE.md`` is a DECLARATION of the protocol
-    generation its memory conforms to, and the conformance gate reads the
-    validator from exactly that path. Synthetic fixtures have to declare the
-    same home the gate will check, or they are built against a voice contract
-    the gate will refuse for a reason unrelated to what they are testing.
-    Falls back to ``canonical_home()`` for a checkout with no local memory.
-    """
-    state = Path(__file__).resolve().parent.parent / ".saipen" / "STATE.md"
-    if state.is_file():
-        for line in state.read_text(encoding="utf-8").splitlines():
-            if line.startswith("saipen_home:"):
-                home = Path(line.split(":", 1)[1].strip().strip("'\""))
-                if (home / "tools" / "validate.py").is_file():
-                    return home
-                break
-    return canonical_home() or Path(os.environ.get("SAIPEN_HOME", "."))
 
 
 def style_marker(home: Path | None) -> str:
