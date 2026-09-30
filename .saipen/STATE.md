@@ -1,7 +1,7 @@
 ---
 phase: DONE
 task: none
-next_action: "saipen continue"
+next_action: "WAIT: safety valve reached (0 waves / 26 tickets) -- run 'cc' to continue"
 blocker: none
 agent: buffy
 saipen_version: 7
