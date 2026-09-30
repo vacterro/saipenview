@@ -175,6 +175,12 @@ class SelfWriteRegistry:
         """
         key = (canonical_key(root), file_name)
         with self._lock:
+            # Every sibling accessor purges before reading, and so must this
+            # one: without it an entry that outlived its TTL still claims its
+            # bytes, and a slow watcher plus an external write of those exact
+            # bytes would be reported as ours. That is the swallow T-918 is
+            # about, reached through expiry instead of through the leak.
+            self._purge_locked(_time.monotonic())
             entries = self._entries.pop(key, None)
             if not entries:
                 return "external"

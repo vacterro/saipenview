@@ -328,6 +328,21 @@ def test_w2_002_duplicate_notifications_do_not_flip_self_to_external():
     assert sw.classify("C:\\p", "STATE.md", "fpA") == "external"
 
 
+def test_w2_002_expired_registration_claims_nothing():
+    """T-919: classify() must purge before reading, like every sibling
+    accessor. An entry that outlived its TTL still claims its bytes if it is
+    not purged, so a slow watcher followed by an external write of those
+    exact bytes is reported as ours -- the swallow T-918 is about, reached
+    through expiry instead of through the leak. A negative ttl forces expiry
+    with no sleep and no clock-resolution race."""
+    from saipenview.protocol_write import SelfWriteRegistry
+
+    sw = SelfWriteRegistry(ttl=-1.0)
+    sw.register("C:\\p", "STATE.md", "fpA")
+    # the FIRST call, with no earlier accessor to have purged the key
+    assert sw.classify("C:\\p", "STATE.md", "fpA") == "external"
+
+
 # --- W2-003: staged config persistence ---------------------------------------
 
 
