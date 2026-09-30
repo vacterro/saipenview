@@ -883,3 +883,6 @@
 - 30.09.26 19:57 [E-2229] [parent: E-2228] [T-874] [agent: buffy] [op: scope-281d74754b8c409fb3ac12355790389b] DEC: release scope recorded -- 68 path(s) bound to db27cddd67b6
 - 30.09.26 19:57 [E-2230] [parent: E-2229] [T-874] [agent: buffy] [op: transition-b633232ab9e947ffbca303eb821f753c] RUN: transition to SHIP -- release the verified tree as v0.1.33 from main; v0.1.32 keeps its own tag
 - 30.09.26 20:03 [E-2231] [parent: E-2230] [T-850] [agent: buffy] [op: resolve-external-ca024779d61d4f7ab26ae1644c63cb51] DEC: RESOLVE-EXTERNAL T-850 -- authority lineage-b512942bac884a8691f6c98afcd6ddb9; implementation T-1452@b1d7c22f; reason PROTOCOL_HOME_FIX_VERIFIED; local verification PASS (2 check(s)); receipt EX-000002; prior blocker sha256 none; RE-RESOLVED after installed generation move
+- 30.09.26 20:06 [E-2232] [parent: E-2231] [T-874] [agent: buffy] [op: scope-ef1a1c9bd78345b9b858cd4e8af1eb84] DEC: release scope recorded -- 68 path(s) bound to 5d8401b85389
+- 30.09.26 20:06 [E-2233] [parent: E-2232] [T-874] [agent: buffy] [op: finish-b46125d720264c03b58cdbad1945ea35] RUN: ship v0.1.33 -> content commit 189014b30c62 pushed
+- 30.09.26 20:06 [E-2234] [parent: E-2233] [T-874] [agent: buffy] [op: finish-b46125d720264c03b58cdbad1945ea35] DEC: ticket finished via SAIOPS -- completion (from SHIP)

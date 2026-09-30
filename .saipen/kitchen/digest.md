@@ -1,3 +1,3 @@
-﻿done: stopped via SAIOPS checkpoint
-remaining: T-877
+﻿done: ship v0.1.33 (content -> closure, tag v0.1.33)
+remaining: nothing
 awaiting: nothing
