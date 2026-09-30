@@ -380,15 +380,46 @@ _STALENESS_FILES = [
 ]
 
 
+def declared_home() -> Path | None:
+    """The SAIPEN home this repository's own memory is written against.
+
+    T-916: `.saipen/STATE.md` declares the protocol generation the project's
+    memory conforms to (`saipen_home`). A test that validates that memory
+    against any OTHER generation is answering a different question, and on a
+    machine carrying several installed generations it answers it wrongly
+    without saying so.
+
+    The existence check is load-bearing, not defensive. The declared path is
+    machine-specific and absolute, so on a clone that does not have it (CI)
+    this returns None and resolution falls through to SAIPEN_HOME exactly as
+    before. Without it, preferring the declaration would make every
+    engine-dependent test SKIP on CI rather than run.
+    """
+    state = Path(__file__).resolve().parent.parent / ".saipen" / "STATE.md"
+    if not state.is_file():
+        return None
+    for line in state.read_text(encoding="utf-8").splitlines():
+        if line.startswith("saipen_home:"):
+            home = Path(line.split(":", 1)[1].strip().strip("'\""))
+            return home if (home / "tools" / "validate.py").is_file() else None
+    return None
+
+
 def canonical_home() -> Path | None:
     """The canonical SAIPEN repo root the canonical writer bridge needs.
 
-    Resolution: SAIPEN_HOME env (CI clones it there), then the known local
-    checkout. None means the canonical engine is unreachable and the
-    canonical-writer tests must skip (the bridge fails closed in production,
-    so the tests skip only when the authority is genuinely absent)."""
+    Resolution: the home this project declares (T-916, so the engine under
+    test and the validator the conformance gate runs are the SAME generation
+    -- the split T-911 warned about), then SAIPEN_HOME env (CI clones it
+    there), then the known local checkout. None means the canonical engine
+    is unreachable and the canonical-writer tests must skip (the bridge fails
+    closed in production, so the tests skip only when the authority is
+    genuinely absent)."""
     import os
 
+    declared = declared_home()
+    if declared is not None and (declared / "tools" / "saipen_engine").is_dir():
+        return declared
     env = os.environ.get("SAIPEN_HOME")
     if env and (Path(env) / "tools" / "saipen_engine").is_dir():
         return Path(env)

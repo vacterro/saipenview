@@ -22,29 +22,34 @@ ROOT = Path(__file__).resolve().parent.parent
 def _validator() -> Path | None:
     """Locate the canonical tools/validate.py.
 
-    Resolution order: the SAIPEN_HOME env var (set by CI, which clones the
-    protocol repo), then this project's STATE.md saipen_home.
+    Resolution order: the home this project declares in .saipen/STATE.md
+    (T-916), then the SAIPEN_HOME env var (set by CI, which clones the
+    protocol repo and carries no local declared home).
 
-    T-911: the env var must come first, not because it is more authoritative
-    but because it is the SAME home the rest of the suite loads the canonical
-    engine from, and saio.py's multi-home guard (T-893) refuses a process that
-    mixes two. A validator from a different home than the engine under test
-    checks this project's memory against a contract the project never
-    declared.
+    T-911 wanted the validator and the engine under test to come from ONE
+    home, so saio.py's multi-home guard (T-893) cannot see a process mixing
+    two. Prefixing the env var delivered that only while the env and the
+    declaration happened to agree. T-913 moved the declaration to
+    .agents/skills/saipen and left a stale SAIPEN_HOME behind, and the split
+    then produced a FALSE RED: test_own_saipen_memory_is_conformant reported
+    style_contract and closure-provenance problems for a project that is
+    conformant under the generation it declares, and green under the one it
+    disclaims. Resolving both sides through the same declared-home helper
+    keeps T-911's single-generation invariant without letting a stale
+    environment variable outvote the declaration.
     """
+    from conftest import declared_home
+
+    declared = declared_home()
+    if declared is not None:
+        v = declared / "tools" / "validate.py"
+        if v.is_file():
+            return v
     env = Path(os.environ["SAIPEN_HOME"]) if os.environ.get("SAIPEN_HOME") else None
     if env:
         v = env / "tools" / "validate.py"
         if v.is_file():
             return v
-    state = ROOT / ".saipen" / "STATE.md"
-    if not state.is_file():
-        return None
-    for line in state.read_text(encoding="utf-8").splitlines():
-        if line.startswith("saipen_home:"):
-            home = line.split(":", 1)[1].strip().strip("'\"")
-            v = Path(home) / "tools" / "validate.py"
-            return v if v.is_file() else None
     return None
 
 

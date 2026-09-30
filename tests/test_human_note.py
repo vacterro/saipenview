@@ -47,7 +47,7 @@ def _register(api: Api, tmp_path):
 
 def _project(tmp_path, tail="---\n"):
     """A canonical-conformant project AT tmp_path (the api root)."""
-    from conftest import canonical_home
+    from conftest import canonical_home, style_marker
 
     saipen = tmp_path / ".saipen"
     saipen.mkdir(parents=True, exist_ok=True)
@@ -59,7 +59,12 @@ def _project(tmp_path, tail="---\n"):
         f"saipen_home: {home}\n"
         "mode: full\nexecution_intent: normal\n"
         "updated: 2026-08-01T00:00:00Z\nlast_event: 2\n"
-        "style_contract: ded-4ae736e4\n---\n",
+        # T-912/T-916: the marker belongs to the generation the home resolves
+        # to. A literal here makes this fixture non-conformant against every
+        # generation but one, and add_human_note refuses a non-conformant
+        # project -- so the note tests fail for a voice-contract reason that
+        # has nothing to do with notes.
+        f"style_contract: {style_marker(home)}\n---\n",
         encoding="utf-8",
     )
     (saipen / "BOARD.md").write_text(
