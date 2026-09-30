@@ -186,6 +186,10 @@ All PRs must pass `ruff check` (zero warnings) and `ruff format --check`.
 ### CSS (style.css)
 
 - **Theme system**: Use CSS custom properties (`var(--surface)`, `var(--textPrimary)`, etc.). Never hardcode colors.
+  The one sanctioned exception is the `#fff` at `.error-badge`, documented in the file itself: it is white text on
+  the `danger` fill, a filled chip rather than text on the surface, and the near-white is the signal. Every other
+  colour in `style.css` must be a `:root` token. `tests/test_css_token_governance.py` enforces that on every suite
+  run, so a hardcoded colour fails CI rather than waiting to be noticed.
 - **No transitions**: The global `* { transition: none !important; }` reset forbids CSS transitions and animations.
 - **Bevel system**: Use `.raised` class for 3D bevel borders (2px light top/left, 2px dark bottom/right).
 - **No transparency**: All backgrounds are solid — `rgba()` and `opacity` are forbidden per the vintage theme.
@@ -252,11 +256,53 @@ SAIPENVIEW has a pytest suite (`tests/test_*.py`, 400+ tests). Contributions tha
 
 ### Current Validation Approach
 
+- **`python -m pytest -q --timeout=90`** — the full suite. It takes about 3.5 minutes, most of it
+  inside `tests/test_core002_proven_death.py`, whose stub process sleeps 10 s per wait on purpose.
+  That slowness is the test working, not a hang.
 - **`py_compile`** — all `.py` files must compile without syntax errors.
 - **`node --check`** — `app.js` must parse without syntax errors.
 - **`ruff check`** — zero lint warnings.
 - **Import chain** — every module must import cleanly (dependencies permitting).
 - **Manual smoke test** — launch the app and verify the window renders without console errors.
+
+### Protocol Memory Conformance
+
+`tests/test_conformance_legacy.py::test_own_saipen_memory_is_conformant` validates this project's own
+`.saipen/` memory, so it can fail for reasons that have nothing to do with your change. One of them
+recurred enough to earn a step of its own.
+
+**Restore `next_action` after every SAIPEN write.** This project runs with `execution_intent: goal`,
+so once `goal_tickets` passes 20 the validator (RFC § 2.4) requires `.saipen/STATE.md` to carry:
+
+```
+next_action: "WAIT: safety valve reached (N waves / M tickets) -- run 'cc' to continue"
+```
+
+`saipen transition`, `saipen checkpoint` and `saipen ticket done` each rewrite `next_action` into a
+`PHASE <PHASE> T-###` form as a side effect of recording their event, and `saipen ship` writes
+`saipen continue`. None of them put the WAIT form back. So after the last protocol command of a
+session, restore it by hand and commit the result:
+
+```bash
+python -c "
+import re, pathlib
+p = pathlib.Path('.saipen/STATE.md'); s = p.read_text(encoding='utf-8')
+w = re.search(r'^goal_waves: (\d+)', s, re.M).group(1)
+t = re.search(r'^goal_tickets: (\d+)', s, re.M).group(1)
+p.write_text(re.sub(r'^next_action: .*$',
+  f'''next_action: \"WAIT: safety valve reached ({w} waves / {t} tickets) -- run 'cc' to continue\"''',
+  s, count=1, flags=re.M), encoding='utf-8')
+"
+python -m pytest tests/test_conformance_legacy.py -q --timeout=90
+```
+
+The engine is what overwrites the field, and this repository does not modify the engine, so the
+restore stays a project convention until that changes upstream. It has bitten twice in the v0.1.33
+cycle — once after the release closure, once after a ticket finish.
+
+**The rest of the output is warnings.** The same test reports `board-soft-cap`, `log-soft-cap`,
+`log-taxonomy` and `log-timestamp-inversion` findings against historical `.saipen/` files. Those are
+known and pre-existing; only the two `FAIL` lines above the summary are gate failures.
 
 ### Test Guidelines (for new contributions)
 

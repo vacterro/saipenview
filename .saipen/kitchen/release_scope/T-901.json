@@ -1,0 +1,14 @@
+{
+  "op_id": "scope-ea811b93e3e644859f2a3ed8fba6adfc",
+  "paths": {
+    ".saipen/evidence/T-901-custom-cmd-retoken-20260930/verify_no_ungoverned_hex.py": "3d419762a429e379f16a39a5fdf061f7ff23cc500f0173faa48c99a466b6978a",
+    "saipenview/ui/static/style.css": "21c112759dd167e1fd36f165e772c2581eb199bcfa28b472e5fe5c96c622989e"
+  },
+  "project_identity": "v:\\___vac\\__k\\__code\\_py\\_saipenview",
+  "project_lineage": "lineage-3d3c3d12923e46d5808f1545a72e3c6c",
+  "recorded_at": "2026-09-30T20:50:41Z",
+  "schema_version": 2,
+  "source_head": "1c27f2660b5dab61b379eabb805a398f770f8801",
+  "source_tree_fingerprint": "git-delta-v1:849ea7440489ba9d18868a74e63951cd87c96b5abc5a1b9abf866d9d18ac37f1",
+  "ticket": "T-901"
+}

@@ -1,0 +1,13 @@
+{
+  "op_id": "scope-04a297a9eae64c21aff74b7653359b75",
+  "paths": {
+    ".saipen/evidence/T-806-808-stale-package-disposition-20260930/verify_stale_package_findings.py": "355ebc52732efd251bdd6c6fe37ad832b04f4db266e029b128337f2841ca5c48"
+  },
+  "project_identity": "v:\\___vac\\__k\\__code\\_py\\_saipenview",
+  "project_lineage": "lineage-3d3c3d12923e46d5808f1545a72e3c6c",
+  "recorded_at": "2026-09-30T20:52:52Z",
+  "schema_version": 2,
+  "source_head": "1c27f2660b5dab61b379eabb805a398f770f8801",
+  "source_tree_fingerprint": "git-delta-v1:849ea7440489ba9d18868a74e63951cd87c96b5abc5a1b9abf866d9d18ac37f1",
+  "ticket": "T-806"
+}

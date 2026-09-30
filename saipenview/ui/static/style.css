@@ -635,7 +635,7 @@ body.collapsed .detail-title { font-size: 11px; padding-right: 20px; }
 
 /* Custom command buttons (user-defined quick actions) */
 .custom-cmd-btn { font-size: 9px; padding: 1px 4px; min-height: 16px; color: var(--goldStar); }
-.custom-cmd-btn:hover { background: #4a3a10; color: var(--textPrimary); }
+.custom-cmd-btn:hover { background: var(--surfaceSoft); color: var(--textPrimary); }
 
 /* Quick-search results panel */
 .search-results-header { font-size: 10px; color: var(--textMuted); padding: 4px 6px; border-bottom: 1px solid var(--borderMuted); font-style: italic; }
