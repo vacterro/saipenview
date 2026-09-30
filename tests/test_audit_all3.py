@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import state_updated
 
 from saipenview.scanner import ScanOutcome
 
@@ -522,14 +523,19 @@ def test_w2_003_canonical_paths_only_persisted(monkeypatch, tmp_path):
 
 
 def test_w2_004_saio_engine_raises_saio_unavailable_for_distinct_home(monkeypatch):
-    """W2-004: saio.engine raises SaioUnavailable for multi-home refusal."""
+    """W2-004: saio.engine raises SaioUnavailable for multi-home refusal.
+
+    T-893 narrowed WHICH cache slots count as contamination: a home holding
+    only a stateless freshness module is not the process-wide writer authority,
+    and counting it as one re-broke IMP-003 through the engine() path. A slot
+    holding a COMPLETE engine module set still refuses a distinct home."""
     from saipenview import saio
 
     saio._ENGINE_CACHE.clear()
-    # Pre-seed with a different home so the multi-home guard is reached
-    # before resolve_home is called for the request root.
+    # Pre-seed a COMPLETE engine slot for a different home so the multi-home
+    # guard is reached before resolve_home is called for the request root.
     from pathlib import Path
-    saio._ENGINE_CACHE["v:\\fake\\home\\a"] = {"placeholder": True}
+    saio._ENGINE_CACHE["v:\\fake\\home\\a"] = {"operations": object()}
     monkeypatch.setattr(saio, "resolve_home", lambda root: Path("v:\\fake\\home\\b"))
     try:
         try:
@@ -586,7 +592,9 @@ def _round2_fixture(tmp_path: Path) -> Path:
         "saipen_version: 7\n"
         "mode: full\n"
         "transition_from: SHIP\n"
-        "updated: 2026-08-30T00:00:00Z\n"
+        "updated: "
+        + state_updated()
+        + "\n"
         "last_event: 1\n"
         "---\n",
         encoding="utf-8",

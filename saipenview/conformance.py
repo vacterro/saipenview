@@ -624,7 +624,29 @@ _BOARD_CACHE: dict[
     Path,
     tuple[tuple[int, int, int, int, int], dict[str, BoardTicket], list[str], list, str],
 ] = {}
-_BOARD_CACHE_LOCK = threading.RLock()
+# PERF-002 (SRC-018 R012): the global lock now protects ONLY the cache-entry
+# mapping and the per-path lock map -- never the filesystem/read/parse work.
+# It is a plain short-lived Lock, taken for microseconds around dict access.
+_BOARD_CACHE_MAP_LOCK = threading.Lock()
+# One synchronization primitive PER board path so same-root checks stay
+# serialized (and byte-equivalent) while unrelated roots proceed independently.
+# Retained for the process lifetime (one small Lock per distinct project path):
+# never swapped or removed while it might be held, so same-root serialization
+# can never split across two lock objects.
+_BOARD_PATH_LOCKS: dict[Path, threading.Lock] = {}
+# PERF-002: bumped whenever a path's cache entry is evicted, so an in-flight
+# parse that started before the eviction cannot resurrect the stale entry.
+_BOARD_CACHE_GEN: dict[Path, int] = {}
+
+
+def _board_path_lock(path: Path) -> threading.Lock:
+    """Return the stable per-path parser lock (created once, never retired)."""
+    with _BOARD_CACHE_MAP_LOCK:
+        lock = _BOARD_PATH_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _BOARD_PATH_LOCKS[path] = lock
+        return lock
 
 
 def _board_signature(path: Path) -> tuple[int, int, int, int, int]:
@@ -649,9 +671,16 @@ def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
         )
         return {}
 
-    with _BOARD_CACHE_LOCK:
+    # PERF-002 (SRC-018 R012): the expensive stat/read/parse runs under the
+    # PER-PATH lock, so a slow BOARD read for root A never blocks root B. The
+    # short global map lock is taken only to look up / store the cache entry,
+    # and is NEVER held while waiting for the per-path lock or doing I/O.
+    path_lock = _board_path_lock(board_path)
+    with path_lock:
         sig = _board_signature(board_path)
-        cached = _BOARD_CACHE.get(board_path)
+        with _BOARD_CACHE_MAP_LOCK:
+            cached = _BOARD_CACHE.get(board_path)
+            gen_at_read = _BOARD_CACHE_GEN.get(board_path, 0)
         if cached is not None and cached[0] == sig:
             tickets, headings, problems, enc = (
                 cached[1],
@@ -662,7 +691,12 @@ def check_board(root: Path, c: _Collector) -> dict[str, BoardTicket]:
         else:
             enc = encoding_of(board_path)
             tickets, headings, problems = parse_board_strict(read_doc(board_path))
-            _BOARD_CACHE[board_path] = (sig, tickets, headings, problems, enc)
+            with _BOARD_CACHE_MAP_LOCK:
+                # PERF-002: only publish if this path was NOT evicted while we
+                # parsed. An eviction bumps the generation; a stale parse that
+                # started before it must not resurrect the evicted entry.
+                if _BOARD_CACHE_GEN.get(board_path, 0) == gen_at_read:
+                    _BOARD_CACHE[board_path] = (sig, tickets, headings, problems, enc)
 
     if enc != "utf-8":
         c.fail(
@@ -1151,7 +1185,28 @@ class _ProjectLogCache:
 
 
 _LOG_CACHE: dict[Path, _ProjectLogCache] = {}
-_LOG_CACHE_LOCK = threading.RLock()
+# PERF-002 (SRC-018 R012): the global lock protects ONLY the _LOG_CACHE
+# mapping and the per-root lock/generation maps -- never the read/parse/fold
+# work, which runs under the per-root lock so unrelated roots never serialize.
+_LOG_CACHE_MAP_LOCK = threading.Lock()
+# One RLock PER root (RLock because folding helpers may re-enter for the same
+# root). Retained for the process lifetime; never swapped or removed while it
+# could be held, so same-root LOG folding stays serialized on ONE object.
+_LOG_ROOT_LOCKS: dict[Path, threading.RLock] = {}
+# PERF-002: per-root generation. Bumped on eviction so an in-flight parse that
+# began before the eviction cannot resurrect the evicted aggregate.
+_LOG_CACHE_GEN: dict[Path, int] = {}
+
+
+def _log_root_lock(root: Path) -> threading.RLock:
+    """Return the stable per-root LOG parser lock (created once, never retired)."""
+    with _LOG_CACHE_MAP_LOCK:
+        lock = _LOG_ROOT_LOCKS.get(root)
+        if lock is None:
+            lock = threading.RLock()
+            _LOG_ROOT_LOCKS[root] = lock
+        return lock
+
 
 # PERF-001: how many parsed _LogRecord objects stay resident per file. Every
 # record beyond this window was already folded into the aggregate, so keeping
@@ -1172,19 +1227,29 @@ def evict_project_caches(roots: list[str] | None = None) -> None:
     from saipenview.parser import _evict_staleness_cache
 
     if roots is None:
-        with _LOG_CACHE_LOCK:
+        with _LOG_CACHE_MAP_LOCK:
             _LOG_CACHE.clear()
-        _BOARD_CACHE.clear()
+            # PERF-002: bump every known generation so any in-flight parse
+            # cannot resurrect a just-evicted aggregate.
+            for key in list(_LOG_CACHE_GEN):
+                _LOG_CACHE_GEN[key] = _LOG_CACHE_GEN.get(key, 0) + 1
+        with _BOARD_CACHE_MAP_LOCK:
+            _BOARD_CACHE.clear()
+            for key in list(_BOARD_CACHE_GEN):
+                _BOARD_CACHE_GEN[key] = _BOARD_CACHE_GEN.get(key, 0) + 1
         _evict_staleness_cache()
         return
     root_set = {str(Path(r)).rstrip("\\/") for r in roots}
-    with _LOG_CACHE_LOCK:
+    with _LOG_CACHE_MAP_LOCK:
         for key in list(_LOG_CACHE):
             if str(key).rstrip("\\/") in root_set:
                 _LOG_CACHE.pop(key, None)
-    for key in list(_BOARD_CACHE):
-        if str(key).rstrip("\\/") in root_set:
-            _BOARD_CACHE.pop(key, None)
+                _LOG_CACHE_GEN[key] = _LOG_CACHE_GEN.get(key, 0) + 1
+    with _BOARD_CACHE_MAP_LOCK:
+        for key in list(_BOARD_CACHE):
+            if str(key).rstrip("\\/") in root_set:
+                _BOARD_CACHE.pop(key, None)
+                _BOARD_CACHE_GEN[key] = _BOARD_CACHE_GEN.get(key, 0) + 1
     _evict_staleness_cache(roots)
 
 
@@ -1486,8 +1551,17 @@ def _fold_log_records(
 
 
 def _log_aggregate(root: Path, files: tuple[Path, ...], active: Path | None) -> _LogAggregate:
-    with _LOG_CACHE_LOCK:
-        cache = _LOG_CACHE.setdefault(root, _ProjectLogCache())
+    # PERF-002 (SRC-018 R012): expensive read/parse/fold runs under the
+    # PER-ROOT lock so a slow LOG load for root A never blocks root B. The
+    # short global map lock is used only for the cache-entry lookup/creation,
+    # and is NEVER held while waiting for the per-root lock or doing I/O. The
+    # per-root generation guard prevents an in-flight parse that began before
+    # an eviction from resurrecting the evicted aggregate.
+    root_lock = _log_root_lock(root)
+    with root_lock:
+        with _LOG_CACHE_MAP_LOCK:
+            cache = _LOG_CACHE.setdefault(root, _ProjectLogCache())
+            gen_at_start = _LOG_CACHE_GEN.get(root, 0)
         # PERF-001: incremental aggregate. When only clean newline-terminated
         # appends occurred (no provisional partial-record that was already
         # folded), fold only the newly parsed records into the existing
@@ -1564,7 +1638,15 @@ def _log_aggregate(root: Path, files: tuple[Path, ...], active: Path | None) -> 
         # replacement semantics.
         for path in files:
             _trim_log_records(cache.files[path])
-        return cache.aggregate
+        result = cache.aggregate
+        # PERF-002 (SRC-018 R012): if this root was evicted while we parsed
+        # (generation moved), do NOT leave the freshly-built cache resurrecting
+        # the evicted entry. Return the computed aggregate to THIS caller, but
+        # drop the stale cache object so the next call rebuilds from disk.
+        with _LOG_CACHE_MAP_LOCK:
+            if _LOG_CACHE_GEN.get(root, 0) != gen_at_start:
+                _LOG_CACHE.pop(root, None)
+        return result
 
 
 def check_log(root: Path, c: _Collector, state: dict[str, str] | None = None) -> None:

@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-022:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Execute SAIPEN SCOUT for active T-877; verify audit/5.md against current HEAD, reconcile T-876/T-875, map CORE-001..004 W2-001..006 PERF-001..005, record canonical evidence, checkpoint to BUILD only when complete"
+    }
+  },
+  "derived_at": "2026-09-23T19:53:23Z",
+  "derived_from": "SRC-022",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "cf7fbc8ed529c85bc8857e83d6066ca39ba9799a2de17e3f3ac666e152a408ff"
+}

@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-008:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Report SAIPEN guard refusal audit (PLUGIN_RESTART_REQUIRED then NO_ACTIVE_WORK) to SAIPEN HOME with reproduction steps, save report file to SAIPEN PROTOCOLIST for analysis"
+    }
+  },
+  "derived_at": "2026-09-18T10:57:31Z",
+  "derived_from": "SRC-008",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "692fa610638b14752ff1841cd297c5a91382fcd771a1ca53e745137ac274187b"
+}

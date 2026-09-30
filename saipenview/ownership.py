@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import weakref
 from pathlib import Path
 
 from saipenview.paths import canonical_key
@@ -34,7 +35,24 @@ class AgentOwnershipError(Exception):
 
 class RootOwnership:
     def __init__(self) -> None:
-        self._locks: dict[str, threading.RLock] = {}
+        # PERF-005 (SRC-018 R015): idle per-root locks are retained WEAKLY, so
+        # touching thousands of transient roots cannot grow the registry
+        # forever. The value stays alive exactly as long as SOME caller holds
+        # it (a live reference on a thread's frame/with-expression), which is
+        # precisely the definition of "held or awaited":
+        #   * a lock being held or blocked-on is referenced by its holder, so
+        #     the weak entry can never die while the lock is in use -- no
+        #     concurrent caller can be handed a different object;
+        #   * once every holder releases and drops the reference, the entry is
+        #     reclaimed and the next caller mints a fresh lock -- but at that
+        #     instant nobody holds or awaits the old one, so same-root
+        #     serialization is never split across two objects.
+        # The _locks_guard makes the get-or-create decision atomic, so two
+        # concurrent lock() calls for one root can never mint two objects
+        # while both are live.
+        self._locks: weakref.WeakValueDictionary[str, threading.RLock] = (
+            weakref.WeakValueDictionary()
+        )
         self._locks_guard = threading.Lock()
         # Roots whose agent launch is in-flight (reservation held) or whose
         # process is live. Set by reserve_agent, cleared at finalize.
@@ -46,13 +64,25 @@ class RootOwnership:
     def lock(self, root: Path) -> threading.RLock:
         """The one per-root lock every ownership decision and every mutation
         holds. The coordinator reuses exactly this lock, so an app mutation
-        and a launch can never interleave their check-then-act."""
+        and a launch can never interleave their check-then-act.
+
+        PERF-005 (SRC-018 R015): the returned object is kept alive by the
+        CALLER's reference for exactly as long as it is held or awaited, so
+        concurrent same-root callers always receive the same live object while
+        an idle lock is reclaimable by GC. The guard serializes get-or-create:
+        two concurrent callers can never mint two live locks for one root.
+        """
         key = canonical_key(root)
         with self._locks_guard:
             lock = self._locks.get(key)
             if lock is None:
-                lock = self._locks[key] = threading.RLock()
-            return lock
+                lock = threading.RLock()
+                self._locks[key] = lock
+            # Keep a strong reference until the caller receives the object so
+            # the weak entry cannot die between the get-or-create and the
+            # return (the caller's frame then holds it).
+            ref = lock
+        return ref
 
     def agent_owns(self, root: Path) -> bool:
         """True when a Core agent has the root reserved (launching) or live.

@@ -2,10 +2,17 @@
 
 ## Decision
 
-This project's `.saipen/` is **intentionally local-only**. It is not tracked
-in git, and it will not be tracked in git. This is a written decision, not a
-silent `.gitignore` accident — the two paragraphs below say why, and the
-handoff that replaces git is specified at the bottom.
+This project's `.saipen/` is **machine-local by written contract**, with two
+named exceptions that travel via git. It is a written decision, not a silent
+`.gitignore` accident — the paragraphs below say why, and the handoff that
+replaces git is specified at the bottom.
+
+The exceptions are the **audit receipts** and the **closure travel** of
+canonical memory, both added by the T-832/T-833 release amendment and both
+committed by the release executor. Before that amendment the whole of `.saipen/`
+was local-only; the two tables in [Authority receipts](#authority-receipts-amendment-t-832)
+below are the current, authoritative answer, and `tests/test_persistence_contract.py`
+pins exactly them.
 
 ## Why local-only
 
@@ -26,8 +33,8 @@ definition. Local-only is the honest state.
 
 | Kind | Location | Contents | Travels |
 |------|----------|----------|---------|
-| Canonical memory | `.saipen/BOARD.md`, `.saipen/LOG.md`, `.saipen/KNOWLEDGE/`, `.saipen/kitchen/digest.md` | work surface, audit trail, durable architecture notes, last-session digest | via `tools/export_source.py` only |
-| Local / ephemeral | `.saipen/STATE.md`, `.saipen/kitchen/` scratch, `.saipen/logs/`, `.saipen/recovery/`, `.saipen/saitranslate/`, `.saipen/extensions/subs/*/` (instances), `saipenview/_data/` | machine paths, session state, locks, caches, generated translations, sub-instance state | never |
+| Canonical memory | `.saipen/BOARD.md`, `.saipen/LOG.md`, `.saipen/KNOWLEDGE/`, `.saipen/kitchen/digest.md` | work surface, audit trail, durable architecture notes, last-session digest | `KNOWLEDGE/`/`digest.md` via `tools/export_source.py`; `BOARD.md`/`LOG.md` additionally via the closure commit (T-832) |
+| Local / ephemeral | `.saipen/STATE.md` (outside the closure commit), `.saipen/kitchen/` scratch, `.saipen/recovery/`, `.saipen/saitranslate/`, `.saipen/extensions/subs/*/` (instances), `saipenview/_data/` | machine paths, session state, locks, caches, generated translations, sub-instance state | never |
 
 The **canonical memory** is what a successor needs to continue: the board,
 the log, the knowledge. The **local** half is what must stay behind: anything
@@ -83,16 +90,27 @@ that is the "not initialized" state, and `saipen set` is its fix.
 ## Verification (run at release)
 
 ```text
-git check-ignore .saipen/BOARD.md        # must print the path (local-only contract)
-git check-ignore .saipen/STATE.md        # must print the path
-git ls-files | grep -i "V:\|C:\\"        # must be empty (no local paths tracked)
-python tools/export_source.py            # PASS: archive + manifest
+# The closure-travel exceptions are NOT ignored (they ride the closure commit)
+git check-ignore --no-index .saipen/BOARD.md   # must print nothing
+git check-ignore --no-index .saipen/STATE.md   # must print nothing
+# Machine state stays local, or it would carry this machine's paths into git
+git check-ignore --no-index .saipen/recovery/x.json      # must print the path
+git check-ignore --no-index .saipen/saitranslate/x.json  # must print the path
+python tools/export_source.py                  # PASS: archive + manifest
 ```
 
-## Why git check-ignore says ignored
+`tests/test_persistence_contract.py` runs the same commands, so the document and
+the suite can never drift into asserting two different contracts.
 
-`git check-ignore .saipen/BOARD.md` printing the path is the contract working:
-`.saipen/` is ignored **by decision**, and the handoff above is how the memory
-travels instead. If the ignore were ever removed, the machine paths would
-enter the repository — that is the failure mode this document exists to
-prevent.
+## Why git check-ignore says what it says
+
+For a machine-local path (`recovery/`, `saitranslate/`, `KNOWLEDGE/`, sub-instance
+state), `git check-ignore` printing the path **is** the contract working: those
+never enter the repository and the handoff above is how the memory travels
+instead.
+
+For the closure-travel surfaces (`.saipen/STATE.md`, `BOARD.md`, `LOG.md`,
+`logs/`) `check-ignore` printing **nothing** is the contract working: they are
+negated in `.gitignore` so the release executor's closure commit can carry them.
+If that negation were ever removed, a released tag would lose the E-### history
+it needs to run recovery from a fresh clone.

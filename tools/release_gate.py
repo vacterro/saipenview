@@ -11,6 +11,15 @@ four places that can disagree. This tool checks, in this order:
    re-push), if the version is behind the newest tag it is a regression, and
    a version equal to the newest tag is an attempt to re-ship an old release.
 
+Canonical CHANGELOG grammar (T-849): a RELEASED entry is
+`## <semver> - <date>` (e.g. `## 0.1.32 - 2026-09-14`). This module owns the
+grammar; tests import the parsing boundary from here instead of carrying a
+second regex that can drift (the v0.1.30 heading migration updated the gate
+but left the tests on the retired bracketed Keep-a-Changelog form, which is
+exactly the drift this boundary now prevents). `## [Unreleased]` is not a
+released version and never classifies as the head: the head is the FIRST
+line matching the released grammar.
+
 Tag evidence is REQUIRED in release mode (the default): a release cannot be
 proven not-behind with missing evidence, so a git failure and a valid repo
 with no tags are both FAILs -- reported differently. Dev/sandbox runs pass
@@ -27,7 +36,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CHANGELOG_HEAD_RE = re.compile(r"^## (\d+\.\d+\.\d+)")
+
+# --- Shared release-identity parsing boundary (tests import these) --------
+# CHANGELOG_HEAD_RE matches ONLY the canonical released heading grammar
+# `## <semver> - <date>`: the trailing `(?:\s|$)` keeps a bare `## 1.2.3x`
+# from matching, and bracketed/prose headings (`## [1.2.3]`, `## [Unreleased]`,
+# `## Version 1.2.3`) intentionally do not match.
+CHANGELOG_HEAD_RE = re.compile(r"^## (\d+\.\d+\.\d+)(?:\s|$)")
 VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']")
 
 
@@ -41,8 +56,21 @@ def _version(root: Path) -> str:
 
 
 def _changelog_head(root: Path) -> str | None:
-    text = root / "CHANGELOG.md"
-    for line in text.read_text(encoding="utf-8").splitlines():
+    """First released heading per the canonical grammar, else None."""
+    text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    return changelog_head_version(text)
+
+
+def changelog_head_version(text: str) -> str | None:
+    """Parse the FIRST canonical released heading from raw CHANGELOG text.
+
+    This is the shared parsing boundary: the gate consumes it and the test
+    suite imports it (T-849) so the test contract cannot carry a second,
+    drifting grammar. A line matches only when it is exactly the released
+    form `## <semver>` followed by whitespace or end-of-line -- so the real
+    CHANGELOG's `## [Unreleased]` section (and any bracketed or prose
+    heading) is skipped, never misclassified as the released head."""
+    for line in text.splitlines():
         m = CHANGELOG_HEAD_RE.match(line.strip())
         if m:
             return m.group(1)

@@ -216,12 +216,13 @@ class WriteCoordinator:
 
     @staticmethod
     def is_protocol_file(path: Path) -> bool:
-        """True when *path* lives under some `<root>/.saipen/` directory."""
-        try:
-            WriteCoordinator.root_for(path)
-            return True
-        except ValueError:
-            return False
+        """True when *path* is lexically under a `.saipen/` directory.
+
+        Detection must not resolve an owning root: Api's verified file
+        boundary owns that decision, and ``root_for`` is reserved for a
+        physical-root consistency check after protocol-path detection.
+        """
+        return any(part.name == ".saipen" for part in Path(path).parents)
 
     @staticmethod
     def fingerprint(path: Path) -> str:
@@ -246,6 +247,39 @@ class WriteCoordinator:
 
     def _end_tx(self, root: Path) -> None:
         self.ownership.end_app_tx(root)
+
+    def delegate(self, root: Path, op: Callable[[], dict]) -> dict:
+        """Run a delegated canonical SAIO operation under the authoritative
+        app transaction (CORE-002).
+
+        The per-root RLock alone serializes threads; it does NOT reject an
+        already-reserved/running agent, so a delegated op that took only
+        ``locked()`` could become writer #2 after the API pre-guard passed.
+        This primitive is the whole fix:
+
+        1. acquires the per-root lock,
+        2. begins the authoritative app transaction (refuses an agent-owned
+           root with AgentOwnershipError),
+        3. invokes the delegated canonical operation,
+        4. finalizes its ``changed_files`` through SelfWriteRegistry,
+        5. always ends the transaction.
+
+        ``op`` returns the canonical result contract; on success its
+        ``changed_files`` are registered as self-writes exactly like a
+        coordinator-applied plan.
+        """
+        root = Path(root)
+        with self._lock(root):
+            self._begin_tx(root)
+            try:
+                result = op()
+                if result.get("ok"):
+                    self.finalize_self_writes(
+                        root, result.get("changed_files", [])
+                    )
+                return result
+            finally:
+                self._end_tx(root)
 
     def mutate(
         self,
@@ -488,11 +522,25 @@ class WriteCoordinator:
             }
 
     def recover(self, root: Path, op_id: str | None = None) -> dict:
-        """Roll-forward recovery of pending canonical operations."""
+        """Roll-forward recovery of pending canonical operations.
+
+        CORE-002: recovery is a canonical mutation and runs under the SAME
+        authoritative ownership transaction as every other delegated op, so it
+        refuses while an agent owns the root; and a successful recovery's
+        ``changed_files`` are attributed through SelfWriteRegistry instead of
+        being misclassified as external watcher activity."""
         root = Path(root)
         try:
-            with self._lock(root):
-                return saio.recover(root, op_id)
+            return self.delegate(root, lambda: saio.recover(root, op_id))
+        except AgentOwnershipError as exc:
+            return {
+                "ok": False,
+                "code": "WRITER_BUSY",
+                "message": str(exc),
+                "changed_files": [],
+                "retryable": False,
+                "recovery_required": False,
+            }
         except saio.SaioUnavailable as exc:
             return {
                 "ok": False,

@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-019:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-876 closed with verification evidence in LOG: verify -> PASS [target: T-876] conf: high -- inherited verification of the requested audit/5.md execution: .venv\\Scripts\\python.exe -m pytest -q over the 10 SRC-018 requirement suites (test_w2_002_launch_admission_lock, test_t839_launch_stop_barrier, test_w2_003_natural_death_vs_late_kill, test_perf001_scanner_pool_safety, test_perf002_conformance_cache_sync, test_perf003_presentation_canon, test_",
+      "text": "Execute audit/5.md under SRC-018 through T-875",
+      "verification": "the Work this request created reached its own verification gate; see the T-876 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-876"
+    }
+  },
+  "schema_version": 1
+}

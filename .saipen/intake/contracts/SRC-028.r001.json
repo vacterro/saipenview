@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-028:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Recovery: resume T-878 closure from live state; diagnose stale snapshot if advanced"
+    }
+  },
+  "derived_at": "2026-09-25T15:19:15Z",
+  "derived_from": "SRC-028",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "36ac2f95e46f1a6170ed6920ad92f1a7e91fcfba217708c3de0864d25fc1136e"
+}

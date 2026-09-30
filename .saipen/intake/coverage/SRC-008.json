@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-008:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-851 closed with verification evidence in LOG: verify -> PASS [target: T-851] conf: high -- Get-FileHash proved both artifacts on disk: HOME evidence REPORT.md 12482B sha256 56fbb093319bb0d03501d1a50dad98e5a4e0e965ab97743f927fc33ce09c3bbd and SAI-DEFECT packet 6784B sha256 dcf5d0e4b1af9252b76a51e5cfb38eee23b009f377d9fd2ae8c739803e446f40 at LOCALAPPDATA protocol_incidents inbox; report contains 5 sections with exact reproduction matrix and root",
+      "text": "Report SAIPEN guard refusal audit (PLUGIN_RESTART_REQUIRED then NO_ACTIVE_WORK) to SAIPEN HOME with reproduction steps, save report file to SAIPEN PROTOCOLIST for analysis",
+      "verification": "the Work this request created reached its own verification gate; see the T-851 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-851"
+    }
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-025:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Read-only semantic audit of current working-tree diff versus HEAD 654916e35a4c9c57bd7f59045b57ca07a243e1b2, limited to tests/ and tools/release_gate.py. Determine whether changed/new tests accurately exercise production behavior, whether assertions can pass falsely, and whether release gate logic has concrete regressions. No edits. No broad test reruns. Report actionable findings with severity, file:line, failure scenario; distinguish production bug from test gap. Ignore pre-existing issues."
+    }
+  },
+  "derived_at": "2026-09-26T02:44:02Z",
+  "derived_from": "SRC-025",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "790636e1c112932f9f1194ee924dc0ca62eee239f8d0598194d9025e7a1d203d"
+}

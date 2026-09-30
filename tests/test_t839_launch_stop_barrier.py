@@ -14,12 +14,13 @@ from __future__ import annotations
 import sys
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from saipenview.engines.base import AgentEngine
 from saipenview.ownership import RootOwnership
-from saipenview.runtime import ProcessManager
+from saipenview.runtime import ProcessManager, _LaunchToken
 from saipenview.sessions import SessionStore
 
 
@@ -138,21 +139,16 @@ class TestPrespawnLaunchVsStop:
 
 
 class TestRegisteredLaunchWinsBeforeStop:
-    """TEST B: spawn/register that commits before the barrier is killed."""
+    """TEST B: a spawn claimed before stop is registered, then killed."""
 
     def test_shutdown_observes_and_kills_committed_process(self, tmp_path):
         pm = _make_manager(tmp_path)
         root = str(tmp_path / "proj")
         Path(root).mkdir(parents=True, exist_ok=True)
 
-        # Deterministic pause at the lifecycle commit boundary: block inside
-        # the guarded commit section AFTER admission recheck but BEFORE
-        # _processes registration. We can't inject into the middle of
-        # ProcessManager code, so we simulate the ordering contract directly:
-        # a normal (unblocked) launch completes its commit; stop_all that
-        # begins after the commit is guaranteed to see the process because
-        # the commit holds _admission_lock -- stop_all's admission-close
-        # cannot pass until the commit released it.
+        # Hold the child after Popen succeeds but before launch creates its
+        # AgentProcess/session entry. stop_all must close admission without
+        # the spawn lock, then wait for this token to become accounted.
         release = threading.Event()
         engine = _BlockingEngine(
             release, script="import time\nwhile True:\n    time.sleep(0.2)\n"
@@ -160,35 +156,70 @@ class TestRegisteredLaunchWinsBeforeStop:
         release.set()  # don't block build_command; pause at the barrier below
 
         committed = threading.Event()
+        release_registration = threading.Event()
+        stop_waiting = threading.Event()
         result = {}
         real_popen = sys.modules["subprocess"].Popen
-
-        from unittest.mock import patch
+        real_wait = _LaunchToken.wait
 
         def commit_boundary_popen(*a, **kw):
-            # Popen runs INSIDE the guarded commit section while
-            # _admission_lock is held: this is the deterministic pause point.
-            # A stop_all that started meanwhile is parked on the barrier and
-            # CANNOT miss this process.
             p = real_popen(*a, **kw)
             committed.set()
+            assert release_registration.wait(timeout=10)
             return p
+
+        def observe_token_wait(token, timeout=None):
+            stop_waiting.set()
+            return real_wait(token, timeout)
 
         def do_launch():
             result["value"] = pm.launch(engine, root, "go")
 
-        with patch(
-            "saipenview.runtime.subprocess.Popen", side_effect=commit_boundary_popen
+        with (
+            patch(
+                "saipenview.runtime.subprocess.Popen",
+                side_effect=commit_boundary_popen,
+            ),
+            patch.object(_LaunchToken, "wait", observe_token_wait),
         ):
             t = threading.Thread(target=do_launch)
             t.start()
             assert committed.wait(timeout=10)
-            # stop_all while the launch thread may still be finishing its
-            # post-commit tail (reader/monitor threads).
-            pm.stop_all()
-            t.join(timeout=15)
+            stop_done = threading.Event()
 
-        assert result["value"]["ok"] is True  # launch committed before barrier
+            def do_stop():
+                pm.stop_all()
+                stop_done.set()
+
+            t_stop = threading.Thread(target=do_stop)
+            t_stop.start()
+            assert stop_waiting.wait(timeout=10), "stop did not observe the pending spawn"
+            with pm._admission_lock:
+                assert pm._admission_open is False
+                token = next(iter(pm._in_flight))
+                assert token.state == "spawning"
+            assert not stop_done.is_set()
+            release_registration.set()
+            t.join(timeout=15)
+            t_stop.join(timeout=15)
+            assert stop_done.is_set()
+
+        # SRC-018 R006: the child was registered+committed before persistence.
+        # A shutdown racing that window may finalize it either just before or
+        # just after agent.started publishes, so the launch legitimately
+        # reports ok=True (published, then killed by stop) OR SHUTTING_DOWN
+        # (shutdown won during persistence and suppressed publication). The
+        # binding invariant is that no child survives.
+        v = result["value"]
+        assert v["ok"] is True or v.get("code") == "SHUTTING_DOWN"
+        # The spawn was claimed BEFORE stop closed admission (asserted above
+        # with `state == "spawning"`), so the only legal resolution is a
+        # COMMIT: the cancellation path is reachable only when the claim is
+        # refused. The old disjunction proved nothing -- _resolve_launch runs
+        # on every launch exit path, so the token always landed in one of the
+        # two branches whatever the barrier did.
+        assert token.state == "committed", token.state
+        assert token not in pm._in_flight, "stop_all's barrier never observed it"
         assert pm.list_running() == []
         assert pm.count_running() == 0
         # proven-death path ran: ownership released after the kill

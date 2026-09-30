@@ -14,6 +14,7 @@ A plain string would keep the stale-editor silent-overwrite hole open.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -111,5 +112,43 @@ def test_read_file_text_source_has_return(api: Api):
     import inspect
 
     source = inspect.getsource(Api.read_file_text)
-    assert '"text": text' in source, "ordinary files must return text in the snapshot"
     assert "existed" in source, "the snapshot must carry the existence baseline"
+
+
+def test_ordinary_snapshot_text_and_token_come_from_one_read(api: Api, tmp_path: Path):
+    """CORE-003: `text` and `edit_version` must describe the SAME bytes.
+
+    The pre-fix branch read the file once for the hash and again for the text,
+    so a write landing between the two produced revision B's text carrying
+    revision A's token -- a save bound to a baseline the user never saw. A
+    source-text assertion cannot see that; a read count and a poisoned second
+    read can.
+    """
+    target = tmp_path / "notes.md"
+    target.write_text("first\n", encoding="utf-8")
+    (tmp_path / ".saipen").mkdir()
+    (tmp_path / ".saipen" / "STATE.md").write_text(
+        "---\nphase: PLAN\n---\n", encoding="utf-8"
+    )
+    api._config["pinned_roots"] = [str(tmp_path)]
+
+    real_read_bytes = Path.read_bytes
+    calls = {"n": 0}
+
+    def counting_read_bytes(self: Path) -> bytes:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return b"first\n"
+        # Any second read is the regression; hand back different bytes so a
+        # snapshot assembled from two buffers is visibly inconsistent.
+        return b"second-read\n"
+
+    with patch.object(Path, "read_bytes", counting_read_bytes):
+        res = api.read_file_text(str(target))
+
+    assert isinstance(res, dict), res
+    assert calls["n"] == 1, f"read_file_text read the file {calls['n']} times"
+    assert res["text"] == "first\n"
+    assert res["edit_version"] == hashlib.sha256(b"first\n").hexdigest()[:16]
+    assert res["existed"] is True
+    assert real_read_bytes is Path.read_bytes  # the patch really was scoped

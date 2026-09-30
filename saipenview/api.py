@@ -65,6 +65,16 @@ def _canonical_or(root_str: str) -> str:
     except (OSError, ValueError):
         return root_str
 
+
+def _row_canon_key(row: dict) -> str:
+    """PERF-003 (SRC-018 R013): the row's stored ingress canonical key, or a
+    lazy fallback ONLY when the key is genuinely absent. Never used as a dict
+    default expression (which would resolve every row eagerly)."""
+    key = row.get("_canon_key")
+    if key is None:
+        key = _canonical_or(row["root"])
+    return key
+
 _OUTBOX_STATUS_ORDER = {"ready": 0, "blocked": 1, "draft": 2, "stale": 3, "reviewed": 4}
 
 
@@ -78,6 +88,26 @@ class _FileBoundary(NamedTuple):
 
     path: str
     root: str
+
+
+def _protocol_owner_from_boundary(
+    boundary: _FileBoundary, path: Path, coordinator
+) -> Path | None:
+    """Return the verified owner of a protocol file, or fail closed.
+
+    The nearest physical ``.saipen`` root is only a consistency check. The
+    verified file boundary remains the authority for SAIO and write ownership;
+    a nested but unregistered protocol tree is refused instead of acquiring a
+    second owner through ``root_for``.
+    """
+    try:
+        physical_root = coordinator.root_for(path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if _canonical_or(str(physical_root)) != _canonical_or(boundary.root):
+        return None
+    return Path(boundary.root)
 
 
 def _outbox_entry_to_dict(e: OutboxEntry) -> dict:
@@ -364,14 +394,20 @@ def _project_to_dict(
     project: ProjectStatus, pinned_roots: set[str] | None = None
 ) -> dict:
     root_str = str(project.root)
+    # PERF-003 (SRC-018 R013 / T-843): resolve the canonical presentation
+    # membership key ONCE here, at registry/cache ingress. Every later
+    # presentation membership test (hidden filtering in get_projects,
+    # hidden selection in get_hidden_projects, pin membership) reads this
+    # stored key instead of re-running canonical()/_canonical_or() per row.
+    # This is an internal presentation key ONLY -- never a file-authorization
+    # or security authority (that is CORE-002's verified _FileBoundary.root),
+    # and it is stripped from every public transport dict below.
+    canon_key = _canonical_or(root_str)
     # CORE-003: pinned_roots are stored in canonical form (lowercase, resolved);
     # rows still carry the path as discovered. Membership uses canonical keys
     # so `V:\proj` and `v:\proj` agree on the pin state. canonical() resolves
     # once per row; callers should already pass a canonical `pinned_roots` set.
-    is_pinned = bool(
-        pinned_roots
-        and _canonical_or(root_str) in pinned_roots
-    )
+    is_pinned = bool(pinned_roots and canon_key in pinned_roots)
     # Graded on every row, not only on the detail pane. A project that is
     # illegal is illegal from the list -- if the verdict only appeared once you
     # clicked in, the one project you never click is the one that stays broken.
@@ -390,6 +426,11 @@ def _project_to_dict(
         "conformance": report,
         "name": project.name,
         "root": root_str,
+        # PERF-003 (SRC-018 R013): internal canonical presentation membership
+        # key. Consumed by get_projects/get_hidden_projects/pin membership for
+        # ZERO-per-row resolver retrieval; stripped from public transport by
+        # _project_summary_to_dict. NOT an authorization authority.
+        "_canon_key": canon_key,
         "phase": project.phase,
         "task": project.task,
         "next_action": project.next_action,
@@ -510,6 +551,14 @@ class Api:
         # snapshot when they share the same _data/cache.json path.
         self._projects: list[dict] = []
         self._has_scanned = False
+        # W2-004: scan liveness is the number of ACTIVE scan operations, not a
+        # success-cleared boolean. A failed, cancelled or generation-invalidated
+        # scan used to leave `_scanning=True` forever (no scan existed), which
+        # both drifted the UI and disabled refresh_known's idle short-circuit.
+        # `_scan_active` is paired on every entry/exit path so it can never
+        # outlive the operations it describes. `_scanning` is retained as the
+        # derived public view (`_scan_active > 0`) for compatibility.
+        self._scan_active = 0
         self._scanning = False
         self._config = load_config()
         self._auto_scan = self._config.get("auto_scan", True)
@@ -598,7 +647,8 @@ class Api:
             max_depth=self._config.get("scan_depth", 6),
             delay=self._config.get("scan_delay_ms", 10) / 1000.0,
             extra_excludes=set(self._config.get("exclude_dirs", [])),
-            on_scan_start=lambda: self._set_scanning(True),
+            on_scan_start=self._scan_begin,
+            on_scan_end=self._scan_end,
             epoch_source=lambda: self._scan_epoch,
             # PERF: rows come from the durable cache instantly, so the cold
             # full-drive scan must not compete with window/WebView2 startup.
@@ -924,9 +974,38 @@ class Api:
         # roots are configured; fallback to per-project topology otherwise.
         self._watcher.sync(roots, scan_roots)
 
-    def _set_scanning(self, val: bool) -> None:
+    def _scan_begin(self) -> None:
+        """W2-004: enter one active scan operation (paired with `_scan_end`)."""
         with self._lock:
-            self._scanning = val
+            self._scan_active += 1
+            self._scanning = True
+
+    def _scan_end(self) -> None:
+        """W2-004: leave one active scan operation.
+
+        The counter only reaches zero when the LAST active scan exits, so a
+        faster older scan completing cannot clear scanning while a newer one
+        still runs.
+        """
+        with self._lock:
+            self._scan_active = max(0, self._scan_active - 1)
+            self._scanning = self._scan_active > 0
+
+    @contextlib.contextmanager
+    def _scan_activity(self):
+        """W2-004: pair every scan operation with an active-count entry/exit.
+
+        Entering increments the active-scan count; leaving (success, error,
+        cancellation or stale-generation exit) always decrements it in
+        ``finally``. ``scanning`` is true iff at least one scan is active, and
+        an older operation's completion can never clear a newer still-running
+        one (the counter only reaches zero when the LAST active scan exits).
+        """
+        self._scan_begin()
+        try:
+            yield
+        finally:
+            self._scan_end()
 
     # W2-008: centralized scanner configuration helpers. Every root/depth/
     # delay/exclude reconfiguration uses the same effective options.
@@ -940,6 +1019,30 @@ class Api:
             "extra_excludes": set(self._config.get("exclude_dirs", [])),
         }
 
+    def _reconfigure_scanner(self) -> None:
+        """W2-004 (SRC-018 R008): the ONE scanner-configuration replacement
+        lifecycle. Every exclude/root/source change routes through here so the
+        authoritative immediate rescan and the replacement BackgroundScanner
+        share ONE captured effective configuration.
+
+        Ordering, so an old generation can never publish stale config:
+          1. supersede/stop the old scanner generation;
+          2. capture a fresh scan epoch (older in-flight results become stale);
+          3. run the authoritative scan under the current effective config and
+             publish it (CORE-001 completed/unresolved-root semantics preserved
+             by _set_cache);
+          4. construct the replacement BackgroundScanner from the SAME config;
+          5. start it only when auto_scan is enabled.
+
+        Callers mutate config FIRST, then call this. It does not persist config.
+        """
+        self.background_scanner.stop()
+        epoch = self._next_scan_epoch()
+        with self._scan_activity():
+            projects = scan(**self._scan_kwargs())
+            self._set_cache(projects, force=True, epoch=epoch)
+        self._replace_background_scanner()
+
     def _replace_background_scanner(self) -> None:
         """Stop old scanner, create a new one with current config.
 
@@ -951,7 +1054,8 @@ class Api:
             on_result=self._set_cache,
             **self._scan_kwargs(),
             interval_seconds=self._config["rescan_interval"],
-            on_scan_start=lambda: self._set_scanning(True),
+            on_scan_start=self._scan_begin,
+            on_scan_end=self._scan_end,
             epoch_source=lambda: self._scan_epoch,
         )
         if self._auto_scan:
@@ -1016,8 +1120,6 @@ class Api:
             return
         from saipenview.scanner import ScanOutcome
 
-        completed_roots = []
-        unresolved_roots = []
         if isinstance(projects, ScanOutcome):
             complete = projects.complete
             project_list = projects.projects
@@ -1026,8 +1128,8 @@ class Api:
             unresolved_roots = getattr(projects, "unresolved_roots", []) or []
         else:
             project_list = projects
-            completed_roots = completed_roots or []
-            unresolved_roots = unresolved_roots or []
+            completed_roots = list(completed_roots or [])
+            unresolved_roots = list(unresolved_roots or [])
         pinned_set = set(self._config.get("pinned_roots") or [])
         # CORE-006: keep EVERY verified known project in the internal registry
         # regardless of visibility. Hidden roots are filtered only at the
@@ -1074,11 +1176,9 @@ class Api:
                     merged_items = sorted(merged.values(), key=lambda x: _project_sort_key(x, self._sort_order()))
                     self._replace_projects_locked(merged_items)
                     self._has_scanned = True
-                    self._scanning = False
                 else:
                     # No root provenance available — preserve everything (old
                     # incomplete-result safety).
-                    self._scanning = False
                     return
             elif (
                 not force
@@ -1091,11 +1191,9 @@ class Api:
                 # Fall through to set empty.
                 self._replace_projects_locked(items)
                 self._has_scanned = True
-                self._scanning = False
             else:
                 self._replace_projects_locked(items)
                 self._has_scanned = True
-                self._scanning = False
         # PERF-003: if the scan already collected worktrees, use them directly.
         # Fall back to a standalone walk only for non-scan callers.
         if worktrees is not None:
@@ -1188,12 +1286,25 @@ class Api:
             self._full_refresh_pending = False
 
     def get_projects(self) -> list[dict]:
-        hidden_set = set(self._config.get("hidden_roots") or [])
+        # PERF-003 (SRC-018 R013 / T-843): normalize the hidden CONFIG once at
+        # this boundary (K entries, not per row) so a raw-spelled config value
+        # still matches the row's ingress canonical key. The per-ROW work below
+        # uses the stored key -- zero per-row resolver calls.
+        hidden_set = {canonical(r) for r in (self._config.get("hidden_roots") or [])}
         with self._lock:
             rows = list(self._projects)
-        visible = [
-            p for p in rows if _canonical_or(p["root"]) not in hidden_set
-        ]
+        # PERF-003 (SRC-018 R013 / T-843): presentation retrieval uses the
+        # in-memory canonical membership key computed at ingress -- ZERO
+        # per-row canonical() resolver calls here. An empty hidden set takes an
+        # immediate zero-work path (nothing to filter). NOTE: use an explicit
+        # membership test, never dict.get(k, _canonical_or(...)), because the
+        # default expression is evaluated eagerly and would resolve every row.
+        if hidden_set:
+            visible = [
+                p for p in rows if _row_canon_key(p) not in hidden_set
+            ]
+        else:
+            visible = rows
         # PERF-006 (SRC-004:R019): the list transport is SUMMARY-grade. The
         # rich per-project rows stay internal (detail pane, quick_search); the
         # wire carries only what the sidebar renders. Payload scales with
@@ -1710,16 +1821,18 @@ class Api:
         # becomes stale and is rejected by _set_cache. Authority is assigned
         # at request start, not by completion timestamps.
         epoch = self._next_scan_epoch()
-        self._set_scanning(True)
-        projects = scan(
-            self._config["scan_roots"],
-            max_depth=self._config.get("scan_depth", 6),
-            delay=self._config.get("scan_delay_ms", 10) / 1000.0,
-            extra_excludes=set(self._config.get("exclude_dirs", [])),
-        )
-        # _set_cache owns the linked-worktree scan (T-165): calling it here too
-        # would run the same worktree walk twice per rescan.
-        self._set_cache(projects, force=True, epoch=epoch)
+        # W2-004: paired activity -- scanning is true exactly while this runs,
+        # even if scan() raises and even if a newer rescan supersedes it.
+        with self._scan_activity():
+            projects = scan(
+                self._config["scan_roots"],
+                max_depth=self._config.get("scan_depth", 6),
+                delay=self._config.get("scan_delay_ms", 10) / 1000.0,
+                extra_excludes=set(self._config.get("exclude_dirs", [])),
+            )
+            # _set_cache owns the linked-worktree scan (T-165): calling it here too
+            # would run the same worktree walk twice per rescan.
+            self._set_cache(projects, force=True, epoch=epoch)
         return self.get_projects()
 
     def _next_scan_epoch(self) -> int:
@@ -1978,17 +2091,24 @@ class Api:
             return pinned
 
         pinned = self._mutate_config(_toggle)
+        pinned_set = set(pinned)
         with self._lock:
             changed = False
             for p in self._projects:
-                pinned_value = _canonical_or(p["root"]) in pinned
+                # PERF-003 (SRC-018 R013): membership from the stored canonical
+                # key -- no per-row resolver call.
+                pinned_value = _row_canon_key(p) in pinned_set
                 if p.get("is_pinned") != pinned_value:
                     p["is_pinned"] = pinned_value
                     changed = True
             self._projects.sort(key=lambda x: _project_sort_key(x, self._sort_order()))
             if changed:
                 self._mark_registry_mutation_locked(p["root"] for p in self._projects)
-            return list(self._projects)
+            # PERF-003: strip the internal presentation key from public transport.
+            return [
+                {k: v for k, v in p.items() if k != "_canon_key"}
+                for p in self._projects
+            ]
 
     def hide_project(self, root_str: str) -> list[dict]:
         # CORE-004: derive the hidden list inside the locked mutation.
@@ -2035,18 +2155,29 @@ class Api:
         snapshots the in-memory rows whose canonical root is in ``hidden_roots``
         with ZERO filesystem discovery. The normal watcher/targeted-refresh/
         background-reconciliation machinery keeps those retained rows current.
+
+        PERF-003 (SRC-018 R013 / T-843): membership uses the internal canonical
+        key stored on each row at ingress -- ZERO per-row canonical() calls.
+        The hidden/pinned CONFIG is normalized once here (K entries), not per
+        row. An empty hidden set takes an immediate zero-work path.
         """
         hidden_set = {canonical(r) for r in (self._config.get("hidden_roots") or [])}
         if not hidden_set:
             return []
+        pinned_set = {canonical(r) for r in (self._config.get("pinned_roots") or [])}
         with self._lock:
             rows = [
-                dict(p) for p in self._projects if canonical(p["root"]) in hidden_set
+                dict(p)
+                for p in self._projects
+                if _row_canon_key(p) in hidden_set
             ]
-        # Pinned flag may have changed since the row was built; recompute cheaply.
-        pinned_set = set(self._config.get("pinned_roots") or [])
+        # Pinned flag may have changed since the row was built; recompute from
+        # the stored canonical key (no per-row resolver work).
         for r in rows:
-            r["is_pinned"] = _canonical_or(r["root"]) in pinned_set
+            r["is_pinned"] = _row_canon_key(r) in pinned_set
+            # PERF-003 (SRC-018 R013): the internal presentation key never
+            # leaks into public transport.
+            r.pop("_canon_key", None)
         return rows
 
     def open_folder(self, root_str: str) -> bool:
@@ -2163,11 +2294,19 @@ class Api:
             if path.exists():
                 from saipenview.protocol_write import get_coordinator
 
-                if get_coordinator().is_protocol_file(path):
+                coordinator = get_coordinator()
+                if coordinator.is_protocol_file(path):
+                    root = _protocol_owner_from_boundary(boundary, path, coordinator)
+                    if root is None:
+                        print(
+                            f"SAIPENVIEW: read_file_text rejected {file_path!r}: "
+                            "protocol root does not match the verified project boundary",
+                            file=sys.stderr,
+                        )
+                        return None
                     from saipenview import saio
 
                     try:
-                        root = get_coordinator().root_for(path)
                         codec = saio.engine(root)["codec"]
                         doc = codec.read_document(path)
                         return {
@@ -2190,10 +2329,16 @@ class Api:
                 # token is the hash of the EXACT bytes returned, so the save
                 # can bind to the baseline the user actually saw (W2-017 kept
                 # the decoded text; the token is what makes the save CAS-able).
+                #
+                # CORE-003: ONE read. `text` and `edit_version` MUST come from
+                # the same byte buffer -- a second `read_doc(path)` reopen let
+                # an external write between the two reads return revision B's
+                # text carrying revision A's token. Decode the same `raw`.
                 raw = path.read_bytes()
-                text = read_doc(path)
+                from saipenview.textio import decode
+
                 return {
-                    "text": text,
+                    "text": decode(raw),
                     "edit_version": hashlib.sha256(raw).hexdigest()[:16],
                     "existed": True,
                 }
@@ -2222,8 +2367,10 @@ class Api:
         -- never from ``path.is_file()`` at save entry. Re-deriving it at
         entry reclassified read-existing -> external-delete -> save as a
         create, silently resurrecting a file the user had only ever read.
-        ``existed=None`` (legacy callers) falls back to the entry snapshot,
-        which preserves the W2-015 transition contract.
+        When omitted, a supplied edit token implies an existing read
+        baseline; tokenless legacy callers fall back to the entry snapshot.
+        This preserves the W2-015 transition contract without treating a
+        token-bearing existing file as a missing baseline.
         """
         ok, reason = validate_file_path(file_path, self._known_roots())
         if not ok:
@@ -2250,6 +2397,7 @@ class Api:
         path = Path(boundary.path)
         from saipenview.ownership import AgentOwnershipError
         from saipenview.protocol_write import get_coordinator
+        coordinator = get_coordinator()
 
         # W2-001: the baseline is the READ-time existence state. A token
         # returned by read_file_text is only ever issued for an existing
@@ -2261,7 +2409,17 @@ class Api:
             had_baseline = existed
         else:
             had_baseline = bool(edit_version) or path.is_file()
-        if get_coordinator().is_protocol_file(path):
+        protocol_root = None
+        if coordinator.is_protocol_file(path):
+            protocol_root = _protocol_owner_from_boundary(boundary, path, coordinator)
+            if protocol_root is None:
+                print(
+                    f"SAIPENVIEW: write_file_text rejected {file_path!r}: "
+                    "protocol root does not match the verified project boundary",
+                    file=sys.stderr,
+                )
+                return False
+        if protocol_root is not None:
             # CORE-001: protocol files are CAS-protected. A save without the
             # edit_version read token is a fail-open hole (tokenless editor
             # saves bypass the stale-read check), so refuse it closed -- EXCEPT
@@ -2277,7 +2435,10 @@ class Api:
                     file=sys.stderr,
                 )
                 return False
-            root = get_coordinator().root_for(path)
+            # CORE-002: physical_root above was only compared with the
+            # verified boundary. Continue using that boundary for guard,
+            # relative-path and coordinator ownership decisions.
+            root = protocol_root
             guard = self._guard_protocol_write(str(root))
             if guard:
                 print(f"SAIPENVIEW: write_file_text refused: {guard}", file=sys.stderr)
@@ -2381,7 +2542,7 @@ class Api:
                         missing_paths=[] if had_baseline else [rel],
                     )
 
-                result = get_coordinator().mutate(
+                result = coordinator.mutate(
                     root,
                     _planner,
                     verification_policy="none",
@@ -2441,11 +2602,12 @@ class Api:
 
             def _write_ordinary() -> bool:
                 # W2-001: CAS for ordinary files. A save bound to a read
-                # baseline (existed=True + token) refuses when the file
-                # disappeared, appeared, or its current bytes no longer hash
-                # to the token -- exactly one client may commit against one
-                # baseline, so a stale editor can never silently overwrite a
-                # newer external revision. Legacy callers (existed=None,
+                # baseline (existed=True, or omitted existed + token) refuses
+                # when the file disappeared, appeared, or its current bytes
+                # no longer hash to the token -- exactly one client may
+                # commit against one baseline, so stale editors cannot
+                # silently overwrite a newer external revision. Legacy
+                # callers (existed=None,
                 # no token) keep the plain write path.
                 if edit_version is None and existed is None:
                     if path.is_file():
@@ -2454,21 +2616,21 @@ class Api:
                     else:
                         write_doc(path, content)
                     return True
-                if existed and not path.is_file():
+                if had_baseline and not path.is_file():
                     print(
                         f"SAIPENVIEW: write_file_text STALE {file_path!r}: "
                         "file disappeared since it was read",
                         file=sys.stderr,
                     )
                     return False
-                if not existed and path.is_file():
+                if not had_baseline and path.is_file():
                     print(
                         f"SAIPENVIEW: write_file_text STALE {file_path!r}: "
                         "file appeared since the missing baseline was read",
                         file=sys.stderr,
                     )
                     return False
-                if existed and path.is_file():
+                if had_baseline and path.is_file():
                     current = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
                     if current != edit_version:
                         print(
@@ -2683,6 +2845,9 @@ class Api:
             return None
         pinned_set = set(self._config.get("pinned_roots") or [])
         d = _project_to_dict(proj, pinned_set)
+        # PERF-003 (SRC-018 R013): the internal presentation key is never
+        # exposed on the public detail transport.
+        d.pop("_canon_key", None)
         d["custom_commands"] = list(self._config.get("custom_commands") or [])
         d["log_tail"] = load_log_tail(p)
         # Pending backend-tracked external changes for THIS project (repair
@@ -2850,17 +3015,20 @@ class Api:
 
     def set_scan_roots(self, roots: list[str] | None) -> list[dict]:
         self._mutate_config(lambda cfg: cfg.__setitem__("scan_roots", roots))
-        self.background_scanner.stop()
-        self._set_scanning(True)
-        epoch = self._next_scan_epoch()
-        projects = scan(**self._scan_kwargs())
-        self._set_cache(projects, force=True, epoch=epoch)
-        self._replace_background_scanner()
+        self._reconfigure_scanner()
         return self.get_projects()
 
     def set_exclude_dirs(self, dirs: list[str]) -> list[dict]:
+        # W2-004 (SRC-018 R008): exclude changes MUST go through the scanner
+        # replacement lifecycle, not a bare rescan(). rescan() ran the
+        # immediate scan under the new exclusion list but left the persistent
+        # BackgroundScanner holding its old captured _extra_excludes, so the
+        # next periodic cycle reintroduced the excluded directories. Routing
+        # through _reconfigure_scanner rebuilds the scanner from the same
+        # effective config the immediate scan used.
         self._mutate_config(lambda cfg: cfg.__setitem__("exclude_dirs", list(dirs)))
-        return self.rescan()
+        self._reconfigure_scanner()
+        return self.get_projects()
 
     def clipboard_copy(self, text: str) -> bool:
         """Copy text to system clipboard via PowerShell (works in pywebview
@@ -2897,7 +3065,6 @@ class Api:
         )
         root.destroy()
         if not folder:
-            self._set_scanning(False)
             return self.get_projects()
 
         folder_str = canonical(folder)
@@ -2920,11 +3087,7 @@ class Api:
             cfg["scan_roots"] = existing
 
         self._mutate_config(_add_scan_root)
-        self._set_scanning(True)
-        epoch = self._next_scan_epoch()
-        projects = scan(**self._scan_kwargs())
-        self._set_cache(projects, force=True, epoch=epoch)
-        self._replace_background_scanner()
+        self._reconfigure_scanner()
 
         return self.get_projects()
 
@@ -3009,11 +3172,11 @@ class Api:
         self._mutate_config(lambda cfg: cfg.__setitem__("auto_scan", enabled))
         self._auto_scan = enabled
         if enabled:
-            self._set_scanning(True)
+            # W2-004: the scanner's own paired on_scan_start/on_scan_end owns
+            # the scanning state; no bare flag write here.
             self.background_scanner.start()
         else:
             self.background_scanner.stop()
-            self._set_scanning(False)
         return self.get_config()
 
     def get_autostart_enabled(self) -> bool:

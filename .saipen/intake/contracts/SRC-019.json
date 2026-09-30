@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-019:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Execute audit/5.md under SRC-018 through T-875"
+    }
+  },
+  "derived_at": "2026-09-23T19:57:23Z",
+  "derived_from": "SRC-019",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "e0c39f1f80b87b325c69a60fdc084b52bb9f410226586130ba2bcfb6d24e8710"
+}

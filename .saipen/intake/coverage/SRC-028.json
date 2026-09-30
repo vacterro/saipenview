@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-028:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-883 closed with verification evidence in LOG: verify -> PASS [target: T-883] conf: high -- inspected BOARD.md (T-878 [x] DONE closure_mode own_patch) + LOG.md E-1893..E-1895 (REVIEW pass1 DEC:SHIP -> transition SHIP -> finish completion); no dangling DOING/BLOCKED for T-878; user recovery snapshot stale-advanced, nothing to resume; no product-code delta.",
+      "text": "Recovery: resume T-878 closure from live state; diagnose stale snapshot if advanced",
+      "verification": "the Work this request created reached its own verification gate; see the T-883 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-883"
+    }
+  },
+  "schema_version": 1
+}

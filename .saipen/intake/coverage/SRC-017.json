@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-017:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-874 closed with verification evidence in LOG: verify -> PASS [target: T-874] conf: high -- compileall rc 0; tools/release_gate.py --dev PASS (__version__=0.1.33 changelog=[0.1.33]); tools/validate.py --gate core PASS and --gate ship PASS (47 warnings, 0 problems); targeted pytest tests/test_release_gate.py tests/test_git_diff.py tests/test_core001_mutation_scope.py tests/test_core001_git_tx.py tests/test_source_artifact_hygiene.py = 51 passed",
+      "text": "repair v0.1.32 release tag: local tag v0.1.32 points at ed0463b (closure) but HEAD is 654916e with T-848 commits after the tag; retag to HEAD then publish via saipen push",
+      "verification": "the Work this request created reached its own verification gate; see the T-874 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-874"
+    }
+  },
+  "schema_version": 1
+}

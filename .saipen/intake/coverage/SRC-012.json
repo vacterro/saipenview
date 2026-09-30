@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-012:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-868 closed with verification evidence in LOG: verify -> PASS [target: T-868] conf: high -- SRC-009 SOURCE_CLOSED; audit/4.md consumed via journaled cleanup (audit_ingest AUDIT_CONSUMED); audit inbox clean:true layer 4 DELETED; only goal containers T-854/T-855 remain",
+      "text": "Close SRC-009 source and consume audit/4.md via the journaled audit inbox cleanup; retire goal containers T-854 and T-855",
+      "verification": "the Work this request created reached its own verification gate; see the T-868 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-868"
+    }
+  },
+  "schema_version": 1
+}

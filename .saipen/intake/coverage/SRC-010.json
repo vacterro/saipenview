@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-010:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-854 closed with verification evidence in LOG: verify -> PASS [target: T-854] conf: high -- goal complete: every SRC-009 audit/4 finding implemented under children T-853 T-857 T-858 T-859 T-860 T-861 T-862 T-863 T-864 T-865 T-866; SRC-009 CLOSED; audit/4.md consumed; inbox clean",
+      "text": "goal: close every remaining SRC-009 audit/4 finding (CORE-002, CORE-003, W2-001, W2-002, W2-003, W2-004, PERF-001, PERF-002, PERF-003, PERF-004) through the canonical lifecycle, then close umbrella T-852 and consume audit/4.md",
+      "verification": "the Work this request created reached its own verification gate; see the T-854 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-854"
+    }
+  },
+  "schema_version": 1
+}

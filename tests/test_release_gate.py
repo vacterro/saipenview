@@ -12,10 +12,22 @@ old release"), so the test went red until the next bump. The pass assertion
 now runs the gate against a sandboxed tree with a bumped version, so it is
 green at every HEAD; the two failure modes are pinned by their own sandboxed
 tests.
+
+T-849: the heading grammar is the GATE's, not a second test-side regex. The
+v0.1.30 CHANGELOG migration (dc4791c) standardized released headings on the
+unbracketed `## <semver> - <date>` form and updated the gate but left these
+tests on the retired bracketed Keep-a-Changelog fixture form, so the tests
+disagreed with the repository they claim to protect. The parser below is
+imported from tools/release_gate.py: the test contract now exercises the same
+canonical grammar the gate ships. A stale heading syntax therefore fails as
+"no version heading" (its own regression below), a valid heading with the
+wrong version fails as a version mismatch, and `## [Unreleased]` can never be
+classified as the released head.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import shutil
 import subprocess
@@ -25,7 +37,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GATE = ROOT / "tools" / "release_gate.py"
 VERSION_RE = re.compile(r"^__version__\s*=\s*[\"']([^\"']+)[\"']")
-CHANGELOG_HEAD_RE = re.compile(r"^## \[(\d+\.\d+\.\d+)\]")
+
+
+def _load_gate_module():
+    spec = importlib.util.spec_from_file_location("release_gate", GATE)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+release_gate = _load_gate_module()
+
+# The test contract uses the SAME parser object as the production gate: no
+# test-side regex exists to drift from the shipped grammar again (T-849).
+CHANGELOG_HEAD_RE = release_gate.CHANGELOG_HEAD_RE
 
 
 def _version() -> str:
@@ -41,13 +67,9 @@ def _bumped_version() -> str:
     return ".".join(str(x) for x in parts)
 
 
-def _changelog_head() -> str:
+def _changelog_head() -> str | None:
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    for line in text.splitlines():
-        m = CHANGELOG_HEAD_RE.match(line.strip())
-        if m:
-            return m.group(1)
-    raise AssertionError("CHANGELOG.md has no version heading")
+    return release_gate.changelog_head_version(text)
 
 
 def _make_sandbox(tmp_path: Path, version: str) -> Path:
@@ -55,7 +77,11 @@ def _make_sandbox(tmp_path: Path, version: str) -> Path:
     (tmp_path / "saipenview" / "__init__.py").write_text(
         f'__version__ = "{version}"', encoding="utf-8"
     )
-    (tmp_path / "CHANGELOG.md").write_text(f"## [{version}]", encoding="utf-8")
+    # Canonical released heading (T-849): `## <semver> - <date>`, exactly the
+    # form the real CHANGELOG ships and the gate parses.
+    (tmp_path / "CHANGELOG.md").write_text(
+        f"## {version} - 2026-09-15", encoding="utf-8"
+    )
     shutil.copy(ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
     return tmp_path
 
@@ -93,7 +119,60 @@ def test_version_has_one_source():
 
 
 def test_changelog_head_matches_version():
-    assert _changelog_head() == _version()
+    head = _changelog_head()
+    assert head is not None, (
+        "CHANGELOG.md has no heading matching the canonical released grammar"
+    )
+    assert head == _version()
+
+
+def test_changelog_head_is_the_first_released_heading_not_unreleased():
+    # The real CHANGELOG carries an `## [Unreleased]` section further down.
+    # `[Unreleased]` is not a released version and must never be the head:
+    # the gate selects the FIRST canonical released heading instead.
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    lines = [ln.strip() for ln in text.splitlines()]
+    headings = [ln for ln in lines if ln.startswith("## ")]
+    assert "## [Unreleased]" in headings, (
+        "fixture drift: CHANGELOG no longer has [Unreleased]"
+    )
+    head = release_gate.changelog_head_version(text)
+    assert head is not None
+    assert head != "Unreleased"
+    # The oracle here is deliberately NOT the gate's own regex. Sharing it made
+    # this test unable to see a grammar change at all -- it compared the
+    # implementation against itself. `## ` and the `[Unreleased]` literal are
+    # the whole grammar this assertion needs, they do not drift with a bump,
+    # and a wrong head fails here.
+    first_released = next(ln for ln in headings if ln != "## [Unreleased]")
+    version_marker = _version()
+    assert first_released == f"## {version_marker}" or first_released.startswith(
+        f"## {version_marker} "
+    ), first_released
+
+
+def test_changelog_head_rejects_malformed_headings():
+    # Grammar regressions on the shared parser: prose/bracketed/partial
+    # headings are NOT valid released headings.
+    assert release_gate.changelog_head_version("## [1.2.3]") is None
+    assert release_gate.changelog_head_version("## [Unreleased]") is None
+    assert release_gate.changelog_head_version("## Version 1.2.3") is None
+    assert release_gate.changelog_head_version("## 1.2.3x - 2026-09-15") is None
+    assert release_gate.changelog_head_version("### 1.2.3") is None
+    # The canonical form parses, with or without the trailing date.
+    assert release_gate.changelog_head_version("## 1.2.3 - 2026-09-15") == "1.2.3"
+    assert release_gate.changelog_head_version("## 1.2.3") == "1.2.3"
+
+
+def test_release_gate_fails_on_malformed_changelog_head(tmp_path):
+    # A sandbox whose CHANGELOG carries a truly invalid heading must fail with
+    # "no version heading" -- malformed syntax is distinct from a mismatch.
+    sandbox = _make_sandbox(tmp_path, _bumped_version())
+    (sandbox / "CHANGELOG.md").write_text("## [9.9.9]", encoding="utf-8")
+    r = _run_gate(sandbox, "--dev")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "CHANGELOG.md has no version heading" in r.stdout
+    assert "!=" not in r.stdout
 
 
 def test_release_gate_passes_at_shipped_head(tmp_path):
@@ -148,8 +227,10 @@ def test_release_mode_fails_when_version_behind_newest_tag(tmp_path):
 
 
 def test_release_gate_fails_when_identity_surfaces_disagree(tmp_path):
+    # Valid canonical heading carrying the WRONG version: the failure must be
+    # the version-mismatch diagnostic, not "no version heading".
     sandbox = _make_sandbox(tmp_path, "1.2.3")
-    (sandbox / "CHANGELOG.md").write_text("## [9.9.9]", encoding="utf-8")
+    (sandbox / "CHANGELOG.md").write_text("## 9.9.9 - 2026-09-15", encoding="utf-8")
     r = _run_gate(sandbox, "--dev")
     assert r.returncode == 1, r.stdout + r.stderr
     assert "CHANGELOG head [9.9.9] != __version__ [1.2.3]" in r.stdout
@@ -160,7 +241,9 @@ def test_new_release_must_not_be_behind_newest_tag():
     # history for this job). Verdict: either PASS (version >= newest tag) or a
     # named tag-related FAIL -- never a skip, and never a silent pass on
     # missing evidence. The missing-evidence case is FAILed, as
-    # test_release_mode_fails_* pin.
+    # test_release_mode_fails_* pin. At a post-ship untagged HEAD the gate
+    # correctly refuses with the re-ship diagnostic (T-197), which is a named
+    # version/verdict failure, not missing evidence.
     r = _run_gate(ROOT)
     if r.returncode == 0:
         assert "PASS" in r.stdout
@@ -168,3 +251,27 @@ def test_new_release_must_not_be_behind_newest_tag():
     out = r.stdout + r.stderr
     assert "Release identity FAIL" in out, out
     assert "tag" in out, out
+
+
+def test_dev_gate_accepts_unreleased_section_above_the_head(tmp_path):
+    # The grammar control the live-tree invocation could not provide. Against
+    # the LIVE tree this test could only ever report what the local tag state
+    # happened to be, so it accepted PASS and any FAIL mentioning "tag" -- it
+    # had no path to failing. A SANDBOX whose CHANGELOG puts a real
+    # `## [Unreleased]` section ABOVE the released head is decidable: the gate
+    # must ignore it and still report the released version.
+    sandbox = _make_sandbox(tmp_path, _bumped_version())
+    version = _bumped_version()
+    (sandbox / "CHANGELOG.md").write_text(
+        "## [Unreleased]\n\n### Changed\n- not shipped yet\n\n"
+        f"## {version} - 2026-09-15\n\n### Fixed\n- a fix\n",
+        encoding="utf-8",
+    )
+    r = _run_gate(sandbox, "--dev")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "Release identity PASS" in out, out
+    # The released version, not [Unreleased], is what the gate read.
+    assert f"CHANGELOG head [{version}]" in out or "PASS" in out
+    assert "no version heading" not in out, out
+    assert "!=" not in out, out

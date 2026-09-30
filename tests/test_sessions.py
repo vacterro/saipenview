@@ -218,3 +218,53 @@ class TestUnicode:
             "日本語",
             "emoji 🤖",
         ]
+
+
+class TestHistoryTieGroup:
+    """PERF-004 early stop must consume the boundary's whole tie group.
+
+    Two runs can start in the same microsecond (`start()` names that case
+    itself). Their ``started_at`` is then IDENTICAL, so only the file mtime
+    orders them. The reverse scan stops on the first candidate whose filename
+    hint is strictly older than the boundary -- if the hint is not
+    byte-identical to ``started_at``, every same-instant twin looks strictly
+    older and the group is cut at the first one.
+    """
+
+    def _write(self, store, stamp, suffix, started_at):
+        key = project_key(ROOT)
+        run_id = f"{stamp}-{suffix}-{key}-codex"
+        rec = {
+            "run_id": run_id,
+            "root": ROOT,
+            "project": key,
+            "engine": "codex",
+            "engine_display": "Codex",
+            "instruction": "go",
+            "started_at": started_at,
+            "status": "done",
+            "finished_at": "2026-01-01T00:01:00+00:00",
+            "exit_code": 0,
+            "line_count": 1,
+            "truncated": False,
+            "pid": None,
+        }
+        path = store._dir / f"{run_id}.json"
+        store._dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(rec), encoding="utf-8")
+        return path
+
+    def test_same_microsecond_twin_is_not_truncated(self, store):
+        started = "2026-01-01T00:00:05.000123+00:00"
+        stamp = "20260101T000005000123"
+        # `-0` sorts before `-1`, so the reverse scan reaches the `-1` file
+        # first and only then the `-0` one. Both carry the SAME started_at,
+        # so mtime alone decides which is the newest run -- and that is the
+        # `-0` file, because the name suffix does not order the tie.
+        newest = self._write(store, stamp, "0", started)
+        older = self._write(store, stamp, "1", started)
+        os.utime(older, (1_000_000_000, 1_000_000_000))
+        os.utime(newest, (2_000_000_000, 2_000_000_000))
+
+        out = store.history(ROOT, limit=1)
+        assert [r["run_id"] for r in out] == [newest.stem], out

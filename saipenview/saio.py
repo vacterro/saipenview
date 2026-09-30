@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import os
 import re
 import sys
@@ -158,8 +159,9 @@ def _load_codec_from(home: Path):
     # runs under the one authority lock and uses the one home key.
     key = _home_key(home)
     with _ENGINE_LOCK:
-        if _ENGINE_CACHE:
-            existing_key = next(iter(_ENGINE_CACHE.keys()))
+        complete = _complete_engine_homes()
+        if complete:
+            existing_key = next(iter(complete.keys()))
             if existing_key != key:
                 raise SaioUnavailable(
                     f"MULTI-HOME CONTAMINATION BLOCKED: engine already loaded from "
@@ -193,9 +195,9 @@ def engine(root: Path) -> dict[str, object]:
         if cached is not None and "operations" in cached:
             return cached
 
-        if _ENGINE_CACHE:
+        if _complete_engine_homes():
             # A different home was already loaded
-            existing = next(iter(_ENGINE_CACHE.keys()))
+            existing = next(iter(_complete_engine_homes().keys()))
             if existing != key:
                 # W2-004: the multi-home refusal must use the same structured
                 # exception as every other load failure. Callers such as
@@ -569,7 +571,13 @@ def source_identity(root: Path):
                 home = resolve_home(r)
             except SaioUnavailable:
                 home = None
-    return _freshness_module(home).compute_source_identity(root)
+    # T-896: pass the resolved home as `home=`, not as `root=`. The SAIPEN repo
+    # itself carries no .saipen/STATE.md, so handing it to the root-resolving
+    # entry point made it fall through to the env branch and hash with whatever
+    # SAIPEN_HOME the shell happened to export -- a project pinned to one
+    # protocol version then gets hashed by a different one, and on a machine
+    # with two installs the second load raises MULTI-HOME CONTAMINATION.
+    return _freshness_module(home=home).compute_source_identity(root)
 
 
 def _root_for_saipen_path(path: Path) -> Path | None:
@@ -581,7 +589,7 @@ def _root_for_saipen_path(path: Path) -> Path | None:
     return None
 
 
-def _freshness_module(root: Path | None = None):
+def _freshness_module(root: Path | None = None, *, home: Path | None = None):
     """The canonical freshness module from the project's OWN `saipen_home`
     (STATE.md § 1.7) when a root is resolvable, else any reachable SAIPEN home
     (SAIPEN_HOME env, then the known local canonical checkout). The freshness
@@ -590,14 +598,18 @@ def _freshness_module(root: Path | None = None):
     whatever the machine happens to have on PATH (T-204 review finding). A
     project that declares NO home falls back to env/machine resolution (its
     writer authority would fail the same way, but stateless hashing still
-    works)."""
-    if root is not None:
+    works).
+
+    Pass ``home=`` when the caller has ALREADY resolved the canonical home: a
+    resolved home is not a project root, so routing it through the ``root``
+    branch re-resolves it against a nonexistent STATE.md (T-896)."""
+    if home is None and root is not None:
         try:
             home = resolve_home(root)
         except SaioUnavailable:
             home = None
-        if home is not None:
-            return _load_freshness_from(home)
+    if home is not None:
+        return _load_freshness_from(home)
     env = os.environ.get("SAIPEN_HOME")
     for home in ([Path(env)] if env else []) + [
         Path(r"V:\___VAC\__K\__CODE\_AI_STUFF_AGENTIC\_SAIPEN"),
@@ -607,38 +619,74 @@ def _freshness_module(root: Path | None = None):
     raise SaioUnavailable("canonical SAIPEN home unreachable for freshness")
 
 
-def _load_freshness_from(home: Path):
-    """Load freshness from exactly one canonical home.
+def _freshness_alias(key: str) -> str:
+    """The home-scoped module name `freshness` is loaded under (T-893)."""
+    return "saipen_freshness_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
-    CORE-008: The cache lookup uses the normalized home identity. A second
-    distinct home is refused when a different home is already loaded in the
-    same process, to prevent sys.modules global identity contamination.
+
+def _complete_engine_homes() -> dict[str, dict[str, object]]:
+    """Cache slots holding a COMPLETE engine module set.
+
+    A freshness-only slot is not an engine: T-893 made freshness load per-home,
+    so a stateless read of project B no longer claims the process-wide writer
+    authority project A already holds. Counting those slots as contamination
+    would reintroduce IMP-003 through the engine() path instead of the
+    freshness one.
     """
-    import importlib as _il
+    return {k: v for k, v in _ENGINE_CACHE.items() if "operations" in v}
 
-    # W2-002: check multi-home BEFORE mutating sys.path
-    # W2-001 (SRC-003:R005): one authority lock, one home key -- this loader
-    # used to store `str(home)` while engine() stored `str(home).lower()`, so a
-    # mixed-case home produced two cache entries for a single home.
+
+def _load_freshness_from(home: Path):
+    """Load freshness from a canonical home, per home.
+
+    T-893 (IMP-003): this loader used to refuse any home but the first one the
+    process touched, permanently -- so a viewer opened on two projects with two
+    declared `saipen_home` values served project B's identity checks with
+    project A's hasher, or refused outright, and the order the process first
+    touched them in decided which. `importlib.import_module("freshness")` is
+    bound by NAME, and sys.modules is global, so the right fix is to stop
+    importing it by name: `tools/freshness.py` imports nothing from
+    saipen_engine, so loading it from an explicit file location under a
+    home-scoped name gives each home its own module object. The guard survives in
+    the only place it still means something -- a name already bound to a
+    different file is refused, never silently rebound.
+    """
     key = _home_key(home)
     with _ENGINE_LOCK:
-        if _ENGINE_CACHE:
-            existing_key = next(iter(_ENGINE_CACHE.keys()))
-            if existing_key != key:
-                raise SaioUnavailable(
-                    f"MULTI-HOME CONTAMINATION BLOCKED: freshness already loaded from "
-                    f"{existing_key}. Cannot load from distinct home {key} because "
-                    f"Python sys.modules is global by name."
-                )
         cached = _ENGINE_CACHE.get(key)
         if cached is not None and "_freshness_only" in cached:
             return cached["_freshness_only"]
-        tools = str(home / "tools")
-        if tools not in sys.path:
-            sys.path.insert(0, tools)
+        src = home / "tools" / "freshness.py"
+        alias = _freshness_alias(key)
+        bound = sys.modules.get(alias)
+        if bound is not None:
+            existing = Path(getattr(bound, "__file__", "") or "").resolve()
+            if existing != src.resolve():
+                raise SaioUnavailable(
+                    f"MULTI-HOME CONTAMINATION BLOCKED: module name {alias} is already "
+                    f"bound to {existing}. Refusing to rebind it to {src}."
+                )
+            mod = bound
+        else:
+            if not src.is_file():
+                raise SaioUnavailable(
+                    f"canonical SAIPEN home unreachable for freshness: {src} not found"
+                )
+            spec = importlib.util.spec_from_file_location(alias, src)
+            if spec is None or spec.loader is None:
+                raise SaioUnavailable(f"{src}: freshness module is not loadable")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[alias] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except BaseException:
+                # A half-executed module must never survive to answer identity
+                # questions: an unbound name is a clean refusal, a bound broken
+                # one is a wrong answer.
+                del sys.modules[alias]
+                raise
         # Load into a private slot, never a partial engine cache: engine() checks
         # for a COMPLETE module set, so a half-built cache can never leak out.
-        mod = _il.import_module("freshness")
         _ENGINE_CACHE.setdefault(key, {})["_freshness_only"] = mod
         return mod
 

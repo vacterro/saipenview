@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-014:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Close the completed goal container T-854"
+    }
+  },
+  "derived_at": "2026-09-18T12:12:55Z",
+  "derived_from": "SRC-014",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "cb705b152efd5da3a8451cfb1f701e82990fd1c3d2074fda51799bdedcb42b79"
+}

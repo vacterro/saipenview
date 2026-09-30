@@ -936,94 +936,148 @@ def scan(
             projects=[], worktrees=[], complete=False,
             completed_roots=[], unresolved_roots=[_lexical_root_key(r) for r in raw_roots],
         )
-    futures = {
-        pool.submit(
-            _scan_root_task, raw, max_depth, delay, extra_excludes, both_cancel, prune_plan, raw_roots
-        ): raw
-        for raw in raw_roots
-    }
-    for future in futures:
-        _track_shared_future(future)
+    # PERF-001 (SRC-018 R011): from the successful acquisition onward, ALL
+    # work runs inside try/finally so the pool is released EXACTLY ONCE on
+    # every exit -- normal return, worker exception, submit failure, or an
+    # unexpected error. The old code released only on the normal return path.
     projects: list[ProjectStatus] = []
     all_worktrees: list[dict] = []
     completed: dict[str, str] = {}
     unresolved: dict[str, str] = {}
     complete = True
     try:
-        for future in concurrent.futures.as_completed(
-            futures, timeout=max(float(PER_ROOT_TIMEOUT_SECONDS), 0.01)
-        ):
-            raw = futures[future]
-            lexical = _lexical_root_key(raw)
+        # PERF-001 (SRC-018 R011): submit and TRACK each future in the same
+        # step. The old comprehension submitted every root before tracking any,
+        # so a submit failure on the Nth root left the prior N-1 futures
+        # untracked (their refcount decrement never armed). Here each successful
+        # submit is tracked immediately; a submit failure cancels/drains the
+        # already-submitted futures and marks the rest unresolved.
+        futures: dict[concurrent.futures.Future, str] = {}
+        submit_failed = False
+        for raw in raw_roots:
             try:
-                result = future.result(timeout=0)
-            except (OSError, ValueError) as exc:
-                _push_error(f"scan of {raw} failed: {exc}")
-                unresolved[lexical] = lexical
-                complete = False
-                continue
-            root = result.get("root", lexical)
-            key = result.get("key", lexical)
-            if result.get("status") == "completed":
-                completed[key] = root
-                projects.extend(result.get("projects", []))
-                all_worktrees.extend(result.get("worktrees", []))
-            else:
-                unresolved[key] = root
-                complete = False
-    except concurrent.futures.TimeoutError:
-        _push_error("overall scan timeout reached, some roots skipped")
-        complete = False
-    pending = [future for future in futures if not future.done()]
-    if pending:
-        complete = False
-        internal_cancel.set()
-        for future in pending:
-            raw = futures[future]
-            if future.cancel():
+                future = pool.submit(
+                    _scan_root_task,
+                    raw,
+                    max_depth,
+                    delay,
+                    extra_excludes,
+                    both_cancel,
+                    prune_plan,
+                    raw_roots,
+                )
+            except RuntimeError as exc:
+                # Pool refused the submit (shutdown/broken). Account this root
+                # and every not-yet-submitted root as unresolved; cancel the
+                # already-submitted futures so no work is left untracked.
+                _push_error(
+                    f"scan submit failed for {raw} ({type(exc).__name__}: {exc}); "
+                    "remaining roots skipped"
+                )
                 unresolved[_lexical_root_key(raw)] = _lexical_root_key(raw)
-            else:
-                unresolved[_lexical_root_key(raw)] = _lexical_root_key(raw)
-                # PERF-001: running non-cooperative future = quarantined
-                with _SHARED_POOL_LOCK:
-                    _QUARANTINED_FUTURES += 1
+                submit_failed = True
+                break
+            futures[future] = raw
+            _track_shared_future(future)
+        if submit_failed:
+            complete = False
+            internal_cancel.set()
+            # Mark every root that never got a tracked future as unresolved.
+            submitted_raws = set(futures.values())
+            for raw in raw_roots:
+                if raw not in submitted_raws:
+                    unresolved.setdefault(
+                        _lexical_root_key(raw), _lexical_root_key(raw)
+                    )
 
-                def _quarantine_cleanup(_f):
-                    global _QUARANTINED_FUTURES
+        if futures:
+            try:
+                for future in concurrent.futures.as_completed(
+                    futures, timeout=max(float(PER_ROOT_TIMEOUT_SECONDS), 0.01)
+                ):
+                    raw = futures[future]
+                    lexical = _lexical_root_key(raw)
+                    try:
+                        result = future.result(timeout=0)
+                    except Exception as exc:  # noqa: BLE001 - one root's ordinary failure is isolated
+                        # PERF-001 (SRC-018 R011): an ordinary worker Exception
+                        # (not only OSError/ValueError) marks ONLY this root
+                        # unresolved with an explicit diagnostic; healthy roots
+                        # still publish. BaseException is never caught -- a real
+                        # interpreter-level signal must propagate.
+                        _push_error(
+                            f"scan of {raw} failed "
+                            f"({type(exc).__name__}: {exc})"
+                        )
+                        unresolved[lexical] = lexical
+                        complete = False
+                        continue
+                    root = result.get("root", lexical)
+                    key = result.get("key", lexical)
+                    if result.get("status") == "completed":
+                        completed[key] = root
+                        projects.extend(result.get("projects", []))
+                        all_worktrees.extend(result.get("worktrees", []))
+                    else:
+                        unresolved[key] = root
+                        complete = False
+            except concurrent.futures.TimeoutError:
+                _push_error("overall scan timeout reached, some roots skipped")
+                complete = False
+
+        pending = [future for future in futures if not future.done()]
+        if pending:
+            complete = False
+            internal_cancel.set()
+            for future in pending:
+                raw = futures[future]
+                if future.cancel():
+                    unresolved[_lexical_root_key(raw)] = _lexical_root_key(raw)
+                else:
+                    unresolved[_lexical_root_key(raw)] = _lexical_root_key(raw)
+                    # PERF-001: running non-cooperative future = quarantined
                     with _SHARED_POOL_LOCK:
-                        _QUARANTINED_FUTURES = max(0, _QUARANTINED_FUTURES - 1)
+                        _QUARANTINED_FUTURES += 1
 
-                future.add_done_callback(_quarantine_cleanup)
-        # PERF-001: quarantine this pool generation -- its non-cooperative
-        # workers occupy capacity that must not block healthy roots in
-        # the next scan.  _get_shared_pool will create a fresh pool.
-        with _SHARED_POOL_LOCK:
-            _SHARED_POOL_STALE = True
-    _set_scan_progress(
-        pct=100, root="", roots_done=len(raw_roots), roots_total=len(raw_roots)
-    )
-    seen = set()
-    deduped = []
-    for project in projects:
-        if _is_garbage_root(project.root):
-            continue
-        key = canonical_key(str(project.root))
-        if key not in seen:
-            seen.add(key)
-            deduped.append(project)
-    completed_roots = sorted(set(completed.values()))
-    unresolved_roots = sorted(set(unresolved.values()))
-    if unresolved_roots:
-        complete = False
-    outcome = ScanOutcome(
-        projects=deduped,
-        worktrees=all_worktrees,
-        complete=complete,
-        completed_roots=completed_roots,
-        unresolved_roots=unresolved_roots,
-    )
-    _release_shared_pool()
-    return outcome
+                    def _quarantine_cleanup(_f):
+                        global _QUARANTINED_FUTURES
+                        with _SHARED_POOL_LOCK:
+                            _QUARANTINED_FUTURES = max(0, _QUARANTINED_FUTURES - 1)
+
+                    future.add_done_callback(_quarantine_cleanup)
+            # PERF-001: quarantine this pool generation -- its non-cooperative
+            # workers occupy capacity that must not block healthy roots in
+            # the next scan.  _get_shared_pool will create a fresh pool.
+            with _SHARED_POOL_LOCK:
+                _SHARED_POOL_STALE = True
+        _set_scan_progress(
+            pct=100, root="", roots_done=len(raw_roots), roots_total=len(raw_roots)
+        )
+        seen = set()
+        deduped = []
+        for project in projects:
+            if _is_garbage_root(project.root):
+                continue
+            key = canonical_key(str(project.root))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(project)
+        completed_roots = sorted(set(completed.values()))
+        unresolved_roots = sorted(set(unresolved.values()))
+        if unresolved_roots:
+            complete = False
+        return ScanOutcome(
+            projects=deduped,
+            worktrees=all_worktrees,
+            complete=complete,
+            completed_roots=completed_roots,
+            unresolved_roots=unresolved_roots,
+        )
+    finally:
+        # PERF-001 (SRC-018 R011): the ONE release, reached on every exit path
+        # including an unexpected exception. Paired exactly-once with the
+        # successful _get_shared_pool acquisition above.
+        _release_shared_pool()
 
 
 DEFAULT_RESCAN_SECONDS = 300
@@ -1096,6 +1150,7 @@ class BackgroundScanner:
         delay: float = SCAN_INTER_DIR_DELAY,
         extra_excludes: set[str] | None = None,
         on_scan_start: Callable[[], None] | None = None,
+        on_scan_end: Callable[[], None] | None = None,
         epoch_source: Callable[[], int] | None = None,
         initial_delay: float = 0.0,
     ):
@@ -1106,6 +1161,11 @@ class BackgroundScanner:
         self._delay = delay
         self._extra_excludes = extra_excludes
         self._on_scan_start = on_scan_start
+        # W2-004: the mandatory PAIR to on_scan_start. The Api's scan-activity
+        # counter is incremented on start and decremented here on EVERY exit --
+        # success, error, cancellation or stale-generation -- so a failed or
+        # cancelled scan can never leave the UI reporting an active scan.
+        self._on_scan_end = on_scan_end
         # W2-001: every _do_scan captures the api's current scan epoch at
         # request start so a newer manual rescan can supersede this in-flight
         # publication. None means the on_result callback does not accept
@@ -1132,53 +1192,66 @@ class BackgroundScanner:
         """Run one scan cycle, publishing results only if the epoch is still current."""
         event = cancel_event if cancel_event is not None else self._stop_event
         gen = generation if generation is not None else self._gen
-        # W2-001: capture the api scan epoch at REQUEST START, before the
-        # filesystem work. A newer manual rescan bumps the epoch while this
-        # scan runs; when it finishes, _set_cache rejects its stale epoch so
-        # the older result can never roll back the manual one.
-        request_epoch = self._epoch_source() if self._epoch_source is not None else None
-        result = scan(
-            self._scan_roots,
-            max_depth=self._max_depth,
-            delay=self._delay,
-            extra_excludes=self._extra_excludes,
-            cancel=event,
-        )
-        if event.is_set() or not self._gen_counter.is_current(gen):
-            return
-        # PERF-001: pass the worktree list alongside the projects so the
-        # consumer can skip its own second walk. Backward-compatible: the
-        # worktrees travel as a keyword, and a ScanOutcome-aware consumer (the
-        # Api cache) also receives them inside the projects object.
-        callback_kwargs = {
-            "complete": result.complete,
-            "worktrees": result.worktrees,
-            "completed_roots": result.completed_roots,
-            "unresolved_roots": result.unresolved_roots,
-        }
-        if request_epoch is not None:
-            callback_kwargs["epoch"] = request_epoch
-        # Preserve consumers that intentionally implement the original
-        # list-only callback. New consumers receive full provenance; old
-        # consumers remain valid without catching a TypeError raised inside
-        # their own callback body.
+        # W2-004: on_scan_start/on_scan_end are a PAIR. The end callback runs
+        # in `finally` so every exit -- success, scan() error, cancellation or
+        # stale-generation -- releases the active-scan count. Callers that
+        # already invoked on_scan_start (the loop/rescan sites) must NOT also
+        # call it here; `_do_scan` owns the pair for the work it performs.
+        if self._on_scan_start:
+            self._on_scan_start()
         try:
-            parameters = inspect.signature(self._on_result).parameters
-            accepts_kwargs = any(
-                parameter.kind == inspect.Parameter.VAR_KEYWORD
-                for parameter in parameters.values()
+            # W2-001: capture the api scan epoch at REQUEST START, before the
+            # filesystem work. A newer manual rescan bumps the epoch while this
+            # scan runs; when it finishes, _set_cache rejects its stale epoch so
+            # the older result can never roll back the manual one.
+            request_epoch = (
+                self._epoch_source() if self._epoch_source is not None else None
             )
-            if accepts_kwargs:
+            result = scan(
+                self._scan_roots,
+                max_depth=self._max_depth,
+                delay=self._delay,
+                extra_excludes=self._extra_excludes,
+                cancel=event,
+            )
+            if event.is_set() or not self._gen_counter.is_current(gen):
+                return
+            # PERF-001: pass the worktree list alongside the projects so the
+            # consumer can skip its own second walk. Backward-compatible: the
+            # worktrees travel as a keyword, and a ScanOutcome-aware consumer (the
+            # Api cache) also receives them inside the projects object.
+            callback_kwargs = {
+                "complete": result.complete,
+                "worktrees": result.worktrees,
+                "completed_roots": result.completed_roots,
+                "unresolved_roots": result.unresolved_roots,
+            }
+            if request_epoch is not None:
+                callback_kwargs["epoch"] = request_epoch
+            # Preserve consumers that intentionally implement the original
+            # list-only callback. New consumers receive full provenance; old
+            # consumers remain valid without catching a TypeError raised inside
+            # their own callback body.
+            try:
+                parameters = inspect.signature(self._on_result).parameters
+                accepts_kwargs = any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters.values()
+                )
+                if accepts_kwargs:
+                    supported_kwargs = callback_kwargs
+                else:
+                    supported_kwargs = {
+                        name: value
+                        for name, value in callback_kwargs.items()
+                        if name in parameters
+                    }
+            except (TypeError, ValueError):
                 supported_kwargs = callback_kwargs
-            else:
-                supported_kwargs = {
-                    name: value
-                    for name, value in callback_kwargs.items()
-                    if name in parameters
-                }
-        except (TypeError, ValueError):
-            supported_kwargs = callback_kwargs
-        self._on_result(result.projects, **supported_kwargs)
+            self._on_result(result.projects, **supported_kwargs)
+        finally:
+            if self._on_scan_end:
+                self._on_scan_end()
 
     def _start_generation_locked(self) -> None:
         self._restart_pending = False
@@ -1233,18 +1306,25 @@ class BackgroundScanner:
                 if not self._gen_counter.is_current(generation):
                     break
                 try:
-                    if self._on_scan_start:
-                        self._on_scan_start()
+                    # W2-004: _do_scan owns the on_scan_start/on_scan_end pair.
                     self._do_scan(event, generation)
-                except (OSError, ValueError) as e:
-                    _push_error(f"background scan failed: {e}")
+                except Exception as e:  # noqa: BLE001 - one cycle's failure must not kill the loop
+                    # PERF-001 (SRC-018 R011): an ordinary Exception from a
+                    # single cycle marks it failed but MUST NOT end the
+                    # background loop -- later cycles still run. BaseException
+                    # is deliberately NOT caught so a real interpreter signal
+                    # (KeyboardInterrupt/SystemExit) still stops the thread.
+                    _push_error(
+                        f"background scan cycle failed "
+                        f"({type(e).__name__}: {e})"
+                    )
                     print(
                         f"SAIPENVIEW: BackgroundScanner._loop error: {e}",
                         file=sys.stderr,
                     )
                 event.wait(self._interval)
-        except (OSError, ValueError) as e:
-            _push_error(f"background scan failed: {e}")
+        except Exception as e:  # noqa: BLE001 - never let the loop thread die on an ordinary error
+            _push_error(f"background scan loop failed ({type(e).__name__}: {e})")
             print(
                 f"SAIPENVIEW: BackgroundScanner._loop error: {e}",
                 file=sys.stderr,
@@ -1269,8 +1349,7 @@ class BackgroundScanner:
             generation = self._gen
         if not self._gen_counter.is_current(generation):
             return
-        if self._on_scan_start:
-            self._on_scan_start()
+        # W2-004: _do_scan owns the on_scan_start/on_scan_end pair.
         self._do_scan(event, generation)
 
     def stop(self) -> None:

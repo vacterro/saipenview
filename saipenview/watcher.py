@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time as _time
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
@@ -26,6 +27,33 @@ from saipenview.events import event_bus
 DEBOUNCE_DELAY = 0.2
 # The only files whose change means the project's protocol state moved.
 _TRACKED = frozenset({"STATE.md", "BOARD.md", "LOG.md", "OUTBOX.md", "MANIFEST.md"})
+
+
+class _DebounceSlot:
+    """PERF-002 (SRC-004:R015): one coalescing trailing-debounce slot.
+
+    The old implementation cancelled and re-created a `threading.Timer` for
+    EVERY raw filesystem event: a 10,000-event burst on one key constructed,
+    started and cancelled 10,000 timers to publish once. The debounce collapsed
+    the CALLBACK but not the SCHEDULING work, so a protocol-write burst was
+    shifted from reparsing into thread-scheduler churn.
+
+    One slot per identity keeps ONE live timer. Later events advance a
+    monotonic ``deadline`` and the accumulated ``count`` under the caller's
+    lock instead of restarting the timer; when the timer fires it re-arms once
+    for the remaining duration if the deadline moved, else pops and publishes.
+    The trailing contract and the exact ``event_count`` are preserved, as is
+    the cancel-then-no-publish rule. Shared by both handler classes so the two
+    copies cannot drift.
+    """
+
+    __slots__ = ("deadline", "count", "timer", "fired")
+
+    def __init__(self) -> None:
+        self.deadline = 0.0
+        self.count = 0
+        self.timer: threading.Timer | None = None
+        self.fired = False
 
 
 class _RootRouterHandler(FileSystemEventHandler):
@@ -57,7 +85,7 @@ class _RootRouterHandler(FileSystemEventHandler):
         # two projects' STATE.md beneath one scan root must never share
         # debounce state, or one project's refresh can be silently swallowed
         # by the other's.
-        self._timers: dict[tuple[str, str], threading.Timer] = {}
+        self._timers: dict[tuple[str, str], _DebounceSlot] = {}
         self._event_counts: dict[tuple[str, str], int] = {}
         # PERF-002 (SRC-004:R015) + T-821: normalized candidate-root snapshot
         # keyed by the live router table OBJECT plus its length. A bare
@@ -151,18 +179,30 @@ class _RootRouterHandler(FileSystemEventHandler):
         return snapshot
 
     def _debounce(self, project: str, key: str) -> None:
+        # PERF-002 (SRC-004:R015): one live debounce SLOT per identity. A later
+        # event must not cancel+recreate the Timer; it only advances the slot's
+        # monotonic deadline and count. The timer, when it fires, re-arms once
+        # if the deadline moved and otherwise pops the slot and publishes.
         ident = (project, key)
         with self._lock:
             if self._disposed:
                 return
-            timer = self._timers.get(ident)
-            if timer:
-                timer.cancel()
+            slot = self._timers.get(ident)
+            now = _time.monotonic()
+            if slot is not None and slot.timer is not None and not slot.fired:
+                # Extend the existing window without touching the scheduler.
+                slot.deadline = now + self._debounce_delay
+                slot.count = self._event_counts.get(ident, slot.count)
+                return
+            slot = _DebounceSlot()
+            slot.deadline = now + self._debounce_delay
+            slot.count = self._event_counts.get(ident, 0)
             t = threading.Timer(
                 self._debounce_delay, self._fire, args=(project, key)
             )
             t.daemon = True
-            self._timers[ident] = t
+            slot.timer = t
+            self._timers[ident] = slot
             t.start()
 
     def _fire(self, project: str, key: str) -> None:
@@ -170,8 +210,22 @@ class _RootRouterHandler(FileSystemEventHandler):
         with self._lock:
             if self._disposed:
                 return
+            slot = self._timers.get(ident)
+            if slot is None:
+                return
+            now = _time.monotonic()
+            if now < slot.deadline - 1e-9:
+                # The deadline advanced after this timer was armed: re-arm once
+                # for the remaining duration instead of publishing early.
+                remaining = slot.deadline - now
+                t = threading.Timer(remaining, self._fire, args=(project, key))
+                t.daemon = True
+                slot.timer = t
+                t.start()
+                return
             self._timers.pop(ident, None)
-            event_count = self._event_counts.pop(ident, 0)
+            self._event_counts.pop(ident, 0)
+            event_count = slot.count
         event_bus.publish(
             "saipen.project_changed",
             {
@@ -184,8 +238,10 @@ class _RootRouterHandler(FileSystemEventHandler):
     def cancel(self) -> None:
         with self._lock:
             self._disposed = True
-            for t in self._timers.values():
-                t.cancel()
+            for slot in self._timers.values():
+                slot.fired = True
+                if slot.timer is not None:
+                    slot.timer.cancel()
             self._timers.clear()
             self._event_counts.clear()
 
@@ -207,7 +263,7 @@ class _SaipenEventHandler(FileSystemEventHandler):
         self.root = root
         self._debounce_delay = debounce_delay
         self._lock = threading.Lock()
-        self._timers: dict[str, threading.Timer] = {}
+        self._timers: dict[str, _DebounceSlot] = {}
         # W2-002: raw-event count per file in the current debounce window.
         self._event_counts: dict[str, int] = {}
         self._disposed = False
@@ -264,15 +320,23 @@ class _SaipenEventHandler(FileSystemEventHandler):
             self._debounce(key)
 
     def _debounce(self, key: str) -> None:
+        # PERF-002: one live debounce slot per identity (see _DebounceSlot).
         with self._lock:
             if self._disposed:
                 return
-            timer = self._timers.get(key)
-            if timer:
-                timer.cancel()
+            slot = self._timers.get(key)
+            now = _time.monotonic()
+            if slot is not None and slot.timer is not None and not slot.fired:
+                slot.deadline = now + self._debounce_delay
+                slot.count = self._event_counts.get(key, slot.count)
+                return
+            slot = _DebounceSlot()
+            slot.deadline = now + self._debounce_delay
+            slot.count = self._event_counts.get(key, 0)
             t = threading.Timer(self._debounce_delay, self._fire, args=(key,))
             t.daemon = True
-            self._timers[key] = t
+            slot.timer = t
+            self._timers[key] = slot
             t.start()
 
     def _fire(self, key: str) -> None:
@@ -283,8 +347,20 @@ class _SaipenEventHandler(FileSystemEventHandler):
         with self._lock:
             if self._disposed:
                 return
+            slot = self._timers.get(key)
+            if slot is None:
+                return
+            now = _time.monotonic()
+            if now < slot.deadline - 1e-9:
+                remaining = slot.deadline - now
+                t = threading.Timer(remaining, self._fire, args=(key,))
+                t.daemon = True
+                slot.timer = t
+                t.start()
+                return
             self._timers.pop(key, None)
-            event_count = self._event_counts.pop(key, 0)
+            self._event_counts.pop(key, 0)
+            event_count = slot.count
         event_bus.publish(
             "saipen.project_changed",
             {
@@ -299,8 +375,10 @@ class _SaipenEventHandler(FileSystemEventHandler):
         the watch is gone (T-124)."""
         with self._lock:
             self._disposed = True
-            for t in self._timers.values():
-                t.cancel()
+            for slot in self._timers.values():
+                slot.fired = True
+                if slot.timer is not None:
+                    slot.timer.cancel()
             self._timers.clear()
             self._event_counts.clear()
 
@@ -451,12 +529,36 @@ class SaipenWatcher:
         return path_norm == scope_norm or path_norm.startswith(scope_norm + "/")
 
     def _watch_scan_root(self, scope: str, projects: list[str], gen: int = -1) -> None:
-        if scope in self._root_router:
-            # Already scheduled; just refresh the router.
-            self._root_router[scope] = {p: p for p in projects}
-            for p in projects:
-                self._project_to_scope[p] = scope
-            return
+        # W2-002 (SRC-003:R006): the already-scheduled fast path must be
+        # lifecycle-aware too, not only the slow schedule/commit path. A sync
+        # that captured an OLD generation can reach this branch after
+        # stop()+revive() cleared the maps; refreshing the router here would
+        # then publish durable topology with NO live Observer watch, and the
+        # stale router entry would send every later sync back through this same
+        # fast path so it never self-heals.
+        if gen >= 0:
+            with self._lock:
+                if self._stopped or self._life_gen != gen:
+                    return
+                if scope in self._root_router and scope in self._watches:
+                    self._root_router[scope] = {p: p for p in projects}
+                    for p in projects:
+                        self._project_to_scope[p] = scope
+                    return
+                # Stale/inconsistent fast-path state: drop it so the schedule
+                # below re-establishes a genuine watch.
+                self._root_router.pop(scope, None)
+                for p in list(self._project_to_scope):
+                    if self._project_to_scope.get(p) == scope:
+                        self._project_to_scope.pop(p, None)
+        elif scope in self._root_router:
+            with self._lock:
+                if scope in self._watches:
+                    self._root_router[scope] = {p: p for p in projects}
+                    for p in projects:
+                        self._project_to_scope[p] = scope
+                    return
+                self._root_router.pop(scope, None)
         scan_path = Path(scope)
         if not scan_path.is_dir():
             # Configure-time scope no longer accessible; degrade to per-project.
@@ -581,12 +683,17 @@ class SaipenWatcher:
         the per-project path is reserved for the bounded fallback; this
         method delegates to the per-project fallback schedule so external
         callers (tests, single-project callers) get the old behaviour.
+        W2-002 (SRC-003:R006): capture the generation under the lock and pass
+        it down, so a stop()/revive() racing this public entry cannot be
+        crossed by an unversioned topology commit.
         """
-        if self._stopped:
-            return
-        if root in self._watches or root in self._fallback_projects:
-            return
-        self._watch_project_fallback(root)
+        with self._lock:
+            if self._stopped:
+                return
+            gen = self._life_gen
+            if root in self._watches or root in self._fallback_projects:
+                return
+        self._watch_project_fallback(root, gen)
 
     def unwatch(self, root: str) -> None:
         """Stop watching a project and cancel its pending debounce timers."""

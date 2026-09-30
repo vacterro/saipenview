@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-013:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Close goal containers T-854 and T-855 now that all SRC-009 findings are implemented and audit/4.md is consumed"
+    }
+  },
+  "derived_at": "2026-09-18T12:12:31Z",
+  "derived_from": "SRC-013",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "cb05196b4e95d2d1a8a85384c696eaf800757befbc7a9ef9fa5783569f74f8ce"
+}

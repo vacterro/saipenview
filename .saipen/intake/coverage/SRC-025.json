@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-025:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-880 closed with verification evidence in LOG: verify -> PASS [target: T-880] conf: high -- read-only audit, no product edit to exercise. Every finding re-verified against the CURRENT tree and, where behavioural, by an executed control rather than inspection. G1 red control executed: a function performing TWO Path.read_bytes() calls and returning {'text': decode(raw), ...} satisfies both assertions of test_w2_017_read_ordinary.py::test_read_fi",
+      "text": "Read-only semantic audit of current working-tree diff versus HEAD 654916e35a4c9c57bd7f59045b57ca07a243e1b2, limited to tests/ and tools/release_gate.py. Determine whether changed/new tests accurately exercise production behavior, whether assertions can pass falsely, and whether release gate logic has concrete regressions. No edits. No broad test reruns. Report actionable findings with severity, file:line, failure scenario; distinguish production bug from test gap. Ignore pre-existing issues.",
+      "verification": "the Work this request created reached its own verification gate; see the T-880 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-880"
+    }
+  },
+  "schema_version": 1
+}

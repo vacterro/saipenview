@@ -7,6 +7,7 @@ test/fixture/oracle byte-identical (VERIFY-ORACLE-01).
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -450,8 +451,8 @@ def test_r013_retry_before_admission_keeps_newest_fact(tmp_path):
 
 def test_r013_newest_never_lost_at_saturation(tmp_path):
     """At the true saturation boundary (even a retried write fails), the
-    newest terminal fact is still admitted (oldest evicted with a durable
-    journal), and history never fabricates interrupted for it."""
+    newest terminal fact is still admitted and the evicted fact uses the same
+    per-run replayable sidecar as every other pending terminal record."""
     from saipenview.sessions import SessionStore
 
     store = _sessions_store(tmp_path)
@@ -466,11 +467,18 @@ def test_r013_newest_never_lost_at_saturation(tmp_path):
         store._pending_final
     )
     assert store._pending_degraded is True
-    # The evicted terminal fact was journaled durably.
-    journal = tmp_path / ".pending-final-overflow.log"
-    assert journal.exists()
-    text = journal.read_text(encoding="utf-8")
-    assert '"status": "done"' in text, text
+    # The evicted terminal fact uses the same durable record format/path as
+    # ordinary failed metadata writes; there is no separate write-only log.
+    from saipenview.sessions import project_key
+
+    fallback = (
+        tmp_path
+        / ".pending-final"
+        / project_key("/proj")
+        / "old-0.json"
+    )
+    assert fallback.is_file()
+    assert json.loads(fallback.read_text(encoding="utf-8"))["status"] == "done"
 
 
 # --- R018 (PERF-005): LOG-only refresh must not read the whole topology ------

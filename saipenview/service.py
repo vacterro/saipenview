@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -168,10 +169,26 @@ class SaipenViewService:
         self._event_subscribers: set[threading.Condition] = set()
         self._subscriber_lock = threading.Lock()
         self._stopping = threading.Event()
+        # `_stopping` means shutdown was requested (SSE clients should leave).
+        # `_stopped` means every admitted RPC and service-owned thread has
+        # drained and backend teardown has completed.
+        self._stopped = threading.Event()
+        self._stopped.set()
+        self._stop_owner: int | None = None
         self._thread: threading.Thread | None = None
         # CORE-018: explicit lifecycle state machine.
         self._state = "stopped"  # stopped | starting | running | stopping
         self._state_lock = threading.Lock()
+        # W2-003: service-wide RPC admission/drain boundary. Every allowlisted
+        # RPC registers as an active worker under `_rpc_cond` before it
+        # dereferences `_api`; stop() closes admission for ALL methods (not
+        # just launch_agent) and waits for admitted workers to drain before it
+        # tears down Api / publishes `stopped`. Without it a daemon request
+        # thread could keep a bound Api method and execute mutation after the
+        # service already reported itself stopped.
+        self._rpc_cond = threading.Condition(threading.Lock())
+        self._rpc_active = 0
+        self._rpc_admission_open = True
 
     # ── public lifecycle ────────────────────────────────────────────────────
 
@@ -195,10 +212,15 @@ class SaipenViewService:
             if self._state != "stopped":
                 return  # double-start: deterministic no-op
             self._state = "starting"
+            self._stopped.clear()
             # CORE-008: a prior stop() set this event; clear it atomically during
             # the stopped->starting transition so wait()/SSE don't terminate
             # immediately after a documented restart.
             self._stopping.clear()
+            # W2-003: reopen RPC admission for the new lifecycle generation.
+            with self._rpc_cond:
+                self._rpc_admission_open = True
+                self._rpc_active = 0
 
             api_created = False
             event_subscribed = False
@@ -269,6 +291,7 @@ class SaipenViewService:
                         api.stop()
                     except Exception:  # noqa: BLE001
                         pass
+                self._stopped.set()
                 raise
 
     def stop(self) -> None:
@@ -277,39 +300,75 @@ class SaipenViewService:
         CORE-018: idempotent. Resets the lifecycle state so a subsequent
         start() can work.
         """
+        current = threading.get_ident()
         with self._state_lock:
             if self._state == "stopped":
                 return
-            self._state = "stopping"
+            if self._state == "stopping":
+                # Re-entrant stop (for example a second signal delivered to
+                # the teardown thread) must not wait on itself or run cleanup
+                # twice. Other callers wait for the owner to publish complete.
+                if self._stop_owner == current:
+                    return
+                if self._stop_owner is None:
+                    # A prior teardown attempt failed. This caller retries
+                    # unfinished cleanup instead of waiting on a dead owner.
+                    self._stop_owner = current
+                    owner = True
+                else:
+                    owner = False
+            else:
+                self._state = "stopping"
+                self._stop_owner = current
+                # Close admission under its lock before any new RPC can enter.
+                with self._rpc_cond:
+                    self._rpc_admission_open = False
+                owner = True
+        if not owner:
+            self._stopped.wait()
+            return
+
         self._stopping.set()
-        if self._server:
-            try:
-                self._server.shutdown()
-                self._server.server_close()
-            except OSError:
-                pass
-            self._server = None
-        if self._api is not None:
-            event_bus.unsubscribe("saipen.file_changed", self._on_file_changed)
-            self._api.stop()
-            self._api = None
-        with self._subscriber_lock:
-            for cond in list(self._event_subscribers):
+        completed = False
+        try:
+            # W2-003: an admitted RPC owns the live Api until it returns.
+            # Drain without a deadline; a timed-out stop is still stopping,
+            # and cannot release the single-instance guard as if teardown won.
+            with self._rpc_cond:
+                self._rpc_cond.wait_for(lambda: self._rpc_active <= 0)
+            if self._server:
                 try:
-                    with cond:
-                        cond.notify_all()
-                except RuntimeError:
+                    self._server.shutdown()
+                    self._server.server_close()
+                except OSError:
                     pass
-            self._event_subscribers.clear()
-        if (
-            self._thread
-            and self._thread.is_alive()
-            and self._thread is not threading.current_thread()
-        ):
-            self._thread.join(timeout=5)
-        self._thread = None
-        with self._state_lock:
-            self._state = "stopped"
+                self._server = None
+            if self._api is not None:
+                event_bus.unsubscribe("saipen.file_changed", self._on_file_changed)
+                self._api.stop()
+                self._api = None
+            with self._subscriber_lock:
+                for cond in list(self._event_subscribers):
+                    try:
+                        with cond:
+                            cond.notify_all()
+                    except RuntimeError:
+                        pass
+                self._event_subscribers.clear()
+            if (
+                self._thread
+                and self._thread.is_alive()
+                and self._thread is not threading.current_thread()
+            ):
+                self._thread.join()
+            self._thread = None
+            completed = True
+        finally:
+            with self._state_lock:
+                self._stop_owner = None
+                if completed:
+                    self._state = "stopped"
+                    self._stopped.set()
 
     def _handle_server_error(self, request, client_address) -> None:
         """A client aborting mid-request (shutdown, navigation, tab close) is
@@ -333,11 +392,17 @@ class SaipenViewService:
             pass
 
     def wait(self) -> None:
-        """Block the caller until stop() is requested (signal-driven shutdown)."""
-        import time
+        """Block until service teardown completes, not merely until requested.
 
-        while not self._stopping.is_set():
-            time.sleep(0.25)
+        A bounded poll, never ``Event.wait()``: this runs on the MAIN thread,
+        and on Windows a thread parked in an uninterruptible lock acquire never
+        sees a console control event, so Ctrl+C would stop reaching the
+        ``SIGINT``/``SIGTERM`` handler that calls ``stop()`` -- the process
+        would become unkillable from its own console. ``time.sleep`` waits
+        alertably, so the handler runs on the next poll.
+        """
+        while not self._stopped.is_set():
+            time.sleep(0.05)
 
     # W2-005: bounded per-subscriber event buffer.
     _SSE_QUEUE_MAX = 200
@@ -417,47 +482,48 @@ class SaipenViewService:
     # ── RPC dispatch ────────────────────────────────────────────────────────
 
     def _dispatch(self, method: str, args: list[Any]) -> Any:
-        # T-839 W2-001: service-admission guard. Once the service lifecycle has
-        # entered "stopping", a new launch_agent RPC must not begin a launch at
-        # all -- the authoritative barrier lives in ProcessManager, but this
-        # guard prevents a fresh admission from racing close behind shutdown.
-        # An RPC that already passed dispatch before stop() began is still
-        # turned back by the ProcessManager barrier itself.
-        if method == "launch_agent":
-            with self._state_lock:
-                if self._state != "running":
-                    raise _ServiceError(
-                        "SAIPENVIEW is stopping",
-                        503,
-                    )
-        if method not in ALLOWED_RPC_METHODS:
-            if method in _DESKTOP_ONLY_METHODS:
-                raise _ServiceError(
-                    f"RPC {method!r} is a desktop-shell operation and is not "
-                    "exposed by the SAIPENVIEW service",
-                    403,
-                )
-            raise _ServiceError(f"RPC {method!r} is not allowlisted", 404)
-        if self._api is None:
-            raise _ServiceError("SAIPENVIEW service is not running", 503)
-        fn = getattr(self._api, method, None)
-        if fn is None or not callable(fn) or method.startswith("_"):
-            raise _ServiceError(f"RPC {method!r} is not callable", 404)
-        # W2-013: use inspect.signature().bind() to distinguish caller-side
-        # arity errors from backend-internal TypeErrors. Binding TypeError
-        # becomes 400 (client error); after binding, an internal TypeError
-        # flows as 500 (server error).
-        import inspect
-
+        # W2-003: service-wide RPC admission. Any allowlisted RPC that arrives
+        # while the service is not running (including the whole `stopping`
+        # window) is refused, and every admitted RPC is registered as an
+        # active worker so stop() can drain it before it tears down Api.
+        with self._rpc_cond:
+            if self._state != "running" or not self._rpc_admission_open:
+                raise _ServiceError("SAIPENVIEW is stopping", 503)
+            self._rpc_active += 1
         try:
-            inspect.signature(fn).bind(*args)
-        except TypeError as exc:
-            raise _ServiceError(f"bad arguments: {exc}", 400) from exc
-        result = fn(*args)
-        # PERF-014: _send_json handles json.dumps; no need for a separate
-        # validation serialization here. The previous json.dumps(result) was
-        # discarded immediately, doubling CPU/allocation on every RPC.
-        return result
+            if method not in ALLOWED_RPC_METHODS:
+                if method in _DESKTOP_ONLY_METHODS:
+                    raise _ServiceError(
+                        f"RPC {method!r} is a desktop-shell operation and is not "
+                        "exposed by the SAIPENVIEW service",
+                        403,
+                    )
+                raise _ServiceError(f"RPC {method!r} is not allowlisted", 404)
+            if self._api is None:
+                raise _ServiceError("SAIPENVIEW service is not running", 503)
+            fn = getattr(self._api, method, None)
+            if fn is None or not callable(fn) or method.startswith("_"):
+                raise _ServiceError(f"RPC {method!r} is not callable", 404)
+            # W2-013: use inspect.signature().bind() to distinguish caller-side
+            # arity errors from backend-internal TypeErrors. Binding TypeError
+            # becomes 400 (client error); after binding, an internal TypeError
+            # flows as 500 (server error).
+            import inspect
+
+            try:
+                inspect.signature(fn).bind(*args)
+            except TypeError as exc:
+                raise _ServiceError(f"bad arguments: {exc}", 400) from exc
+            result = fn(*args)
+            # PERF-014: _send_json handles json.dumps; no need for a separate
+            # validation serialization here. The previous json.dumps(result) was
+            # discarded immediately, doubling CPU/allocation on every RPC.
+            return result
+        finally:
+            with self._rpc_cond:
+                self._rpc_active -= 1
+                if self._rpc_active <= 0:
+                    self._rpc_cond.notify_all()
 
     def _check_auth(self, token: str | None) -> None:
         # Constant-ish comparison; the token is a high-entropy per-launch secret

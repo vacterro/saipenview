@@ -2,9 +2,40 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+# T-898: a fixture stamped with a literal date rots. `updated` is checked
+# against _STALE_DAYS=30, so a date that was legal when written turns the whole
+# fixture family red the day the calendar moves past it. One helper, one clock,
+# no calendar constants left in fixtures.
+_BOARD_TICKET_RE = re.compile(r"^\s*-\s*\[[ /xX]\]?\s*(T-\d+)\b", re.M)
+
+
+def fixture_now() -> datetime:
+    """The single clock every protocol fixture dates itself from."""
+    return datetime.now(timezone.utc)
+
+
+def state_updated(now: datetime | None = None) -> str:
+    """A `updated:` value for STATE.md front matter that is never stale."""
+    return (now or fixture_now()).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def log_stamp(moment: datetime) -> str:
+    """A LOG.md event timestamp (`DD.MM.YY HH:MM`) for *moment*."""
+    return moment.strftime("%d.%m.%y %H:%M")
+
+
+def board_ticket_ids(board_text: str) -> list[str]:
+    """Every `T-###` the board names, in file order, de-duplicated."""
+    seen: dict[str, None] = {}
+    for tid in _BOARD_TICKET_RE.findall(board_text):
+        seen.setdefault(tid, None)
+    return list(seen)
 
 
 @pytest.fixture(autouse=True)
@@ -384,6 +415,19 @@ def make_conformant_project(
     root = tmp_path / "proj"
     saipen = root / ".saipen"
     saipen.mkdir(parents=True)
+    # T-898: board_text must be known BEFORE LOG.md is written, because every
+    # ticket the board names in ## TODO / ## DOING needs a [T-###] allocation
+    # event behind it (CORE-003 / SRC-026:R003). A record that merely looks
+    # like a ticket is not authority.
+    board = board_text or "# BOARD\n## DOING\n\n## TODO\n\n## DONE\n\n## BLOCKED\n"
+    now = fixture_now()
+    bodies = ["RUN: boot", "RUN: validate.py -> PASS"]
+    bodies += [f"[{tid}] DEC: ticket added via SAIOPS" for tid in board_ticket_ids(board)]
+    while len(bodies) < log_tail:
+        bodies.append("RUN: extra")
+    # STATE.last_event must name the LOG tail exactly, so the allocation
+    # records raise the tail when the board holds more tickets than log_tail.
+    tail = len(bodies)
     (saipen / "STATE.md").write_text(
         "---\nschema_version: 3\n"
         f"phase: {phase}\ntransition_from: SHIP\ntask: {task}\n"
@@ -391,30 +435,18 @@ def make_conformant_project(
         f"agent: {agent}\nsaipen_version: 7\n"
         f"saipen_home: {home}\n"
         "mode: full\nexecution_intent: normal\n"
-        "updated: 2026-08-11T00:00:00Z\n"
-        f"last_event: {log_tail}\n"
+        f"updated: {state_updated(now)}\n"
+        f"last_event: {tail}\n"
         "style_contract: ded-4ae736e4\n---\n",
         encoding="utf-8",
     )
-    (saipen / "BOARD.md").write_text(
-        board_text or "# BOARD\n## DOING\n\n## TODO\n\n## DONE\n\n## BLOCKED\n",
-        encoding="utf-8",
-    )
-    (saipen / "LOG.md").write_text(
-        "- 11.08.26 00:00 [E-1] RUN: boot\n"
-        "- 11.08.26 00:01 [E-2] [parent: E-1] RUN: validate.py -> PASS\n"
-        + (
-            "".join(
-                f"- 11.08.26 00:{2 + i:02d} [E-{3 + i}] [parent: E-{2 + i}] "
-                f"RUN: extra\n"
-                for i in range(max(0, log_tail - 2))
-            )
-        )
-        if log_tail > 2
-        else "- 11.08.26 00:00 [E-1] RUN: boot\n"
-        "- 11.08.26 00:01 [E-2] [parent: E-1] RUN: validate.py -> PASS\n",
-        encoding="utf-8",
-    )
+    (saipen / "BOARD.md").write_text(board, encoding="utf-8")
+    lines = []
+    for i, body in enumerate(bodies, 1):
+        stamp = log_stamp(now + timedelta(minutes=i - 1))
+        parent = f" [parent: E-{i - 1}]" if i > 1 else ""
+        lines.append(f"- {stamp} [E-{i}]{parent} {body}\n")
+    (saipen / "LOG.md").write_text("".join(lines), encoding="utf-8")
     return root
 
 

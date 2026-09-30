@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-014:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-870 closed with verification evidence in LOG: verify -> PASS [target: T-870] conf: high -- goal container T-854 ready for closure: all SRC-009 findings implemented, audit/4.md consumed, SRC-009 CLOSED",
+      "text": "Close the completed goal container T-854",
+      "verification": "the Work this request created reached its own verification gate; see the T-870 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-870"
+    }
+  },
+  "schema_version": 1
+}

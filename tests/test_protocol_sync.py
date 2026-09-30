@@ -34,8 +34,13 @@ _CANDIDATE_ROOTS = [
     Path(r"V:\___VAC\__K\__CODE\_AI_STUFF_AGENTIC\_SAIPEN"),
     Path.home() / ".claude" / "skills" / "saipen",
 ]
+# T-895: SAIPEN_HOME was consulted FIRST, so a shell that happened to export a
+# launcher install decided this test's verdict, and the same suite passed or
+# failed depending on where it was started. The declared checkouts are the
+# vocabulary authority; an ambient env var is only the fallback for a machine
+# that has nothing else.
 if os.environ.get("SAIPEN_HOME"):
-    _CANDIDATE_ROOTS.insert(0, Path(os.environ["SAIPEN_HOME"]))
+    _CANDIDATE_ROOTS.append(Path(os.environ["SAIPEN_HOME"]))
 
 
 def _find(*relative: str) -> Path | None:
@@ -91,6 +96,20 @@ def _find_tools_dir() -> Path | None:
     return None
 
 
+def _purge_engine_modules() -> None:
+    """Drop every `saipen_engine*` module bound in this process.
+
+    The package resolves its root from sys.path ONCE, at first import, and
+    keeps that binding until something deletes it. One engine root per process
+    is the right rule for the app (it is a MULTI-HOME fail-closed guard there);
+    a test suite that compares against a named root has to say which root.
+    """
+    for name in [
+        m for m in sys.modules if m == "saipen_engine" or m.startswith("saipen_engine.")
+    ]:
+        del sys.modules[name]
+
+
 @pytest.fixture(scope="module")
 def engine_vocab():
     """Live engine vocabularies, captured by importing the engine once.
@@ -112,8 +131,22 @@ def engine_vocab():
     saved_path = list(sys.path)
     try:
         sys.path.insert(0, str(tools))
+        # T-901: `import saipen_engine` is served from sys.modules when the name
+        # is already bound, and sys.path has no say. An earlier test
+        # (test_saio_writer's engine-patching case) imports the engine from the
+        # canonical_home() the conftest picked -- a DIFFERENT root than
+        # _CANDIDATE_ROOTS[0] whenever SAIPEN_HOME points at another install --
+        # and leaves it there. This fixture then compared the viewer against
+        # that other install's REGISTRY.json and failed, in a full run only.
+        # Purge before importing, and assert after, so the root this compares
+        # against is provably the one _find_tools_dir() chose.
+        _purge_engine_modules()
         from saipen_engine import applicability, phases, registry
 
+        loaded = Path(registry.__file__).resolve()
+        assert (
+            loaded.is_relative_to(tools.resolve())
+        ), f"engine loaded from {loaded}, not the {_find_tools_dir()} this test picked"
         reg = registry.load_registry()
         return {
             "commands": frozenset(
@@ -145,12 +178,7 @@ def engine_vocab():
             ),
         }
     finally:
-        for name in [
-            m
-            for m in sys.modules
-            if m == "saipen_engine" or m.startswith("saipen_engine.")
-        ]:
-            del sys.modules[name]
+        _purge_engine_modules()
         sys.path[:] = saved_path
 
 

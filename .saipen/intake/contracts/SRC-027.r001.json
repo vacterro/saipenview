@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-027:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Read-only investigation. User reports two project snapshots created 2026-09-24T00:42:06 and 04:20:17, exactly 2000 archive entries each, added/removed/changed project files all 0, only .audapack/manifest.json and _AUDAPACK_MANIFEST.json differing by packaging timestamps, while live .saipen/STATE.md reached phase DONE last_event 1909 at 04:19:10Z and HEAD is 654916e35a4c9c57bd7f59045b57ca07a243e1b2. Diagnose why latest package is stale or wrong working tree. Search relevant local tooling/config/history and available files, including outside repo if needed. Do not edit anything. Do not run destructive commands. Return concise evidence with exact paths/commands; distinguish proven cause from hypotheses."
+    }
+  },
+  "derived_at": "2026-09-26T06:02:00Z",
+  "derived_from": "SRC-027",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "5331bf792b4451dd9940aed35afa3fca520813d1565338bc288f71258cdefbd8"
+}

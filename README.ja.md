@@ -18,7 +18,7 @@
     <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://github.com/vacterro/saipenview"><img src="https://img.shields.io/badge/platform-Windows-orange?style=flat-square&logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/vacterro/saipenview/releases"><img src="https://img.shields.io/github/v/release/vacterro/saipenview?style=flat-square&include_prereleases" alt="Release"></a>
-    <strong>**v0.1.32**</strong>
+    <strong>**v0.1.33**</strong>
     <a href="https://github.com/vacterro/saipenview/actions"><img src="https://img.shields.io/github/actions/workflow/status/vacterro/saipenview/ci.yml?branch=main&style=flat-square&logo=github" alt="CI"></a>
   </p>
 </div>
@@ -269,7 +269,7 @@ All settings are also configurable through the **Settings** modal in the app.
 ```
 saipenview/
 ├── app.py              Entry wiring — tray, hotkey, window, api, single-instance guard
-├── api.py              JS-facing pywebview bridge (90 public methods)
+├── api.py              JS-facing pywebview bridge (93 public methods)
 ├── scanner.py          Drive walk + background rescan loop
 ├── parser.py           STATE.md / BOARD.md / LOG.md parsing
 ├── textio.py           One reader for every .saipen/ file — BOM, UTF-16, cp1251

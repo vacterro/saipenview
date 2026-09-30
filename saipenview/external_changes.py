@@ -349,13 +349,16 @@ class ExternalChangeRegistry:
         flush is a no-op (the in-memory set is partial; preserving the
         corrupt evidence on disk is more important than writing a partial
         set that would silently replace it).
+
+        W2-006 (SRC-018 R010): ``_write_degraded`` is owned SOLELY by
+        ``_save`` under the registry lock. This method does NOT re-assign it
+        after the lock -- a stale post-lock assignment could overwrite the
+        durability health a newer successful writer just established.
         """
         if self._load_corrupt:
             return
         with self._lock:
-            ok = self._save()
-        if not ok:
-            self._write_degraded = True
+            self._save()
 
     def record(self, root: str, rel_path: str, fingerprint: str) -> int:
         """Record an external write under canonicalized keys.
@@ -366,6 +369,13 @@ class ExternalChangeRegistry:
         change durably persisted. W2-003 / T-33: token generation happens
         UNDER the registry lock so concurrent same-path records receive
         distinct tokens.
+
+        W2-006 (SRC-018 R010): the per-call failure return (``-1``) is
+        INDEPENDENT of global ``_write_degraded``. This call reports its own
+        persistence outcome even if a later successful writer repairs global
+        durability; conversely it never re-assigns the global flag after the
+        lock, so it cannot overwrite a newer save's health. ``_save`` (under
+        the lock) is the sole authority for ``_write_degraded``.
         """
         key_root = canonical_key(root)
         key_rel = normalize_rel(rel_path)
@@ -377,7 +387,6 @@ class ExternalChangeRegistry:
             )
             ok = self._save()
         if not ok:
-            self._write_degraded = True
             return -1
         return token
 
@@ -390,6 +399,11 @@ class ExternalChangeRegistry:
         W2-003: when token is provided, the acknowledgement is conditional --
         only succeeds if the entry's token matches (same change the user saw).
         A newer write must remain pending.
+
+        W2-006 (SRC-018 R010): the failure return is INDEPENDENT of global
+        ``_write_degraded`` (``_save``, under the lock, owns that flag). The
+        restore-and-report-False happens under the same lock as ``_save``, so
+        no post-lock assignment can overwrite a newer writer's durability.
         """
         key_root = canonical_key(root)
         key_rel = normalize_rel(rel_path)
@@ -403,10 +417,10 @@ class ExternalChangeRegistry:
             if not self._save():
                 # W2-001: persistence failed -- the in-memory removal is
                 # not durable. Restore the entry and report failure so the
-                # boundary keeps blocking collect.
+                # boundary keeps blocking collect. ``_save`` already set
+                # ``_write_degraded`` under this lock; do not re-assign it.
                 if removed is not None:
                     self._entries[(key_root, key_rel)] = removed
-                self._write_degraded = True
                 return False
             return True
 

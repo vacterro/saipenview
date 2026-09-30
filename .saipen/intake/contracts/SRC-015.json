@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-015:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Final convergence validation for the SRC-009 wave: compileall plus the full native pytest suite, classify any failures against the pre-wave baseline"
+    }
+  },
+  "derived_at": "2026-09-18T12:18:41Z",
+  "derived_from": "SRC-015",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "1831be57193361f1531ffbb95fecb4ba3a9ee7fe96fa1267f4680b0153c65d1f"
+}

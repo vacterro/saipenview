@@ -182,12 +182,6 @@ from saipenview.sessions import SessionStore
 
 _control_run_ids = itertools.count(1)
 
-# T-839 W2-001: bounded time stop_all() waits for every in-flight launch to
-# resolve before it snapshots and kills the registered processes. Every launch
-# path resolves its token (committed or cancelled) on exit, so this is a safety
-# net against a stuck engine, not the correctness mechanism.
-_LAUNCH_BARRIER_WAIT_SECONDS = 30.0
-
 # Maximum lines to keep in the per-process output buffer.
 DEFAULT_OUTPUT_BUFFER_SIZE = 5000
 
@@ -203,15 +197,25 @@ class _LaunchToken:
     Popen, releasing its reservation).
     """
 
-    __slots__ = ("gen", "committed", "_event")
+    __slots__ = ("gen", "committed", "state", "_event")
 
     def __init__(self, gen: int) -> None:
         self.gen = gen
         self.committed = False
+        self.state = "admitted"
         self._event = threading.Event()
 
+    def begin_spawn(self) -> bool:
+        if self.state != "admitted":
+            return False
+        self.state = "spawning"
+        return True
+
     def resolve(self, committed: bool) -> None:
+        if self._event.is_set():
+            return
         self.committed = committed
+        self.state = "committed" if committed else "cancelled"
         self._event.set()
 
     def wait(self, timeout: float | None = None) -> bool:
@@ -735,9 +739,11 @@ class ProcessManager:
         # launches in progress (a reserved-but-unspawned launch is invisible
         # to a snapshot taken from it).
         self._admission_lock = threading.Lock()
+        self._admission_cond = threading.Condition(self._admission_lock)
         self._admission_gen = 0
         self._admission_open = True
         self._in_flight: set[_LaunchToken] = set()
+        self._stop_in_progress = False
         # PERF-009: coalesced output-availability notifications (no-op unless
         # something subscribes to "agent.output_available").
         self._output_notifier = _OutputNotifier()
@@ -752,7 +758,7 @@ class ProcessManager:
         None when the lifecycle is already shutting down (the caller must
         refuse with SHUTTING_DOWN before touching RootOwnership).
         """
-        with self._admission_lock:
+        with self._admission_cond:
             if not self._admission_open:
                 return None
             token = _LaunchToken(self._admission_gen)
@@ -760,10 +766,20 @@ class ProcessManager:
             return token
 
     def _resolve_launch(self, token: _LaunchToken, committed: bool) -> None:
-        """Resolve and retire an in-flight token (every launch exit path)."""
-        with self._admission_lock:
+        """Resolve and retire an in-flight token (every launch exit path).
+
+        Takes the lifecycle lock only for the state transition."""
+        with self._admission_cond:
             self._in_flight.discard(token)
-        token.resolve(committed)
+            token.resolve(committed)
+            self._admission_cond.notify_all()
+
+    def _claim_launch_spawn(self, token: _LaunchToken) -> bool:
+        """Atomically claim spawn before doing Popen outside the lifecycle lock."""
+        with self._admission_cond:
+            if not self._admission_open or token.gen != self._admission_gen:
+                return False
+            return token.begin_spawn()
 
     def _shutting_down_result(self) -> dict:
         """T-839 W2-001: the one stable controlled-cancellation contract."""
@@ -772,6 +788,42 @@ class ProcessManager:
             "code": "SHUTTING_DOWN",
             "error": "Agent launch cancelled because SAIPENVIEW is stopping",
         }
+
+    def _account_unreaped_spawn(
+        self,
+        token: _LaunchToken,
+        engine: AgentEngine,
+        project_root: str,
+        instruction: str,
+        proc: subprocess.Popen,
+        ap: AgentProcess | None,
+    ) -> AgentProcess:
+        """Register a child whose rollback could not prove death.
+
+        stop_all may resolve this token only after the live child has a stable
+        process-table entry and a reaper owns eventual finalization.
+        """
+        if ap is None:
+            control_id = f"ctrl-{next(_control_run_ids)}-{proc.pid}"
+            ap = AgentProcess(
+                engine=engine,
+                project_root=project_root,
+                instruction=instruction,
+                process=proc,
+                output_lines=deque(maxlen=self._buffer_size),
+                control_id=control_id,
+                run_id=control_id,
+            )
+        elif ap.run_id is None:
+            ap.run_id = ap.control_id
+        ap._rollback = True
+        ap._kill_intent = True
+        with self._lock:
+            self._processes[self._key(project_root)] = ap
+        _schedule_reaper(self, ap, "killed")
+        if token.state not in ("committed", "cancelled"):
+            self._resolve_launch(token, committed=True)
+        return ap
 
     def launch(
         self,
@@ -843,85 +895,94 @@ class ProcessManager:
 
                 env = {**os.environ, **engine.default_env}
 
-            # T-839 W2-001: lifecycle-gated commit section. The admission
-            # recheck and the spawn/register MUST be one critical section
-            # under _admission_lock: either this launch sees admission open
-            # and commits (so stop_all, which holds the lock while closing
-            # admission, observes the committed token and then kills the
-            # registered process), or it sees admission closed and aborts
-            # here -- releasing the reservation and never reaching Popen.
-            # Checking before build_command() alone would race with a
-            # shutdown immediately afterward; checking only after Popen
-            # would leave a live child that must join proven-death cleanup.
-            with self._admission_lock:
-                if not self._admission_open or token.gen != self._admission_gen:
-                    # OUTCOME A: shutdown won the ordering before spawn, or the
-                    # token's generation went stale across a stop/restart.
-                    self.ownership.release_agent(Path(project_root))
-                    self._in_flight.discard(token)
-                    token.resolve(committed=False)
-                    return self._shutting_down_result()
+            # Claim the spawn transition under the short lifecycle lock. Once
+            # claimed, stop_all must wait for this token to become accounted;
+            # Popen and every operation after it run without that lock held.
+            if not self._claim_launch_spawn(token):
+                self.ownership.release_agent(Path(project_root))
+                self._resolve_launch(token, committed=False)
+                return self._shutting_down_result()
 
-                try:
-                    proc = subprocess.Popen(
-                        cmd,
-                        cwd=project_root,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        stdin=subprocess.PIPE
-                        if engine.supports_stdin
-                        else subprocess.DEVNULL,
-                        env=env,
-                        # PERF-008: stdout is read as bounded binary chunks with an
-                        # incremental decoder (see _bounded_output_lines) so an
-                        # oversized record can never materialize in full.
-                        bufsize=0,
-                    )
-                except (OSError, subprocess.SubprocessError) as exc:
-                    print(
-                        f"SAIPENVIEW: failed to launch {engine.name}: {exc}",
-                        file=sys.stderr,
-                    )
-                    self.ownership.release_agent(Path(project_root))
-                    self._resolve_launch(token, committed=False)
-                    return {"ok": False, "error": str(exc)}
-
-                # CORE-004: Windows Job Object containment -- child dies when
-                # the parent exits, no matter how (Task Manager, Ctrl+C, etc.).
-                _assign_job_object(proc)
-
-                ap = AgentProcess(
-                    engine=engine,
-                    project_root=project_root,
-                    instruction=instruction,
-                    process=proc,
-                    output_lines=deque(maxlen=self._buffer_size),
-                    # W2-002: always mint a non-null control_id so the stale-run
-                    # guard never skips its check. SessionStore may provide a
-                    # different ID; run_id is set below.
-                    control_id=f"ctrl-{next(_control_run_ids)}-{proc.pid}",
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=project_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.PIPE
+                    if engine.supports_stdin
+                    else subprocess.DEVNULL,
+                    env=env,
+                    # PERF-008: stdout is read as bounded binary chunks with an
+                    # incremental decoder (see _bounded_output_lines) so an
+                    # oversized record can never materialize in full.
+                    bufsize=0,
                 )
-
-                record = self.sessions.start(
-                    project_root,
-                    engine.name,
-                    engine.display_name,
-                    instruction,
-                    pid=proc.pid,
+            except Exception as exc:  # noqa: BLE001 - spawn failures cancel admission
+                print(
+                    f"SAIPENVIEW: failed to launch {engine.name}: {exc}",
+                    file=sys.stderr,
                 )
-                # W2-002: run_id is always non-null. Use the session's ID when
-                # persistence succeeded, otherwise fall back to the control_id.
-                ap.run_id = record.run_id if record is not None else ap.control_id
+                self.ownership.release_agent(Path(project_root))
+                self._resolve_launch(token, committed=False)
+                return {"ok": False, "error": str(exc)}
 
-                with self._lock:
-                    self._processes[key] = ap
-                # OUTCOME B: commit complete -- the process is now observable
-                # to stop_all()'s post-barrier snapshot and will be killed
-                # through the proven-death path. (Resolution is inlined:
-                # _admission_lock is already held here and Lock is not
-                # reentrant.)
-                self._in_flight.discard(token)
-                token.resolve(committed=True)
+            # CORE-004: Windows Job Object containment -- child dies when the
+            # parent exits, no matter how (Task Manager, Ctrl+C, etc.).
+            _assign_job_object(proc)
+
+            ap = AgentProcess(
+                engine=engine,
+                project_root=project_root,
+                instruction=instruction,
+                process=proc,
+                output_lines=deque(maxlen=self._buffer_size),
+                # W2-002 (SRC-018 R006): mint a stable, non-null control
+                # identity NOW. It is the live lifecycle's identity BEFORE
+                # SessionStore assigns a persistence run_id, so a storage
+                # failure can never erase the child's accountable identity and
+                # the stale-run guard never skips its check.
+                control_id=f"ctrl-{next(_control_run_ids)}-{proc.pid}",
+            )
+
+            # W2-002 (SRC-018 R006): the spawned child becomes accountable to
+            # ProcessManager BEFORE any blocking persistence. Register the
+            # provisional process (run_id == control_id) and resolve the
+            # launch token committed, so a shutdown racing a slow
+            # SessionStore.start finds this child in its post-barrier snapshot
+            # and terminates it WITHOUT waiting for storage latency. The
+            # publication decision below refuses to start a live lifecycle for
+            # a child a shutdown already finalized.
+            ap.run_id = ap.control_id
+            with self._lock:
+                self._processes[key] = ap
+            self._resolve_launch(token, committed=True)
+
+            # Potentially-blocking session persistence. A concurrent stop_all
+            # may terminate and finalize ``ap`` while this call is parked; the
+            # child is already accountable, so shutdown never waits on it.
+            record = self.sessions.start(
+                project_root,
+                engine.name,
+                engine.display_name,
+                instruction,
+                pid=proc.pid,
+            )
+
+            # Publication decision, atomic against a racing kill()/_finalize.
+            # If a shutdown finalized this child while persistence was blocked,
+            # do NOT publish agent.started, do NOT start a reader/monitor
+            # lifecycle and do NOT resurrect the already-terminal process --
+            # retire the freshly-opened transcript so persistence leaves no
+            # orphan and report the controlled cancellation.
+            with ap._finalize_lock:
+                shutdown_claimed = ap._finalized
+                if not shutdown_claimed and record is not None:
+                    ap.run_id = record.run_id
+            if shutdown_claimed:
+                if record is not None:
+                    self.sessions.finish(record.run_id, "killed", ap.exit_code)
+                return self._shutting_down_result()
 
             # Start background reader thread
             reader = threading.Thread(
@@ -954,7 +1015,6 @@ class ProcessManager:
                     "instruction": instruction,
                 },
             )
-
             return {
                 "ok": True,
                 "engine": engine.name,
@@ -962,9 +1022,10 @@ class ProcessManager:
                 "run_id": ap.run_id,
             }
         except Exception:  # noqa: BLE001 - reservation must not leak on any path
-            self._resolve_launch(token, committed=False)
             if proc is None:
                 self.ownership.release_agent(Path(project_root))
+                if token.state not in ("committed", "cancelled"):
+                    self._resolve_launch(token, committed=False)
                 raise
             ap = locals().get("ap")
             if ap is not None:
@@ -974,14 +1035,25 @@ class ProcessManager:
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=5)
-            except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
-                if ap is not None:
-                    _schedule_reaper(self, ap, "killed")
+            except Exception:
+                self._account_unreaped_spawn(
+                    token, engine, project_root, instruction, proc, ap
+                )
+                raise
+            if proc.returncode is None:
+                self._account_unreaped_spawn(
+                    token, engine, project_root, instruction, proc, ap
+                )
                 raise
             if ap is not None:
                 self._finalize(ap, requested_status="killed")
+                lifecycle_complete = getattr(ap, "_lifecycle_complete", None)
+                if lifecycle_complete is not None:
+                    lifecycle_complete.wait()
             else:
                 self.ownership.release_agent(Path(project_root))
+            if token.state not in ("committed", "cancelled"):
+                self._resolve_launch(token, committed=False)
             raise
 
     def is_stuck(self, project_root: str) -> bool:
@@ -1030,14 +1102,45 @@ class ProcessManager:
         # CORE-002: only set _kill_intent here. The terminal "killed" status
         # is derived in _finalize after proven death, so a still-live
         # slow-to-die process remains visible to list_running/stop_all.
-        with ap._io_lock:
-            ap._kill_intent = True
+        # W2-003 (SRC-018 R007): establishing kill intent is guarded by ONE
+        # critical section under _finalize_lock that also proves the process is
+        # still live. The finalizer snapshots kill intent under the same lock
+        # at the instant it claims the terminal transition. Two facts close the
+        # audited race together:
+        #   1. a kill that arrives after the finalizer already claimed the
+        #      terminal transition (_finalized True) refuses -- it can no longer
+        #      mutate intent on a spent lifecycle;
+        #   2. a kill that arrives after natural OS death is PROVEN but before
+        #      the claim (the window the reader/exit-monitor is still crossing)
+        #      observes proc.poll() != None under this same lock and refuses too
+        #      -- so it cannot relabel a natural done/failed run as killed.
+        # Only a kill against a genuinely-live process (poll() is None) records
+        # intent; if that process then dies, the finalizer's snapshot still sees
+        # the intent and correctly reports killed.
+        proc = ap.process
+        with ap._finalize_lock:
+            if ap._finalized:
+                return {
+                    "ok": False,
+                    "error": "Agent is not running (status=finalizing)",
+                }
+            death_already_proven = proc is not None and proc.poll() is not None
+            if not death_already_proven:
+                with ap._io_lock:
+                    ap._kill_intent = True
+        if death_already_proven:
+            # OS death already proven; the terminal transition belongs to the
+            # finalizer, not to this late kill. Do NOT inject intent -- a
+            # natural done/failed run must not be relabelled killed. Finalize
+            # defensively (idempotent) OUTSIDE the lock and share the normal
+            # completion decision.
+            self._finalize(ap)
+            return self._kill_completion_result(ap)
         # W2-002: capture a stable local reference. A concurrent reader
         # thread can complete _finalize -> _compact_terminal between wait
         # calls and set ap.process = None, so repeated ap.process.* reads
         # here would raise AttributeError. The captured local stays valid
         # for the duration of this method.
-        proc = ap.process
         if proc is None:
             # T-834: a competing finalizer detached the Popen object, but
             # that alone proves NOTHING about lifecycle completion -- the
@@ -1188,27 +1291,47 @@ class ProcessManager:
                 return
 
         exit_code = proc.returncode
-        if requested_status is not None:
-            status = requested_status
-        elif ap._kill_intent:
-            status = "killed"
-        else:
-            status = "done" if exit_code == 0 else "failed"
 
         if exit_code is None:
             # CORE-002: Death unproven. Do NOT set _finalized=True here --
             # the reaper will route back through _finalize when it proves
             # death, and _exit_monitor may also reach here on retry. Setting
             # _finalized now would permanently consume the exactly-once token
-            # before finalization occurs.
+            # before finalization occurs. The provisional status is advisory
+            # only: the reaper re-decides through _finalize after proven death.
+            with ap._finalize_lock:
+                kill_intent = ap._kill_intent
+            if requested_status is not None:
+                status = requested_status
+            elif kill_intent:
+                status = "killed"
+            else:
+                status = "failed"
             _schedule_reaper(self, ap, status)
             return
 
-        # Proven death: commit the terminal transition.
+        # W2-003 (SRC-018 R007): proven death claims the terminal transition
+        # and snapshots the kill intent ATOMICALLY. Deriving status from
+        # ap._kill_intent in a separate step from setting _finalized left a
+        # window in which a late kill() -- arriving after natural OS death was
+        # already proven -- injected _kill_intent=True and relabeled a natural
+        # `done`/`failed` run as `killed`. The snapshot taken under this lock
+        # is the intent that existed BEFORE the claim; kill() cooperates by
+        # only ever setting _kill_intent inside the same _finalize_lock while
+        # _finalized is still False (see kill()), so an intent set after this
+        # claim is impossible, not merely ignored.
         with ap._finalize_lock:
             if ap._finalized:
                 return
+            kill_intent = ap._kill_intent
             ap._finalized = True
+
+        if requested_status is not None:
+            status = requested_status
+        elif kill_intent:
+            status = "killed"
+        else:
+            status = "done" if exit_code == 0 else "failed"
 
         # W2-002 (SRC-004:R010): proven-death finalization is the AUTHORITATIVE
         # cleanup point for the stuck marker. A reaper-timeout marker can only
@@ -1696,57 +1819,66 @@ class ProcessManager:
         return self.ownership.agent_owns(Path(project_root))
 
     def begin_lifecycle(self) -> None:
-        """T-839 W2-001: begin/reopen a fresh launch-admission lifecycle.
+        """Begin a fresh generation only after the previous stop barrier ends.
 
         Called by Api.start() so a restartable Api explicitly reopens admission.
-        The generation is bumped BEFORE reopening, so any stale token captured
-        before a stop can never be re-validated: an old generation can never
-        become valid again after restart. Idempotent for a freshly constructed
-        (already-open) manager.
+        It never clears pending tokens: a stop in progress owns those launches
+        until they cancel or are accounted. Generations prevent an old token
+        from becoming valid after restart.
         """
-        with self._admission_lock:
+        with self._admission_cond:
+            # A restart cannot reopen admission while stop_all is still
+            # resolving or terminating work from the previous generation.
+            self._admission_cond.wait_for(
+                lambda: not self._stop_in_progress and not self._in_flight
+            )
             self._admission_gen += 1
-            self._in_flight.clear()
             self._admission_open = True
+            self._admission_cond.notify_all()
 
     def stop_all(self) -> None:
         """Kill all running agents. Called on app shutdown.
 
-        T-839 W2-001: the authoritative launch-admission barrier. Ordering:
+        The launch-admission lock protects only lifecycle transitions.
+        Ordering:
 
-        1. atomically close launch admission under the barrier lock -- a
-           launch inside its commit section holds the same lock, so closing
-           waits for it to finish (it has then committed into _processes);
-           a launch not yet committed will see admission closed and abort;
-        2. wait for every already-admitted in-flight launch to resolve --
-           either it committed into _processes (and is killed below) or it
-           observed the closed admission, released its reservation and
-           returned SHUTTING_DOWN without spawning;
-        3. account for and terminate the registered live processes through
-           the existing proven-death path.
+        1. close admission without waiting for process or session I/O;
+        2. wait for each admitted token to cancel before spawn or commit an
+           accounted process;
+        3. terminate registered live processes through proven-death logic.
 
         No launch admitted by the stopped lifecycle can spawn a process after
-        this method returns, and no committed process is missed. Idempotent:
-        a second call finds admission already closed, no in-flight tokens,
-        and only terminal/no processes.
+        this method returns, and every committed process is in the snapshot.
+        Idempotent: a later stop sees no in-flight launches and terminal
+        processes.
         """
-        with self._admission_lock:
+        with self._admission_cond:
+            # Serialize concurrent shutdowns. No admission lock is held while
+            # an admitted launch finishes, is killed, or is reaped.
+            self._admission_cond.wait_for(lambda: not self._stop_in_progress)
             self._admission_open = False
+            self._stop_in_progress = True
             pending = set(self._in_flight)
-        for token in pending:
-            if not token.wait(_LAUNCH_BARRIER_WAIT_SECONDS):
-                print(
-                    "SAIPENVIEW: launch admission barrier timed out waiting for "
-                    "an in-flight launch",
-                    file=sys.stderr,
-                )
-        with self._lock:
-            roots = [r for r, ap in self._processes.items() if ap.status == "running"]
-        for root in roots:
-            try:
-                self.kill(root)
-            except Exception as exc:  # noqa: BLE001
-                print(f"SAIPENVIEW: stop agent failed: {exc}", file=sys.stderr)
+        try:
+            # No deadline: an admitted spawn must either cancel before Popen
+            # or finish registration before the process snapshot below.
+            for token in pending:
+                token.wait()
+            with self._lock:
+                roots = [
+                    root
+                    for root, ap in self._processes.items()
+                    if ap.status == "running"
+                ]
+            for root in roots:
+                try:
+                    self.kill(root)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"SAIPENVIEW: stop agent failed: {exc}", file=sys.stderr)
+        finally:
+            with self._admission_cond:
+                self._stop_in_progress = False
+                self._admission_cond.notify_all()
 
     def _exit_monitor(self, ap: AgentProcess) -> None:
         """Wait for the process's real OS exit, then finalize exactly once.
@@ -1773,8 +1905,16 @@ class ProcessManager:
 
     def _read_output(self, ap: AgentProcess) -> None:
         """Background thread: read stdout in bounded records, store + publish."""
+        # W2-002: capture the stream once. A concurrent finalize +
+        # _compact_terminal can set ap.process = None mid-loop; the captured
+        # reference stays valid and the read simply reaches EOF.
+        proc = ap.process
+        if proc is None:
+            self._on_reader_eof(ap)
+            return
+        stdout = proc.stdout
         try:
-            for line in _bounded_output_lines(ap.process.stdout):
+            for line in _bounded_output_lines(stdout):
                 with ap._io_lock:
                     ap.output_lines.append(line)
                     ap._line_count += 1

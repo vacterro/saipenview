@@ -409,8 +409,11 @@ because only the tag moved; the gate below exists to make that impossible.
 
 1. Bump `saipenview/__init__.py` to the new version (micro for a patch,
    feature for a minor).
-2. Add the matching `## [X.Y.Z]` heading to the top of `CHANGELOG.md` with the
-   notable changes since the last release.
+2. Add the matching released heading to the top of `CHANGELOG.md` with the
+   notable changes since the last release, in the canonical form
+   `## X.Y.Z - YYYY-MM-DD` (T-849; `## [X.Y.Z]` is retired -- the gate and
+   the tests parse the unbracketed form, and `## [Unreleased]` is never
+   treated as a release).
 3. Run the release identity gate -- it MUST pass before anything is pushed:
    ```bash
    python tools/release_gate.py

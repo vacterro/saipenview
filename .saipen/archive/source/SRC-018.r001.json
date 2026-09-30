@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-018:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-001: Preserve caller-supplied completed_roots and unresolved_roots when plain-list _set_cache publishes a partial scan; use ScanOutcome provenance when supplied; keep legacy no-provenance incomplete preservation; apply one root authority consistently to projects, linked worktrees, watcher/index/cache reconciliation, and the real BackgroundScanner callback. Regress completed A/unresolved B replacement and removal, unresolved project/worktree preservation, and callback shape."
+    }
+  },
+  "derived_at": "2026-09-23T13:04:01Z",
+  "derived_from": "SRC-018",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "b0697385292699f2bd1fa0d85d7eab499ee72a128f8898b70c509eabe4f51a58"
+}

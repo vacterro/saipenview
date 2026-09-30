@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-020:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-877 closed with verification evidence in LOG: verify -> PASS [target: T-877] conf: high -- .venv\\Scripts\\python.exe -m pytest -q => 1639 passed, 14 failed (pre-existing), 1 skipped, 4 xfailed, 4 xpassed; zero new regressions (baseline counts match E-1358). Focused per-requirement suites all green: R006 13 passed, R007 4+68 passed, R008 3+166 passed, R010 6+14 passed, R009 4+3+129 passed, R011 4+80 passed, R012 4+156+90 passed, R013 5+164 pass",
+      "text": "Implement all 15 audit/5.md fixes with focused regressions and checkpoint to VERIFY",
+      "verification": "the Work this request created reached its own verification gate; see the T-877 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-877"
+    }
+  },
+  "schema_version": 1
+}

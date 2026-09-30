@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-020:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Implement all 15 audit/5.md fixes with focused regressions and checkpoint to VERIFY"
+    }
+  },
+  "derived_at": "2026-09-23T19:53:22Z",
+  "derived_from": "SRC-020",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "ee323e22bdb7f5941c9dc8e00e82194bc9149ff536277cf57837f0e882f3d630"
+}

@@ -1,0 +1,104 @@
+{
+  "requirements": {
+    "SRC-009:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-853 closed own_patch; saipenview/git_diff.py _authorize_and_snapshot/_revalidate_authorized bind commit/revert/delete to the verified scope; EL-1584 verify -> PASS [target: T-853]",
+      "text": "[CORE-001] git_diff.py commit/revert/delete must bind every Git mutation to the exactly verified preview snapshot and scope; no repo-wide reset --hard or clean -fd; late unrelated path excluded; late authorized-path byte change fails closed",
+      "verification": "tests/test_core001_mutation_scope.py 8/8 fixed tree, red control 8/8 on pre-fix git_diff.py",
+      "work": "T-852"
+    },
+    "SRC-009:R002": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-857 closed own_patch; WriteCoordinator.delegate routes move_ticket start/done/block/unblock and recover through the ownership tx; saipenview/protocol_write.py + parser.py",
+      "text": "[CORE-002] parser.move_ticket and WriteCoordinator.recover must run under the authoritative ownership transaction, refusing WRITER_BUSY while an agent owns the root, and recovery must attribute self-writes",
+      "verification": "tests/test_core002_ownership_delegation.py 7/7 fixed, red control 7/7 pre-fix",
+      "work": "T-852"
+    },
+    "SRC-009:R003": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-858 closed own_patch; read_file_text decodes text from the same raw bytes hashed for edit_version (no second read_doc); saipenview/api.py",
+      "text": "[CORE-003] api.read_file_text ordinary-file snapshot must come from one byte read so text and edit_version describe the same revision",
+      "verification": "tests/test_core003_ordinary_snapshot.py 6/6 fixed, red control split-read race pre-fix",
+      "work": "T-852"
+    },
+    "SRC-009:R004": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-859 closed own_patch; _resolve_launch_locked retires the token under the held admission lock in the Popen exception branch; saipenview/runtime.py",
+      "text": "[W2-001] ProcessManager.launch Popen failure must not self-deadlock the admission lock; the in-flight token retires and the manager stays usable",
+      "verification": "tests/test_w2_001_popen_admission.py 5/5 fixed, pre-fix tree hangs (self-deadlock)",
+      "work": "T-852"
+    },
+    "SRC-009:R005": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-860 closed own_patch; _watch_scan_root fast path checks _stopped/_life_gen/live _watches under lock; public watch() captures the generation; saipenview/watcher.py",
+      "text": "[W2-002] SaipenWatcher topology must be lifecycle-aware on every path so a stale sync cannot republish topology across stop/revive without a live watch",
+      "verification": "tests/test_w2_002_watcher_lifecycle.py 3/3 fixed, red control republished stale topology pre-fix",
+      "work": "T-852"
+    },
+    "SRC-009:R006": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-861 closed own_patch; service-wide RPC admission/drain via _rpc_cond: _dispatch registers each RPC, stop closes admission then drains before Api teardown; saipenview/service.py",
+      "text": "[W2-003] service shutdown must be a quiescence boundary: all allowlisted RPCs are admitted and drained before Api teardown; new RPCs during stopping get controlled 503",
+      "verification": "tests/test_w2_003_service_rpc_drain.py 3/3 fixed, red control 3/3 pre-fix",
+      "work": "T-852"
+    },
+    "SRC-009:R007": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-862 closed own_patch; Api._scan_begin/_scan_end counter + _scan_activity, BackgroundScanner on_scan_end paired in finally; saipenview/api.py + scanner.py",
+      "text": "[W2-004] scan liveness must be paired across success/error/cancel/overlap so a failed or cancelled scan cannot strand scanning=true",
+      "verification": "tests/test_w2_004_scan_activity.py 5/5 fixed, behavioral red control scanning stranded true pre-fix",
+      "work": "T-852"
+    },
+    "SRC-009:R008": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-863 closed own_patch; updateFlashSnapshot detection-only, render binds flash refs O(N) after replacement, _flashTick rebinds stale refs; saipenview/ui/static/app.js",
+      "text": "[PERF-001] app.js flash registration must be O(N) and bind to the replacement DOM with the 20s fade owning the current rows",
+      "verification": "tests/test_perf001_flash_snapshot.py 2/2 fixed, red control stale ref deleted valid flash state pre-fix",
+      "work": "T-852"
+    },
+    "SRC-009:R009": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-864 closed own_patch; shared _DebounceSlot keeps one timer per identity with monotonic deadline re-arm; saipenview/watcher.py",
+      "text": "[PERF-002] watcher debounce must keep one live slot per identity and not create one Timer per raw event, preserving exact counts and cancel semantics",
+      "verification": "tests/test_perf002_debounce_churn.py 4/4 fixed, red control pre-fix constructed 10000 Timers on a 10000-event burst",
+      "work": "T-852"
+    },
+    "SRC-009:R010": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-865 closed own_patch; rebuildable per-project filename index + metadata decode cache; saipenview/sessions.py",
+      "text": "[PERF-003] per-project session history/prune must not rescan the whole flat sessions directory nor decode the same metadata twice for one idle panel",
+      "verification": "tests/test_perf003_session_index.py 4/4 fixed, red control pre-fix decoded 100 files for 50 records and rescanned the dir",
+      "work": "T-852"
+    },
+    "SRC-009:R011": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "IMPLEMENTED",
+      "evidence": "T-866 closed own_patch; appendOutputLines computes the retained tail first and replaces the old window in one op; saipenview/ui/static/app.js",
+      "text": "[PERF-004] live-output catch-up must not remove DOM nodes one by one; the retained tail is computed before mutation while parseTestLine still sees every line",
+      "verification": "tests/test_perf004_live_dom_prune.py 3/3 fixed, red control pre-fix did 5000 removeChild calls for a 5000-line delta",
+      "work": "T-852"
+    }
+  },
+  "schema_version": 1
+}

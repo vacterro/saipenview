@@ -55,6 +55,20 @@ MAX_OUTPUT_LINE_BYTES = 64 * 1024
 _FLUSH_EVERY = 20
 
 _RUN_ID_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
+_TERMINAL_SESSION_STATUSES = frozenset({"done", "failed", "killed"})
+
+# PERF-003: extract the project key from a metadata filename stem. A run_id is
+# ``<stamp>[-<suffix>]-<key>-<engine>`` where ``<stamp>`` is a 19-char
+# ``%Y%m%dT%H%M%S%f`` string, ``<key>`` is the 10-hex project_key and
+# ``<engine>`` is the remaining name. Anchoring on the stamp and the 10-hex key
+# avoids a brittle greedy split.
+_META_KEY_RE = re.compile(r"^\d{8}T\d{6}\d{6}(?:-\d+)?-(?P<key>[0-9a-f]{10})-")
+
+# PERF-004 (SRC-018 R014): capture the creation stamp from a metadata FILENAME
+# without decoding the file. The stamp is the same instant started_at carries,
+# so lexical name order is chronological order (same-stamp collisions add a
+# numeric ``-<suffix>`` between stamp and key, preserving it).
+_META_STAMP_RE = re.compile(r"^(?P<stamp>\d{8}T\d{6}\d{6})(?:-\d+)?-[0-9a-f]{10}-")
 
 
 def project_key(root: str) -> str:
@@ -187,26 +201,185 @@ class SessionStore:
         self._dir = Path(base_dir) if base_dir else sessions_dir()
         self._open: dict[str, _OpenTranscript] = {}
         self._lock = threading.Lock()
-        # W2-004: records whose terminal metadata write failed on first
-        # attempt. Kept in memory so the next finish()/start() call retries
-        # them -- converting "done" runs that would otherwise silently
-        # degrade to "interrupted" on next startup.
+        # CORE-003: a bounded retry cache for terminal records whose canonical
+        # metadata write failed. The matching per-run sidecar under
+        # `.pending-final/<project-key>/` is the durable replay authority; this
+        # dict only avoids rereading the sidecar in the current process.
         self._pending_final: dict[str, SessionRecord] = {}
-        self._pending_final_lock = threading.Lock()  # W2-004: protect _pending_final mutations
-        # W2-005 (SRC-004:R013): raised when persistent disk failure forces a
-        # terminal-fact eviction from the bounded retry queue.
+        self._pending_final_lock = threading.Lock()
+        # True when durable fallback persistence failed or the bounded retry
+        # cache had to evict an entry to its per-run durable sidecar.
         self._pending_degraded = False
+        # PERF-003 (SRC-004:R005): rebuildable process-local index. The
+        # sessions dir is one flat directory for EVERY project, so the old
+        # `_meta_files()` glob re-walked unrelated projects' files on every
+        # per-project history/prune lookup, and an idle agent panel decoded the
+        # same 50 target metadata files twice (last_run + history). These caches
+        # are disposable: they are keyed by a directory signature (mtime), are
+        # cleared on our own writes/prunes AND whenever the directory changes
+        # out of process, and carry no authority a rebuild cannot restore from
+        # the individual metadata files.
+        self._meta_index: dict[str, list[Path]] = {}
+        self._history_cache: dict[str, tuple[tuple, list]] = {}
+        self._meta_read_cache: dict[str, tuple[tuple, SessionRecord]] = {}
+        self._meta_cache_sig: tuple | None = None
+        self._meta_cache_lock = threading.Lock()
+
+    # ---- PERF-003 index --------------------------------------------------
+
+    def _dir_sig(self) -> tuple:
+        """A cheap directory identity that changes on add/remove/rename.
+
+        ``st_mtime_ns`` advances whenever an entry is created or removed in the
+        sessions dir -- exactly the events that make the filename index stale.
+        A pure content rewrite of an existing metadata file is covered
+        separately because history() re-reads via ``_read_meta`` on a cache
+        miss; the index only answers WHICH files belong to a project.
+        """
+        try:
+            return (self._dir.stat().st_mtime_ns,)
+        except OSError:
+            return (0,)
+
+    def _invalidate_meta_cache(self) -> None:
+        """Drop the index + decode cache. Called after every self-write/prune."""
+        with self._meta_cache_lock:
+            self._meta_index = {}
+            self._history_cache = {}
+            self._meta_read_cache = {}
+            self._meta_cache_sig = None
 
     # ---- writing ---------------------------------------------------------
 
-    def _retry_pending_final(self) -> None:
-        """W2-004: retry any terminal metadata writes that failed earlier."""
+    def _pending_final_path(self, run_id: str, key: str) -> Path:
+        safe_run_id = _RUN_ID_SAFE.sub("-", run_id)
+        return self._dir / ".pending-final" / key / f"{safe_run_id}.json"
+
+    def _write_pending_final(self, record: SessionRecord) -> bool:
+        """Atomically persist one replayable terminal fact beside session data."""
+        if (
+            record.status not in _TERMINAL_SESSION_STATUSES
+            or not record.finished_at
+        ):
+            return False
+        key = project_key(record.root)
+        path = self._pending_final_path(record.run_id, key)
+        tmp_path = path.with_suffix(".json.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(
+                json.dumps(record.to_dict(), indent=2),
+                encoding="utf-8",
+                newline="\n",
+            )
+            tmp_path.replace(path)
+            return True
+        except OSError as exc:
+            print(
+                f"SAIPENVIEW: cannot persist pending terminal {record.run_id}: {exc}",
+                file=sys.stderr,
+            )
+            return False
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _read_pending_final_path(
+        self, path: Path, expected_root: str | None = None
+    ) -> SessionRecord | None:
+        """Read one isolated fallback record; corruption costs only this run."""
+        try:
+            record = SessionRecord.from_dict(
+                json.loads(path.read_text(encoding="utf-8"))
+            )
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            print(
+                f"SAIPENVIEW: pending terminal evidence unreadable for "
+                f"{path.stem}: {exc}",
+                file=sys.stderr,
+            )
+            return None
+        if (
+            record.run_id != path.stem
+            or _RUN_ID_SAFE.sub("-", record.run_id) != record.run_id
+            or record.status not in _TERMINAL_SESSION_STATUSES
+            or not record.finished_at
+            or path.parent.name != project_key(record.root)
+            or (expected_root is not None and project_key(record.root) != project_key(expected_root))
+        ):
+            print(
+                f"SAIPENVIEW: pending terminal evidence invalid for {path.stem}",
+                file=sys.stderr,
+            )
+            return None
+        return record
+
+    def _read_pending_final(
+        self, run_id: str, root: str
+    ) -> SessionRecord | None:
+        path = self._pending_final_path(run_id, project_key(root))
+        return self._read_pending_final_path(path, expected_root=root)
+
+    def _retire_pending_final(self, record: SessionRecord) -> None:
+        """Remove replay evidence only after its canonical record is durable."""
+        path = self._pending_final_path(record.run_id, project_key(record.root))
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            print(
+                f"SAIPENVIEW: cannot retire pending terminal {record.run_id}: {exc}",
+                file=sys.stderr,
+            )
+            return
+        for directory in (path.parent, path.parent.parent):
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+
+    def _retry_pending_final(self, root: str | None = None) -> None:
+        """Reconcile cached and durable terminal facts into canonical metadata."""
         with self._pending_final_lock:
             pending = dict(self._pending_final)
+        if root is not None:
+            key = project_key(root)
+            fallback_dirs = [self._dir / ".pending-final" / key]
+        else:
+            try:
+                fallback_dirs = [
+                    path
+                    for path in (self._dir / ".pending-final").iterdir()
+                    if path.is_dir()
+                ]
+            except OSError:
+                fallback_dirs = []
+        for fallback_dir in fallback_dirs:
+            try:
+                paths = list(fallback_dir.glob("*.json"))
+            except OSError:
+                continue
+            for path in paths:
+                record = self._read_pending_final_path(path, expected_root=root)
+                if record is not None:
+                    pending.setdefault(record.run_id, record)
         for run_id, record in pending.items():
             if self._write_meta(record):
+                self._retire_pending_final(record)
                 with self._pending_final_lock:
-                    self._pending_final.pop(run_id, None)
+                    current = self._pending_final.get(run_id)
+                    if current is not None and current.to_dict() == record.to_dict():
+                        self._pending_final.pop(run_id, None)
+            else:
+                with self._pending_final_lock:
+                    if (
+                        run_id not in self._pending_final
+                        and len(self._pending_final) < self._MAX_PENDING_FINAL
+                    ):
+                        self._pending_final[run_id] = record
 
     def start(
         self,
@@ -217,9 +390,9 @@ class SessionStore:
         pid: int | None = None,
     ) -> SessionRecord | None:
         """Open a transcript for a new run. Returns None if the disk says no."""
-        # W2-004: opportunistically retry any earlier failed metadata writes
-        # so a transient disk blip does not permanently lose terminal status.
-        self._retry_pending_final()
+        # CORE-003: reconcile this project's replayable terminal records before
+        # admitting another run after storage recovers.
+        self._retry_pending_final(root=root)
         now = datetime.now(timezone.utc)
         key = project_key(root)
         # Microseconds, not seconds. At one-second resolution two runs started
@@ -346,36 +519,41 @@ class SessionStore:
                 if self._open.get(run_id) is entry:
                     self._open.pop(run_id, None)
         # Best-effort metadata write after lifecycle cleanup — never gate on it.
-        # W2-004: if the write fails, keep the record in _pending_final so
-        # the next start() or finish() call retries it. Without this,
-        # a transient disk blip permanently loses terminal status and
-        # history() reports "interrupted" instead of "done"/"killed".
-        if not self._write_meta(record):
-            # W2-005 (SRC-004:R013): retry the OLDER pending failures BEFORE
-            # deciding admission for the current write. At the saturation
-            # boundary the retries free capacity in this same call, so the
-            # newest authoritative terminal fact is never discarded behind
-            # entries that recover moments later. If the retry also proves
-            # the disk recovered, the current write itself is retried once
-            # more before anything is queued.
-            self._retry_pending_final()
-            if not self._write_meta(record):
-                with self._pending_final_lock:
-                    if len(self._pending_final) < self._MAX_PENDING_FINAL:
-                        self._pending_final[run_id] = record
-                    else:
-                        # True persistent saturation. Deterministic eviction:
-                        # the NEWEST known terminal fact wins the bounded
-                        # queue, the OLDEST is evicted -- never silently: the
-                        # eviction is journaled durably so nothing falsifies
-                        # history, and the degraded flag surfaces the state.
-                        oldest_id, oldest = next(iter(self._pending_final.items()))
-                        del self._pending_final[oldest_id]
-                        self._pending_final[run_id] = record
-                        self._pending_degraded = True
-                        self._journal_overflow(oldest_id, oldest)
-        # W2-004: also retry any earlier failures opportunistically.
-        self._retry_pending_final()
+        # CORE-003: a failed canonical write gets a per-run atomic sidecar before
+        # the bounded in-memory retry cache admits or evicts any record.
+        persisted = self._write_meta(record)
+        if not persisted:
+            # Retry older facts first so recovered writes free bounded-cache
+            # capacity before the newest completion is admitted.
+            self._retry_pending_final(root=record.root)
+            persisted = self._write_meta(record)
+        if persisted:
+            self._retire_pending_final(record)
+            with self._pending_final_lock:
+                self._pending_final.pop(run_id, None)
+        else:
+            fallback_saved = self._write_pending_final(record)
+            with self._pending_final_lock:
+                if run_id in self._pending_final or len(self._pending_final) < self._MAX_PENDING_FINAL:
+                    self._pending_final[run_id] = record
+                else:
+                    # The durable per-run sidecar is also the eviction record;
+                    # no separate append-only overflow log has to be replayed.
+                    oldest_id, oldest = next(iter(self._pending_final.items()))
+                    old_record = self._read_pending_final(
+                        oldest.run_id, oldest.root
+                    )
+                    if old_record is None or old_record.to_dict() != oldest.to_dict():
+                        if not self._write_pending_final(oldest):
+                            self._pending_degraded = True
+                    self._pending_final.pop(oldest_id, None)
+                    self._pending_final[run_id] = record
+                    self._pending_degraded = True
+            if not fallback_saved:
+                self._pending_degraded = True
+        # Retry current-project disk fallbacks opportunistically after each
+        # finish. Persistent failures remain in their own sidecars.
+        self._retry_pending_final(root=record.root)
 
     # ---- reading ---------------------------------------------------------
 
@@ -386,43 +564,134 @@ class SessionStore:
         belongs to a SAIPENVIEW that died -- report it as `interrupted` rather
         than as an agent that has been working since Tuesday.
 
-        W2-004: a record known to this process via ``_pending_final`` has
-        authoritative terminal status the disk copy lacks (the metadata write
-        failed). Overlay the pending record over the stale disk copy so the
-        known terminal status survives even before the retry succeeds. Only
-        apply the overlay to records THIS process knows about; unknown
-        records still go through the interrupted conversion.
+        CORE-003: a terminal sidecar is replayed over stale `running` metadata,
+        including after a process restart. When the canonical write succeeds,
+        its sidecar is retired. A running record with neither a live owner nor
+        valid terminal evidence remains an interrupted crash.
+
+        PERF-004 (SRC-018 R014 / T-865): metadata filenames carry a fixed-width
+        ``%Y%m%dT%H%M%S%f`` stamp, so ``_meta_files`` name order IS chronological
+        and records sharing one ``started_at`` are contiguous. history(limit=N)
+        therefore reads only enough NEWEST candidates to obtain N valid records
+        plus the full same-clock tie group of the Nth (so mtime tie-breaking
+        stays correct), rather than decoding, re-stat'ing and sorting the whole
+        project history. ``last_run`` (limit=1) is thus proportional to the
+        newest candidate/tie group, not O(H). No duplicate stat: the mtime used
+        for tie-breaking comes from the SAME stat ``_read_meta`` already took.
         """
+        if limit is not None and limit <= 0:
+            return []
         key = project_key(root)
         with self._lock:
             live = set(self._open)
         with self._pending_final_lock:
             pending = dict(self._pending_final)
-        out = []
-        for meta in self._meta_files(key):
-            rec = self._read_meta(meta)
+        metas = self._meta_files(key)  # name-sorted, oldest first
+        collected: list[tuple[tuple[str, int], dict]] = []
+        # started_at of the newest tie-group boundary we must fully consume
+        # before we may stop early. None until we have `limit` valid records.
+        boundary_started: str | None = None
+        for meta in reversed(metas):
+            started_hint = self._meta_started_at_hint(meta)
+            # PERF-004: once we have enough valid records, we may stop as soon
+            # as a candidate is STRICTLY older than the boundary tie group.
+            # The name stamp equals started_at, so this test needs no decode
+            # for records clearly past the boundary.
+            if (
+                limit is not None
+                and boundary_started is not None
+                and started_hint is not None
+                and started_hint < boundary_started
+            ):
+                break
+            rec, mtime = self._read_meta_with_mtime(meta)
             if rec is None:
                 continue
-            if rec.status == "running":
-                pending_rec = pending.get(rec.run_id)
-                if pending_rec is not None and pending_rec.status != "running":
-                    # This process knows the real terminal status; use it.
-                    rec = pending_rec
-                elif rec.run_id not in live:
-                    rec.status = "interrupted"
-            # started_at alone can tie: two runs started in the same clock
-            # tick (datetime.now() resolution under load) then sort back to
-            # the stable _meta_files order, which is alphabetical by run_id --
-            # aider before gemini regardless of which came second, and the
-            # newer run loses last_run. Break the tie by file mtime (creation
-            # order): the second run's meta file was written after the first's.
-            try:
-                mtime = meta.stat().st_mtime_ns
-            except OSError:
-                mtime = 0
-            out.append(((rec.started_at or "", mtime), rec.to_dict()))
-        out.sort(key=lambda pair: pair[0], reverse=True)
-        return [d for _, d in out][:limit]
+            rec = self._overlay_history_record(rec, live, pending)
+            started = rec.started_at or ""
+            collected.append(((started, mtime), rec.to_dict()))
+            if limit is not None and boundary_started is None and len(collected) >= limit:
+                # The boundary is the smallest started_at currently kept.
+                # Because we read newest-first (chronological), that is the
+                # started_at of the most recently appended record.
+                boundary_started = min(k[0] for k, _ in collected)
+        collected.sort(key=lambda pair: pair[0], reverse=True)
+        result = [d for _, d in collected]
+        return result[:limit] if limit is not None else result
+
+    def _overlay_history_record(
+        self,
+        rec: SessionRecord,
+        live: set[str],
+        pending: dict[str, SessionRecord],
+    ) -> SessionRecord:
+        """PERF-004: the pending-terminal overlay + interrupted-crash decision,
+        extracted so ``history`` can apply it per candidate as it reads them
+        newest-first. Semantics are byte-identical to the previous inline body.
+        """
+        if rec.status == "running":
+            pending_rec = pending.get(rec.run_id)
+            if (
+                pending_rec is not None
+                and project_key(pending_rec.root) != project_key(rec.root)
+            ):
+                pending_rec = None
+            if pending_rec is None:
+                pending_rec = self._read_pending_final(rec.run_id, rec.root)
+            if pending_rec is not None:
+                rec = pending_rec
+                if self._write_meta(pending_rec):
+                    self._retire_pending_final(pending_rec)
+                    with self._pending_final_lock:
+                        current = self._pending_final.get(rec.run_id)
+                        if (
+                            current is not None
+                            and current.to_dict() == pending_rec.to_dict()
+                        ):
+                            self._pending_final.pop(rec.run_id, None)
+                else:
+                    with self._pending_final_lock:
+                        if (
+                            rec.run_id not in self._pending_final
+                            and len(self._pending_final) < self._MAX_PENDING_FINAL
+                        ):
+                            self._pending_final[rec.run_id] = pending_rec
+            elif rec.run_id not in live:
+                rec.status = "interrupted"
+        elif rec.status in _TERMINAL_SESSION_STATUSES:
+            # A crash after the metadata replace but before sidecar unlink
+            # leaves redundant replay evidence. The canonical terminal
+            # record is already durable, so retire that exact run's copy.
+            self._retire_pending_final(rec)
+            with self._pending_final_lock:
+                self._pending_final.pop(rec.run_id, None)
+        return rec
+
+    def _meta_started_at_hint(self, path: Path) -> str | None:
+        """PERF-004 (SRC-018 R014): the started_at ISO string implied by a
+        metadata filename's stamp, WITHOUT decoding the file. Used only to
+        decide when the reverse scan may stop; the authoritative started_at
+        still comes from the decoded record. Returns None when the name has no
+        parseable stamp (a legacy or oddly-named file), which conservatively
+        disables the early stop for it.
+        """
+        m = _META_STAMP_RE.match(path.name)
+        if m is None:
+            return None
+        s = m.group("stamp")
+        # The stamp is strftime("%Y%m%dT%H%M%S%f"); started_at is the same
+        # instant as datetime.isoformat(). Index map: [0:4]=year [4:6]=month
+        # [6:8]=day [8]='T' [9:11]=HH [11:13]=MM [13:15]=SS [15:21]=micros.
+        # The hint must be BYTE-IDENTICAL to the started_at it stands in for,
+        # offset included: a hint without the offset is a strict PREFIX of the
+        # real value, so a record in the same microsecond as the boundary
+        # compares as strictly older and the tie group the scan promises to
+        # consume is cut off at exactly the first twin.
+        return (
+            f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+            f"T{s[9:11]}:{s[11:13]}:{s[13:15]}.{s[15:21]}+00:00"
+        )
+
 
     def transcript(self, run_id: str, max_lines: int = 2000) -> dict:
         """The last ``max_lines`` lines of one run's transcript."""
@@ -475,45 +744,75 @@ class SessionStore:
     # ---- internals -------------------------------------------------------
 
     def _meta_files(self, key: str) -> list[Path]:
-        try:
-            return sorted(self._dir.glob(f"*-{key}-*.json"))
-        except OSError:
-            return []
+        """Metadata files for one project, name-sorted (oldest first).
+
+        PERF-003 (SRC-004:R005): served from a rebuildable process-local index
+        keyed by project, so a steady-state per-project lookup no longer globs
+        the whole flat sessions directory (which grows with UNRELATED projects'
+        histories). The index is rebuilt whenever the directory signature moves
+        -- including changes made by another SAIPENVIEW process -- so it can
+        never serve a stale view indefinitely, and it holds no authority a
+        rebuild from the individual files cannot restore.
+        """
+        sig = self._dir_sig()
+        with self._meta_cache_lock:
+            if self._meta_cache_sig != sig or not self._meta_index:
+                index: dict[str, list[Path]] = {}
+                try:
+                    all_metas = list(self._dir.glob("*-*.json"))
+                except OSError:
+                    all_metas = []
+                for meta in all_metas:
+                    m = _META_KEY_RE.match(meta.name[:-5])
+                    if m is not None:
+                        index.setdefault(m.group("key"), []).append(meta)
+                for metas in index.values():
+                    metas.sort()
+                self._meta_index = index
+                self._meta_cache_sig = sig
+            return list(self._meta_index.get(key, []))
 
     def _read_meta(self, path: Path) -> SessionRecord | None:
+        """Read one metadata record, cached by (mtime_ns, size).
+
+        PERF-003 (SRC-004:R005): an idle agent panel calls last_run() and then
+        history() for the same project; both decoded the same ~50 metadata
+        files. The cache is keyed on the file's own identity, so a rewritten
+        record is re-read, and it is cleared wholesale on any directory
+        change/self-write (``_invalidate_meta_cache``).
+        """
+        record, _mtime = self._read_meta_with_mtime(path)
+        return record
+
+    def _read_meta_with_mtime(self, path: Path) -> tuple[SessionRecord | None, int]:
+        """PERF-004 (SRC-018 R014): read one metadata record AND its mtime_ns
+        from ONE stat call. ``history`` needs the mtime only as the same-clock
+        tie-breaker; re-stat'ing every file (the old ``meta.stat()`` in the
+        loop) doubled the metadata stat work per lookup. A decode hit in the
+        cache still needs the mtime, so the stat is taken first and the decode
+        cache reuses the (mtime_ns, size) signature it already derives from it.
+        """
         try:
-            return SessionRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            st = path.stat()
+            sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None, 0
+        mtime = st.st_mtime_ns
+        with self._meta_cache_lock:
+            hit = self._meta_read_cache.get(str(path))
+            if hit is not None and hit[0] == sig:
+                return hit[1], mtime
+        try:
+            record = SessionRecord.from_dict(
+                json.loads(path.read_text(encoding="utf-8"))
+            )
         except (OSError, ValueError):
             # One unreadable run, not a lost history -- that is the whole
             # reason there is no shared index file.
-            return None
-
-    def _journal_overflow(self, evicted_id: str, evicted: SessionRecord) -> None:
-        """W2-005 (SRC-004:R013): a terminal fact evicted from the bounded
-        retry queue is journaled durably beside the sessions dir -- the
-        evicted status must be recoverable from evidence, never falsified by
-        history(). Best-effort: if even the journal cannot be written, the
-        degraded flag remains the truthful signal."""
-        try:
-            self._dir.mkdir(parents=True, exist_ok=True)
-            journal = self._dir / ".pending-final-overflow.log"
-            line = json.dumps(
-                {
-                    "evicted_run_id": evicted_id,
-                    "status": evicted.status,
-                    "exit_code": evicted.exit_code,
-                    "root": evicted.root,
-                    "finished_at": evicted.finished_at,
-                },
-                sort_keys=True,
-            )
-            with open(journal, "a", encoding="utf-8", newline="\n") as handle:
-                handle.write(line + "\n")
-        except OSError as exc:
-            print(
-                f"SAIPENVIEW: pending-final overflow journal write failed: {exc}",
-                file=sys.stderr,
-            )
+            return None, mtime
+        with self._meta_cache_lock:
+            self._meta_read_cache[str(path)] = (sig, record)
+        return record, mtime
 
     def _write_meta(self, record: SessionRecord) -> bool:
         path = self._dir / f"{record.run_id}.json"
@@ -527,6 +826,9 @@ class SessionStore:
                 json.dumps(record.to_dict(), indent=2), encoding="utf-8", newline="\n"
             )
             tmp_path.replace(path)
+            # PERF-003: our own write creates/replaces an entry -- drop the
+            # index + decode cache so the next lookup sees it.
+            self._invalidate_meta_cache()
             return True
         except OSError as exc:
             print(
@@ -544,9 +846,25 @@ class SessionStore:
         metas = self._meta_files(key)
         if len(metas) <= MAX_RUNS_PER_PROJECT:
             return
+        removed = False
         for meta in metas[: len(metas) - MAX_RUNS_PER_PROJECT]:
-            for path in (meta, meta.with_suffix(".log")):
+            try:
+                meta.unlink(missing_ok=True)
+                meta_removed = not meta.exists()
+                removed |= meta_removed
+            except OSError:
+                meta_removed = False
+            try:
+                meta.with_suffix(".log").unlink(missing_ok=True)
+                removed = True
+            except OSError:
+                pass
+            if meta_removed:
                 try:
-                    path.unlink(missing_ok=True)
+                    self._pending_final_path(meta.stem, key).unlink(missing_ok=True)
                 except OSError:
                     pass
+                with self._pending_final_lock:
+                    self._pending_final.pop(meta.stem, None)
+        if removed:
+            self._invalidate_meta_cache()

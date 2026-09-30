@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-023:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Resume closure of blocked duplicate T-876 satisfied by T-877 then T-875 SRC-018 and audit inbox consumption"
+    }
+  },
+  "derived_at": "2026-09-24T01:57:03Z",
+  "derived_from": "SRC-023",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "054e42d51eaf79cf15016fe3701f8ad4c7636a2746d8d35d327ac9bec89aec10"
+}

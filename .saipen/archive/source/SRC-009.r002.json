@@ -1,0 +1,19 @@
+{
+  "clauses": {
+    "SRC-009:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[CORE-001] git_diff.py commit/revert/delete must bind every Git mutation to the exactly verified preview snapshot and scope; no repo-wide reset --hard or clean -fd; late unrelated path excluded; late authorized-path byte change fails closed"
+    },
+    "SRC-009:R002": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "[CORE-002] parser.move_ticket and WriteCoordinator.recover must run under the authoritative ownership transaction, refusing WRITER_BUSY while an agent owns the root, and recovery must attribute self-writes"
+    }
+  },
+  "derived_at": "2026-09-18T12:06:17Z",
+  "derived_from": "SRC-009",
+  "interpretation_revision": 2,
+  "schema_version": 1,
+  "source_sha256": "ed59141d2e988727726d049702cf28c5128beb996b63d02a9a2b036b244c4c83"
+}

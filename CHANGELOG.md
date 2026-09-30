@@ -14,6 +14,70 @@ Semantic versioning — see `saipenview/__init__.py`.
 > by pyproject) and the gate fails any release whose tag, wheel, changelog and
 > package version disagree.
 
+## 0.1.33 - 2026-09-18
+
+### Fixed
+
+- **git-diff mutations bound to the reviewed snapshot (T-853, T-872,
+  CORE-001).** Commit stages the exact previewed bytes via
+  `hash-object`/`update-index` instead of re-reading the worktree; Revert and
+  Delete claim-and-verify the recorded object id and fail closed as a stale
+  preview. A late unrelated path can no longer enter the mutation and a late
+  byte change of an authorized path aborts instead of committing.
+
+- **Ticket move/recovery ownership bypass closed (T-857, CORE-002).** The
+  delegated canonical ticket operations route through one primitive that takes
+  the per-root lock, begins the authoritative transaction and refuses
+  `WRITER_BUSY` while an agent owns the root.
+
+- **Ordinary-file split read removed (T-858, CORE-003).** `read_file_text`
+  reads the file once into a raw buffer, decodes text and derives
+  `edit_version` from that same buffer; a concurrent write can no longer
+  return text from one version with the token of another.
+
+- **Corrupt-registry recovery made failure-atomic and restart-safe (T-836).**
+  A failed recovery restores the marker and degraded state exactly; a fresh
+  registry after restart cannot observe a falsely healthy state.
+
+- **Release-gate test contract drift (T-849).** The gate and its test share
+  one parsing boundary for bracketless released headings; `[Unreleased]` is
+  never misclassified as the released head.
+
+### Performance
+
+- **UI flash-snapshot render split (T-863, PERF-001).** Flash rows bind after
+  the replacement DOM exists in one O(N) pass; the nested per-root row scan is
+  gone from the render path.
+
+- **Watcher debounce slot reuse (T-864, PERF-002).** One live debounce slot per
+  identity replaces Timer cancel/restart churn; a burst keeps trailing
+  semantics with bounded scheduler creation.
+
+- **Session history project-sharded index (T-865, PERF-003).** Repeated
+  history/last-run/prune calls no longer rescan unrelated files; a rebuildable
+  process-local index is keyed by project and rebuilt on out-of-process change.
+
+- **Transcript tail prune (T-866, PERF-004).** DOM append computes the retained
+  tail before committing and replaces the window in one bulk operation.
+
+### Changed
+
+- **Scan lifecycle activity token (T-862, W2-004).** Paired start/end tracking
+  makes `scanning` reflect any active scan and keeps a stale completion from
+  clearing a newer one.
+
+- **Service-wide RPC drain (T-861, W2-003).** Stop closes admission first, then
+  waits for admitted RPCs to drain before clearing state; a rejected RPC gets a
+  controlled 503.
+
+- **Watcher topology lifecycle discipline (T-860, W2-002).** Every topology
+  read/modify/commit is lifecycle-aware, so a stale sync cannot repopulate a
+  stopped watcher.
+
+- **Launch-admission self-deadlock fix (T-859, W2-001).** `ProcessManager.launch`
+  resolves its token without holding the admission lock, so a Popen failure
+  returns promptly and releases in-flight ownership.
+
 ## 0.1.32 - 2026-09-14
 
 ### Fixed

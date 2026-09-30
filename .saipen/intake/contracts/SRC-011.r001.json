@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-011:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Close umbrella T-852 (SRC-009 all clauses terminal), retire goal containers T-854 and T-855, and consume audit/4.md through the journaled audit inbox cleanup"
+    }
+  },
+  "derived_at": "2026-09-18T12:10:36Z",
+  "derived_from": "SRC-011",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "2b6f7a13aaa1cc3d2158efd1439135109ffa44d22e7f0d74fe18fa1374090c76"
+}

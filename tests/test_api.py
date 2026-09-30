@@ -755,13 +755,65 @@ class TestSetScanRoots:
 
 
 class TestSetExcludeDirs:
-    """set_exclude_dirs updates config and rescans."""
+    """set_exclude_dirs updates config and reconfigures the scanner.
 
-    def test_sets_excludes_and_rescans(self, api):
-        with patch.object(api, "rescan", return_value=[]):
+    W2-004 (SRC-018 R008): exclude changes MUST rebuild the persistent
+    BackgroundScanner from the same effective config the immediate scan used,
+    so a periodic cycle cannot reintroduce excluded directories.
+    """
+
+    def test_sets_excludes_and_reconfigures(self, api):
+        with (
+            patch.object(api, "_set_cache"),
+            patch("saipenview.api.scan", return_value=[]) as mock_scan,
+            patch.object(api.background_scanner, "stop"),
+            patch.object(api.background_scanner, "start"),
+        ):
             result = api.set_exclude_dirs(["node_modules", "dist"])
             assert api._config["exclude_dirs"] == ["node_modules", "dist"]
             assert isinstance(result, list)
+            # The immediate authoritative scan ran under the new exclusions.
+            assert mock_scan.call_args is not None
+            assert set(mock_scan.call_args.kwargs["extra_excludes"]) == {
+                "node_modules",
+                "dist",
+            }
+
+    def test_replacement_scanner_carries_new_excludes(self, api_patches, api):
+        """The audited defect: the replacement BackgroundScanner kept the OLD
+        captured _extra_excludes, so the next periodic scan reintroduced the
+        excluded dirs. Prove the replacement scanner is CONSTRUCTED with the
+        new exclusions (the fixture mocks BackgroundScanner; inspect its
+        constructor kwargs)."""
+        import saipenview.api as api_module
+
+        api._auto_scan = False
+        with (
+            patch.object(api, "_set_cache"),
+            patch("saipenview.api.scan", return_value=[]),
+            patch.object(api_module, "BackgroundScanner") as mock_bg,
+        ):
+            api.set_exclude_dirs(["node_modules", "dist"])
+            # The replacement scanner is built from the SAME effective config
+            # the immediate authoritative scan used.
+            assert mock_bg.call_args is not None
+            assert set(mock_bg.call_args.kwargs["extra_excludes"]) == {
+                "node_modules",
+                "dist",
+            }
+            api.set_exclude_dirs(["dist"])
+            assert set(mock_bg.call_args.kwargs["extra_excludes"]) == {"dist"}
+
+    def test_auto_scan_disabled_leaves_replacement_stopped(self, api):
+        api._auto_scan = False
+        with (
+            patch.object(api, "_set_cache"),
+            patch("saipenview.api.scan", return_value=[]),
+            patch.object(api.background_scanner, "start") as mock_start,
+        ):
+            api.set_exclude_dirs(["node_modules"])
+            # No replacement scanner is started when auto_scan is off.
+            mock_start.assert_not_called()
 
 
 class TestClipboardCopy:

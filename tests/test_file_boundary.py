@@ -18,6 +18,7 @@ import pytest
 from saipenview.api import Api
 from saipenview.config import DEFAULTS
 from saipenview.paths import canonical
+from saipenview.service import SaipenViewService
 
 pytestmark = pytest.mark.skipif(
     __import__("conftest", fromlist=["canonical_home"]).canonical_home() is None,
@@ -366,6 +367,130 @@ class TestNestedRootAuthority:
         assert f.read_text(encoding="utf-8") == "y\n"
 
 
+class TestNestedProtocolFileBoundary:
+    """CORE-002: protocol-file ownership must stay on the verified boundary.
+
+    ``root_for`` can discover a physical nested ``.saipen`` tree that the
+    registry has never verified. It is a consistency check after the file
+    boundary has selected an owner, never an alternate authorization source.
+    """
+
+    def test_unregistered_nested_protocol_read_is_rejected(self, api, tmp_path):
+        outer = _seed_project(tmp_path / "outer")
+        nested = _seed_project(outer / "nested")
+        _register(api, outer)
+
+        outer_board = outer / ".saipen" / "BOARD.md"
+        nested_board = nested / ".saipen" / "BOARD.md"
+        assert api.read_file_text(str(outer_board)) is not None
+        assert api._resolve_verified_root_for_file(str(nested_board)).root == canonical(
+            str(outer)
+        )
+
+        # The physical nearest .saipen belongs to `nested`, but only `outer`
+        # is registered. Reading through that unverified ownership split must
+        # fail closed.
+        assert api.read_file_text(str(nested_board)) is None
+
+    def test_unregistered_nested_write_cannot_escape_outer_agent_ownership(
+        self, api, tmp_path
+    ):
+        from saipenview import saio
+        from saipenview.protocol_write import get_coordinator
+
+        outer = _seed_project(tmp_path / "outer")
+        nested = _seed_project(outer / "nested")
+        _register(api, outer)
+        target = nested / ".saipen" / "STATE.md"
+        seeded = target.read_bytes()
+        doc = saio.engine(nested)["codec"].read_document(target)
+        changed = doc.text_norm.replace("phase: DONE", "phase: BUILD")
+        assert changed != doc.text_norm
+
+        coordinator = get_coordinator()
+        with coordinator.locked(outer):
+            assert coordinator.ownership.reserve_agent(outer)
+        try:
+            assert (
+                api.write_file_text(
+                    str(target), changed, doc.raw_hash, existed=True
+                )
+                is False
+            )
+        finally:
+            coordinator.ownership.release_agent(outer)
+
+        assert target.read_bytes() == seeded
+
+    def test_registered_nested_protocol_uses_inner_boundary_and_ownership(
+        self, api, tmp_path, monkeypatch
+    ):
+        from saipenview import saio
+        from saipenview.protocol_write import get_coordinator
+
+        outer = _seed_project(tmp_path / "outer")
+        nested = _seed_project(outer / "nested")
+        api._config["pinned_roots"] = [str(outer), str(nested)]
+        target = nested / ".saipen" / "STATE.md"
+        boundary = api._resolve_verified_root_for_file(str(target))
+        assert boundary is not None
+        assert boundary.root == canonical(str(nested))
+
+        coordinator = get_coordinator()
+        engine_roots: list[str] = []
+        mutation_roots: list[str] = []
+        root_checks: list[str] = []
+        real_engine = saio.engine
+        real_mutate = coordinator.mutate
+        real_root_for = coordinator.root_for
+
+        def track_engine(root):
+            engine_roots.append(canonical(str(root)))
+            return real_engine(root)
+
+        def track_mutate(root, *args, **kwargs):
+            mutation_roots.append(canonical(str(root)))
+            return real_mutate(root, *args, **kwargs)
+
+        def track_root_for(path):
+            root_checks.append(canonical(str(path)))
+            return real_root_for(path)
+
+        monkeypatch.setattr(saio, "engine", track_engine)
+        monkeypatch.setattr(coordinator, "mutate", track_mutate)
+        monkeypatch.setattr(coordinator, "root_for", track_root_for)
+
+        read = api.read_file_text(str(target))
+        assert isinstance(read, dict)
+        assert engine_roots == [boundary.root]
+        assert root_checks == [canonical(str(target))]
+        changed = read["text"].replace("phase: DONE", "phase: BUILD")
+        assert changed != read["text"]
+        assert (
+            api.write_file_text(
+                str(target), changed, read["edit_version"], existed=True
+            )
+            is True
+        )
+        assert mutation_roots == [boundary.root]
+
+        # Registered inner ownership is independently enforced; it is not
+        # accidentally treated as the outer project's ownership slot.
+        latest = api.read_file_text(str(target))
+        assert isinstance(latest, dict)
+        with coordinator.locked(nested):
+            assert coordinator.ownership.reserve_agent(nested)
+        try:
+            assert (
+                api.write_file_text(
+                    str(target), latest["text"], latest["edit_version"], existed=True
+                )
+                is False
+            )
+        finally:
+            coordinator.ownership.release_agent(nested)
+
+
 class TestProtocolFileLiveness:
     """T-840 / W2-002: protocol-file read/write must also fail closed when the
     owning project's STATE.md is gone, before the coordinator/CAS pipeline
@@ -422,3 +547,88 @@ class TestBoundaryPerfWarmCache:
             assert len(state_targets) == 2
         finally:
             patch.object(Path, "is_file", spy_is_file).stop()
+
+
+class TestOrdinaryFileBaselineCas:
+    def _ordinary_file(self, api: Api, tmp_path: Path) -> tuple[Path, Path]:
+        root = _register(api, _seed_project(tmp_path / "ordinary-cas"))
+        target = root / "notes.md"
+        target.write_text("baseline\n", encoding="utf-8")
+        return root, target
+
+    def test_token_with_omitted_existed_commits_existing_baseline(
+        self, api, tmp_path
+    ):
+        _, target = self._ordinary_file(api, tmp_path)
+        read = api.read_file_text(str(target))
+        assert read is not None and read["existed"] is True
+
+        assert api.write_file_text(str(target), "updated\n", read["edit_version"])
+        assert target.read_text(encoding="utf-8") == "updated\n"
+
+    def test_omitted_existed_stale_token_refuses_external_change(self, api, tmp_path):
+        _, target = self._ordinary_file(api, tmp_path)
+        read = api.read_file_text(str(target))
+        assert read is not None
+        target.write_text("external\n", encoding="utf-8")
+
+        assert (
+            api.write_file_text(str(target), "stale editor\n", read["edit_version"])
+            is False
+        )
+        assert target.read_text(encoding="utf-8") == "external\n"
+
+    def test_omitted_existed_token_refuses_deleted_file_without_resurrection(
+        self, api, tmp_path
+    ):
+        _, target = self._ordinary_file(api, tmp_path)
+        read = api.read_file_text(str(target))
+        assert read is not None
+        target.unlink()
+
+        assert (
+            api.write_file_text(str(target), "must not reappear\n", read["edit_version"])
+            is False
+        )
+        assert not target.exists()
+
+    def test_missing_baseline_refuses_file_that_appeared(self, api, tmp_path):
+        root, target = self._ordinary_file(api, tmp_path)
+
+        assert api.write_file_text(str(target), "create\n", None, existed=False) is False
+        assert target.read_text(encoding="utf-8") == "baseline\n"
+
+    def test_tokenless_legacy_write_still_works(self, api, tmp_path):
+        _, target = self._ordinary_file(api, tmp_path)
+
+        assert api.write_file_text(str(target), "legacy write\n", None, None) is True
+        assert target.read_text(encoding="utf-8") == "legacy write\n"
+
+    def test_service_dispatch_accepts_token_without_optional_existed(
+        self, api, tmp_path
+    ):
+        _, target = self._ordinary_file(api, tmp_path)
+        read = api.read_file_text(str(target))
+        assert read is not None
+        service = SaipenViewService(auto_scan=False)
+        service._api = api
+        with service._rpc_cond:
+            service._state = "running"
+            service._rpc_admission_open = True
+
+        try:
+            # This is the RPC argument shape from older clients: existed is
+            # omitted, so the optional fourth Api argument keeps its default.
+            assert (
+                service._dispatch(
+                    "write_file_text",
+                    [str(target), "rpc update\n", read["edit_version"]],
+                )
+                is True
+            )
+        finally:
+            with service._rpc_cond:
+                service._rpc_admission_open = False
+                service._state = "stopped"
+
+        assert target.read_text(encoding="utf-8") == "rpc update\n"

@@ -9,6 +9,10 @@ for the same backend state.
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -429,7 +433,63 @@ class TestProtocolSafety:
         assert body["result"] is None or "error" in body["result"]
 
 
-# ── SSE ────────────────────────────────────────────────────────────────────
+# ── Console interruptibility (T-884) ───────────────────────────────────────
+
+_CHILD_SRC = """
+import signal, sys
+sys.path.insert(0, {root!r})
+from saipenview.service import SaipenViewService
+
+svc = SaipenViewService(auto_scan=False)
+svc._stopped.clear()          # pretend a lifecycle is running
+
+def _stop(*_a):
+    print("HANDLER_RAN", flush=True)
+    svc._stopped.set()
+
+signal.signal(signal.SIGBREAK, _stop)
+print("READY", flush=True)
+svc.wait()
+print("WAIT_RETURNED", flush=True)
+"""
+
+
+@pytest.mark.skipif(os.name != "nt", reason="console control events are Windows-only")
+def test_wait_never_parks_the_main_thread_uninterruptibly(tmp_path):
+    """A console control event must reach the handler that calls stop().
+
+    ``Event.wait()`` on the main thread blocks in an uninterruptible lock
+    acquire, so on Windows the SIGINT/SIGTERM handler that drives shutdown
+    never runs and the process survives its own Ctrl+C. The child runs the
+    REAL ``SaipenViewService.wait()``.
+    """
+    child = tmp_path / "wait_child.py"
+    child.write_text(
+        _CHILD_SRC.format(root=str(Path(__file__).resolve().parent.parent)),
+        encoding="utf-8",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(child)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        assert proc.stdout.readline().strip() == "READY"
+        time.sleep(0.3)
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+    out = proc.stdout.read()
+    assert proc.returncode == 0, out
+    assert "HANDLER_RAN" in out, out
+    assert "WAIT_RETURNED" in out, out
+
+
 
 
 class TestSse:

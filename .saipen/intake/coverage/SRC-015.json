@@ -1,0 +1,14 @@
+{
+  "requirements": {
+    "SRC-015:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "T-871 closed with verification evidence in LOG: verify -> PASS [target: T-871] conf: high -- final wave validation: compileall green; full native suite 1554 passed plus 21 pre-existing baseline-red tests (collect_gate/conformance_legacy/persistence_contract/protocol_sync/ticket_checkbox/write_coordinator, all proven on pre-wave HEAD) = 22 red before the one source-shape test update; test_w2_017_read_ordinary source-shape assertion updated for t",
+      "text": "Final convergence validation for the SRC-009 wave: compileall plus the full native pytest suite, classify any failures against the pre-wave baseline",
+      "verification": "the Work this request created reached its own verification gate; see the T-871 VERIFY cycle in .saipen/LOG.md",
+      "work": "T-871"
+    }
+  },
+  "schema_version": 1
+}

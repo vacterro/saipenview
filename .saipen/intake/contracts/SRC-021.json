@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-021:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "Implement audit/5.md fixes"
+    }
+  },
+  "derived_at": "2026-09-23T19:53:22Z",
+  "derived_from": "SRC-021",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "063b53f7e792cc09f7c2cf3e6a225bfe88e6633433326780c276cf4bf661bfb9"
+}

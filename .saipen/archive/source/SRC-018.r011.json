@@ -1,0 +1,64 @@
+{
+  "clauses": {
+    "SRC-018:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-001: Preserve caller-supplied completed_roots and unresolved_roots when plain-list _set_cache publishes a partial scan; use ScanOutcome provenance when supplied; keep legacy no-provenance incomplete preservation; apply one root authority consistently to projects, linked worktrees, watcher/index/cache reconciliation, and the real BackgroundScanner callback. Regress completed A/unresolved B replacement and removal, unresolved project/worktree preservation, and callback shape."
+    },
+    "SRC-018:R002": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-002: Use the verified _FileBoundary.root as the single authorization and protocol ownership authority for read_file_text and write_file_text; root_for(path) may check consistency only. Fail closed on an unregistered nested .saipen root, while registered nested roots select the inner verified root. Cover reads and writes, outer and inner ownership, sibling/unregistered roots, ordinary files, symlink escapes, STATE removal, encoding, and CAS behavior."
+    },
+    "SRC-018:R003": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-003: Persist failed terminal session facts in replayable durable fallback; reconstruct done/failed/killed after a fresh SessionStore, reconcile fallback into canonical metadata when writes recover, and use the same mechanism for bounded pending-final eviction. Corrupt fallback evidence degrades only its record; genuine crash-mid-run remains running-to-interrupted."
+    },
+    "SRC-018:R004": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-004: Use normalized had_baseline for ordinary-file CAS. Preserve tokenless edit_version=None/existed=None legacy writes; token-bearing existed=None means an existing read baseline. Refuse stale tokens, deletion after read, and appearance after a missing baseline; cover RPC/service when optional existed is omitted."
+    },
+    "SRC-018:R005": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-001: Separate service shutdown request from completed teardown. wait blocks for completion, the single-instance guard stays held while stopping, and _run_service cannot report success while an admitted long RPC survives. Deterministically cover long RPC drain, exactly-once teardown, SIGINT/SIGTERM, fast shutdown, restart, and RPC refusal after admission closes."
+    },
+    "SRC-018:R006": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-002: Restrict ProcessManager._admission_lock to lifecycle transitions; never hold it over Popen, Job Object work, SessionStore.start, or other slow operations. Track launch tokens so each admitted spawn commits/accounted or cancels, and stop completion cannot leave a later unaccounted child. Cover blocked Popen/start, exceptions, generation restart, ownership release, and stop races."
+    },
+    "SRC-018:R007": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-003: Once OS death is proven, atomically claim finalization and snapshot prior kill intent before a competing kill can mutate it. A late kill after natural exit refuses; kill intent set while live still yields killed. Preserve exactly-once finalization, stale run IDs, relaunch, transcript order, and slow reap using deterministic race barriers."
+    },
+    "SRC-018:R008": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-004: Apply exclude-dir changes through the scanner replacement lifecycle so authoritative rescan and replacement BackgroundScanner share one effective configuration. Stop/supersede the old generation, respect auto_scan disabled, and prevent an old in-flight generation publishing stale configuration."
+    },
+    "SRC-018:R009": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-005: If canonical collect mutation commits but external-change acknowledgement/reconciliation fails, return a stable committed-but-reconciliation-required result with mutation receipt and exact reconciliation identity. Later reconciliation clears only that token, never replays or duplicates BOARD/LOG/STATE/OUTBOX mutation, and never clears a newer token."
+    },
+    "SRC-018:R010": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "W2-006: Make _save or equivalent same-lock generation logic the sole authority for ExternalChangeRegistry._write_degraded. Remove stale post-lock failure assignments from record/flush while preserving per-call failure returns independently from newest global durability truth. Cover deterministic A-fails/B-succeeds and reverse ordering."
+    },
+    "SRC-018:R011": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "PERF-001: Release every successful shared scanner-pool acquisition exactly once in exception-safe cleanup and track each future immediately after submission. Submission failure leaves no untracked work; ordinary per-root exceptions mark only that root unresolved with diagnostics, healthy peers publish, and BackgroundScanner survives the cycle. Do not catch BaseException; preserve cancellation, quarantine, stale-generation suppression, activity accounting, CORE-001 provenance, and W2-004 replacement."
+    }
+  },
+  "derived_at": "2026-09-23T13:04:51Z",
+  "derived_from": "SRC-018",
+  "interpretation_revision": 11,
+  "schema_version": 1,
+  "source_sha256": "b0697385292699f2bd1fa0d85d7eab499ee72a128f8898b70c509eabe4f51a58"
+}

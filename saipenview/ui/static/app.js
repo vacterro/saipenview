@@ -2061,22 +2061,19 @@ function updateFlashSnapshot(projects) {
   for (const k of Object.keys(flashState)) {
     if (!currentRoots.has(k)) delete flashState[k];
   }
+  // PERF-001: change DETECTION only. Row binding happens AFTER render installs
+  // the replacement DOM (see render()'s single project-row pass), because the
+  // rows discovered here belong to the OLD list that `list.innerHTML` is about
+  // to disconnect. Discovering rows here was O(F*N) via one document-wide
+  // query per flashed root, and the captured refs were dead on arrival.
+}
+
 function _findProjectRow(root) {
   const rows = document.querySelectorAll(".project-row");
   for (let i = 0; i < rows.length; i++) {
     if (rows[i].getAttribute("data-root") === root) return rows[i];
   }
   return null;
-}
-
-  // PERF-012: register row refs for any new flash entries and ensure the timer.
-  for (const root in flashState) {
-    if (!_flashRowRefs[root]) {
-      const row = _findProjectRow(root);
-      if (row) _flashRowRefs[root] = row;
-    }
-  }
-  if (Object.keys(flashState).length) _ensureFlashTimer();
 }
 
 function render(projects, scanned) {
@@ -2158,6 +2155,18 @@ function render(projects, scanned) {
   // Attach click / hover handlers to project rows
   list.querySelectorAll(".project-row").forEach((row) => {
     const root = row.getAttribute("data-root");
+    // PERF-001: bind active flash entries to the CURRENT rows in this single
+    // O(N) pass, right after `list.innerHTML` installed them. The old code
+    // discovered rows before the replacement (wrong DOM) and issued one
+    // document-wide query per flashed root (O(F*N)).
+    if (flashChangesEnabled && flashState[root]) {
+      const ageMs = Date.now() - flashState[root];
+      if (ageMs >= FLASH_DECAY_SECONDS * 1000) {
+        delete flashState[root];
+      } else {
+        _flashRowRefs[root] = row;
+      }
+    }
     row.addEventListener("click", (e) => {
       if (e.target.classList.contains("row-chevron")) {
         e.stopPropagation();
@@ -2215,6 +2224,11 @@ function render(projects, scanned) {
       if (phase) showContextMenu(e, root, phase);
     });
   });
+
+  // PERF-001: start/retain the fade timer only AFTER current-node registration,
+  // so the 20s decay owns the replacement rows (the old code started it while
+  // refs pointed at the disconnected pre-render DOM, freezing the highlight).
+  if (flashChangesEnabled && Object.keys(_flashRowRefs).length) _ensureFlashTimer();
 
   // Attach dblclick handler for sub-rows (opens sub STATE.md in file viewer)
   list.querySelectorAll(".sub-row").forEach((sr) => {
@@ -4096,12 +4110,22 @@ function _flashTick() {
 
   for (const root in _flashRowRefs) {
     const ft = flashState[root];
-    const row = _flashRowRefs[root];
-    if (!ft || !row || !row.isConnected) {
-      if (row && row.isConnected) row.style.backgroundColor = "";
+    let row = _flashRowRefs[root];
+    if (!ft) {
       delete _flashRowRefs[root];
-      delete flashState[root];
       continue;
+    }
+    // PERF-001: a ref that is no longer connected must NOT delete valid flash
+    // state (the entry lives in flashState; the ref is only a cached pointer).
+    // Rebind to the current row if one exists, else drop just the stale ref.
+    if (!row || !row.isConnected) {
+      row = _findProjectRow(root);
+      if (row) {
+        _flashRowRefs[root] = row;
+      } else {
+        delete _flashRowRefs[root];
+        continue;
+      }
     }
     const ageMs = now - ft;
     if (ageMs >= decayMs) {
@@ -4511,19 +4535,92 @@ function setterFailed(res) {
 // lasts. parseTestLine still sees every line before pruning; the cumulative
 // line counter lives elsewhere (status.total_lines) so pruning the visual head
 // never falsifies output metrics.
+//
+// PERF-004: the retained window is computed BEFORE any DOM mutation. The old
+// code appended the whole batch then removed the overflow one node at a time,
+// so a maximum catch-up delta (a full 5,000-line window) did 5,000 synchronous
+// removeChild calls in one UI turn -- the worst moment to stall. Now the final
+// tail is decided first; when the batch alone fills/exceeds the cap the old
+// visual window is replaced in ONE operation, and a smaller overflow is dropped
+// with one bounded range removal instead of per-node calls.
 function appendOutputLines(container, lines, root) {
-  const frag = document.createDocumentFragment();
+  // parseTestLine must still observe EVERY delivered line, retained or not.
   for (const line of lines) {
     parseTestLine(root, line);
+  }
+  const total = container.childElementCount + lines.length;
+  if (total <= MAX_LIVE_OUTPUT_NODES) {
+    // Fast path: no overflow. One fragment commit, no removals.
+    const frag = document.createDocumentFragment();
+    for (const line of lines) {
+      const div = document.createElement("div");
+      div.className = "agent-output-line";
+      div.textContent = line;
+      frag.appendChild(div);
+    }
+    container.appendChild(frag);
+    return;
+  }
+
+  // Compute the retained tail: the newest MAX_LIVE_OUTPUT_NODES lines overall.
+  const keptIncoming = lines.slice(Math.max(0, lines.length - MAX_LIVE_OUTPUT_NODES));
+  const neededFromOld = MAX_LIVE_OUTPUT_NODES - keptIncoming.length;
+
+  if (neededFromOld <= 0) {
+    // The incoming batch alone fills or exceeds the cap: replace the entire old
+    // visual window in ONE operation (one innerHTML assignment, no per-node
+    // removeChild). This is the catch-up path the ticket measured.
+    const frag = document.createDocumentFragment();
+    for (const line of keptIncoming) {
+      const div = document.createElement("div");
+      div.className = "agent-output-line";
+      div.textContent = line;
+      frag.appendChild(div);
+    }
+    container.textContent = "";
+    container.appendChild(frag);
+    return;
+  }
+
+  // Smaller overflow: keep the newest `neededFromOld` old nodes and append the
+  // whole incoming batch. Remove the obsolete prefix in one bounded operation
+  // rather than one removeChild per node.
+  const oldCount = container.childElementCount;
+  const toRemove = oldCount - neededFromOld;
+  if (toRemove > 0) {
+    // Collect the obsolete prefix, then remove it in a single Range deletion
+    // when available; fall back to a bounded loop that is still O(overflow) but
+    // only on this smaller path.
+    const obsolete = [];
+    let node = container.firstChild;
+    for (let i = 0; i < toRemove && node; i++) {
+      obsolete.push(node);
+      node = node.nextSibling;
+    }
+    let removedInOne = false;
+    if (obsolete.length && typeof document.createRange === "function") {
+      try {
+        const range = document.createRange();
+        range.setStartBefore(obsolete[0]);
+        range.setEndAfter(obsolete[obsolete.length - 1]);
+        range.deleteContents();
+        removedInOne = true;
+      } catch (e) {
+        removedInOne = false;
+      }
+    }
+    if (!removedInOne) {
+      for (const n of obsolete) container.removeChild(n);
+    }
+  }
+  const frag = document.createDocumentFragment();
+  for (const line of lines) {
     const div = document.createElement("div");
     div.className = "agent-output-line";
     div.textContent = line;
     frag.appendChild(div);
   }
   container.appendChild(frag);
-  while (container.childElementCount > MAX_LIVE_OUTPUT_NODES) {
-    container.removeChild(container.firstChild);
-  }
 }
 
 // T-169: an async callback that captured `root` before an await must verify

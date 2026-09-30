@@ -105,13 +105,16 @@ def test_external_change_between_read_and_commit_aborts(project):
 
 def test_ids_are_centralized(project):
     # The ONE allocation authority is the canonical SAIOPS allocator (sealed
-    # history included, synthetic T-998/999 excluded).
+    # history included, synthetic T-998/999 excluded). The expected ids are read
+    # off the fixture's own LOG: T-898 made the fixture journal an allocation
+    # event per board ticket, so the tail is no longer a fixed E-2.
     from saipenview import saio
 
     board = read_doc(project / ".saipen" / "BOARD.md")
     log = read_doc(project / ".saipen" / "LOG.md")
+    tail = max(int(m.group(1)) for m in re.finditer(r"\[E-(\d+)\]", log))
     assert saio.next_ticket_id(project, board, log) == 3
-    assert saio.next_event_id(project, log) == 3
+    assert saio.next_event_id(project, log) == tail + 1
 
 
 def test_stale_reader_cannot_append_to_a_moved_tail(project):
@@ -124,8 +127,11 @@ def test_stale_reader_cannot_append_to_a_moved_tail(project):
         project, [".saipen/LOG.md"]
     )
     # The canonical writer moves the tail.
+    expected = "E-{}".format(
+        max(int(m.group(1)) for m in re.finditer(r"\[E-(\d+)\]", read_doc(log))) + 1
+    )
     first = record_manual_work(project, "canonical append")
-    assert first["ok"] is True and first["event"] == "E-3"
+    assert first["ok"] is True and first["event"] == expected
     # A stale writer still holding the old baseline tries to append.
     coord = get_coordinator()
 

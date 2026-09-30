@@ -430,27 +430,28 @@ def move_ticket(
         return _refuse_dict(saio.SAIO_UNAVAILABLE, str(exc))
     try:
         coord = get_coordinator()
-        with coord.locked(root):
+
+        def _op() -> dict:
             if action == "start":
-                result = saio.claim(root, ticket_id, agent, explicit=True)
-            elif action == "done":
-                result = saio.finish(root, ticket_id, agent)
-            elif action == "block":
-                result = saio.ticket_block(
+                return saio.claim(root, ticket_id, agent, explicit=True)
+            if action == "done":
+                return saio.finish(root, ticket_id, agent)
+            if action == "block":
+                return saio.ticket_block(
                     root, ticket_id, agent, (blocker_reason or "").strip()
                 )
-            elif action == "unblock":
-                result = saio.ticket_unblock(
+            if action == "unblock":
+                return saio.ticket_unblock(
                     root, ticket_id, agent, (blocker_reason or "").strip()
                 )
-            else:
-                return _reopen_ticket(root, ticket_id)
-            # The delegated canonical ops apply internally; register their
-            # post-write fingerprints so the watcher attributes every written
-            # protocol file to the app (same finalize path as coordinator plans).
-            if result.get("ok"):
-                coord.finalize_self_writes(root, result.get("changed_files", []))
-            return result
+            # reopen has no canonical operation: a journaled board-only move.
+            return _reopen_ticket(root, ticket_id)
+
+        # CORE-002: the authoritative ownership transaction, not the bare
+        # per-root lock. move_ticket must not become writer #2 after the API
+        # pre-guard has passed; the delegated ops finalize their changed_files
+        # through the same SelfWriteRegistry path as coordinator plans.
+        return coord.delegate(root, _op)
     except AgentOwnershipError as exc:
         return _refuse_dict("WRITER_BUSY", str(exc))
     except saio.SaioUnavailable as exc:
@@ -1593,7 +1594,35 @@ def collect_outbox_entry(
             # PREPARED. STALE_STATE re-decides once on a fresh snapshot.
             result = get_coordinator().mutate(root, op_fn, precheck=precheck)
             if result.get("ok") and package_token is not None:
-                get_registry().acknowledge(str(root), registry_rel, package_token)
+                # W2-005 (SRC-018 R009): the canonical mutation is COMMITTED.
+                # Acknowledging the package's own external-change token is a
+                # SEPARATE post-commit step. If it fails, the commit stands --
+                # we must NOT rerun BOARD/LOG/STATE/OUTBOX -- but the caller
+                # has to know reconciliation (acknowledgement only) is still
+                # required, with the exact identity needed to retry it. The
+                # token-conditional acknowledge() below also guarantees a newer
+                # write's token is never cleared by an older retry.
+                acknowledged = get_registry().acknowledge(
+                    str(root), registry_rel, package_token
+                )
+                if not acknowledged:
+                    # Preserve the canonical mutation receipt; overlay a stable
+                    # committed-but-reconciliation-required contract carrying
+                    # the exact token/path/root identity for ack-only recovery.
+                    result = dict(result)
+                    result["code"] = "COMMITTED_RECONCILIATION_REQUIRED"
+                    result["reconciliation_required"] = True
+                    result["reconciliation"] = {
+                        "kind": "external_change_ack",
+                        "root": str(root),
+                        "rel_path": registry_rel,
+                        "token": package_token,
+                    }
+                    result["message"] = (
+                        (result.get("message") or "collect committed")
+                        + " -- committed, but external-change acknowledgement "
+                        "failed; reconciliation (acknowledge only) required"
+                    )
             return result
 
     except AgentOwnershipError as exc:

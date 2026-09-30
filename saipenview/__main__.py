@@ -38,6 +38,7 @@ def _run_service(args: argparse.Namespace) -> int:
     # service can now bind args.port without EADDRINUSE.
     guard.release_listener()
 
+    service = None
     try:
         import signal
 
@@ -45,7 +46,6 @@ def _run_service(args: argparse.Namespace) -> int:
 
         def _stop(*_a, **_k) -> None:
             service.stop()
-            guard.stop()
 
         signal.signal(signal.SIGINT, _stop)
         signal.signal(signal.SIGTERM, _stop)
@@ -55,6 +55,19 @@ def _run_service(args: argparse.Namespace) -> int:
         return 0
     except Exception as e:  # noqa: BLE001 - surface start failure on stderr, exit non-zero
         print(f"SAIPENVIEW service failed to start: {e}", file=sys.stderr)
+        if service is not None:
+            try:
+                service.stop()
+                service.wait()
+            except Exception as stop_error:  # noqa: BLE001
+                print(
+                    f"SAIPENVIEW service teardown failed: {stop_error}",
+                    file=sys.stderr,
+                )
+                # The guard must remain held while service state is only
+                # `stopping`; process exit releases its OS ownership if this
+                # failed teardown cannot be recovered.
+                return 1
         guard.stop()
         return 1
 

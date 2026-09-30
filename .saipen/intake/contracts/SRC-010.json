@@ -1,0 +1,14 @@
+{
+  "clauses": {
+    "SRC-010:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "goal: close every remaining SRC-009 audit/4 finding (CORE-002, CORE-003, W2-001, W2-002, W2-003, W2-004, PERF-001, PERF-002, PERF-003, PERF-004) through the canonical lifecycle, then close umbrella T-852 and consume audit/4.md"
+    }
+  },
+  "derived_at": "2026-09-18T12:13:15Z",
+  "derived_from": "SRC-010",
+  "interpretation_revision": 1,
+  "schema_version": 1,
+  "source_sha256": "ceae6c5e6ca7f095e23df56504c4bb1a881d1d960c3ef81609b1205299f1e083"
+}

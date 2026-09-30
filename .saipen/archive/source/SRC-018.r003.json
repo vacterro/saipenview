@@ -1,0 +1,24 @@
+{
+  "clauses": {
+    "SRC-018:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-001: Preserve caller-supplied completed_roots and unresolved_roots when plain-list _set_cache publishes a partial scan; use ScanOutcome provenance when supplied; keep legacy no-provenance incomplete preservation; apply one root authority consistently to projects, linked worktrees, watcher/index/cache reconciliation, and the real BackgroundScanner callback. Regress completed A/unresolved B replacement and removal, unresolved project/worktree preservation, and callback shape."
+    },
+    "SRC-018:R002": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-002: Use the verified _FileBoundary.root as the single authorization and protocol ownership authority for read_file_text and write_file_text; root_for(path) may check consistency only. Fail closed on an unregistered nested .saipen root, while registered nested roots select the inner verified root. Cover reads and writes, outer and inner ownership, sibling/unregistered roots, ordinary files, symlink escapes, STATE removal, encoding, and CAS behavior."
+    },
+    "SRC-018:R003": {
+      "actionable": true,
+      "class": "requirement",
+      "text": "CORE-003: Persist failed terminal session facts in replayable durable fallback; reconstruct done/failed/killed after a fresh SessionStore, reconcile fallback into canonical metadata when writes recover, and use the same mechanism for bounded pending-final eviction. Corrupt fallback evidence degrades only its record; genuine crash-mid-run remains running-to-interrupted."
+    }
+  },
+  "derived_at": "2026-09-23T13:04:41Z",
+  "derived_from": "SRC-018",
+  "interpretation_revision": 3,
+  "schema_version": 1,
+  "source_sha256": "b0697385292699f2bd1fa0d85d7eab499ee72a128f8898b70c509eabe4f51a58"
+}
