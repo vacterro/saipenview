@@ -13,11 +13,12 @@ by the platform's own observer.
          stays fingerprint-addressable and absorbs a later external change
          that produces the same bytes.
 
-EXIT SEMANTICS. This script exits 0 when it has REPRODUCED the characterised
-defect -- that is what makes it evidence for the two tickets. It exits 1 once
-the defect is gone, because then the tickets' evidence is stale and they must
-be re-evaluated rather than quietly closed. It is not a pass/fail gate on
-correct behaviour; `pytest tests/test_watcher_attribution.py` is that.
+EXIT SEMANTICS. This is the verification command both tickets name, so it is
+a gate on CORRECT behaviour, not a reproduction script: exit 0 means the app's
+own protocol write is attributed to the app and no registration outlives its
+notification; exit 1 means the defect is present again and the tickets are not
+satisfied. The measurements are printed either way, because the numbers are
+what make a failure diagnosable.
 """
 
 from __future__ import annotations
@@ -138,49 +139,54 @@ def main(argv: list[str] | None = None) -> int:
     notes = measure_notifications()
     attribution = measure_attribution()
 
-    # T-917: notifications per commit exceed the one registration armed.
-    t917 = any(n >= 2 for n in notes["os_replace"]) and (
-        attribution["reported_external"] > attribution["reported_self"]
-    )
-    # T-918: registrations outlive the notifications that should have
-    # consumed them.
-    t918 = attribution["armed_left_over"] > 0
+    # The platform property is a fact about the OS, not a defect: on win32 a
+    # journal commit publishes two notifications. It is reported so the
+    # numbers can be compared across runs and platforms.
+    notifications_per_commit = max(notes["os_replace"] or [0])
+
+    # T-917: the app's own write must be attributed to the app, whatever the
+    # platform does with notification counts.
+    t917_ok = attribution["reported_self"] > attribution["reported_external"]
+    # T-918: no registration may outlive its notification.
+    t918_ok = attribution["armed_left_over"] == 0
+    ok = bool(t917_ok and t918_ok)
 
     report = {
         "platform": sys.platform,
         "notifications_per_commit": notes,
+        "max_notifications_per_commit": notifications_per_commit,
         "registrations_armed_per_commit": 1,
         "attribution": attribution,
-        "T-917_reproduced": t917,
-        "T-918_reproduced": t918,
-        "reproduced": bool(t917 or t918),
+        "T-917_satisfied": t917_ok,
+        "T-918_satisfied": t918_ok,
+        "ok": ok,
     }
     if args.json:
         print(json.dumps(report, indent=2))
     else:
-        print("T-917/T-918 evidence -- real watcher, real Api, real coordinator")
+        print("T-917/T-918 gate -- real watcher, real Api, real coordinator")
         print(f"  platform                       : {report['platform']}")
-        print(f"  notifications per os.replace   : {notes['os_replace']}")
+        print(f"  notifications per os_replace   : {notes['os_replace']}")
         print(f"  notifications per write_text   : {notes['write_text']}")
-        print(f"  registrations armed per commit : 1")
+        print("  registrations armed per commit : 1")
         print(f"  app-write origins              : {attribution['origins']}")
         print(
             f"  self / external                : {attribution['reported_self']}"
             f" / {attribution['reported_external']}"
         )
         print(f"  armed registrations left over  : {attribution['armed_left_over']}")
-        print(f"  T-917 reproduced               : {t917}")
-        print(f"  T-918 reproduced               : {t918}")
+        print(f"  T-917 satisfied                : {t917_ok}")
+        print(f"  T-918 satisfied                : {t918_ok}")
 
-    if report["reproduced"]:
+    if ok:
         print(
-            "REPRODUCED: the characterised defect is still present; "
-            "T-917 and T-918 keep their evidence."
+            "PASS: the app's own protocol writes are attributed to the app and "
+            "no registration outlives its notification (T-917, T-918)."
         )
         return 0
     print(
-        "NOT REPRODUCED: the defect is gone (or the platform does not exhibit "
-        "it). Re-evaluate T-917 and T-918 before closing them."
+        "NOT SATISFIED: an app write is being reported as external, or a "
+        "registration outlived its notification. T-917 and T-918 are not met."
     )
     return 1
 
