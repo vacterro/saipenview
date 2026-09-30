@@ -131,6 +131,56 @@ class SelfWriteRegistry:
                     return True
             return False  # fingerprint matched no live registration
 
+    def classify(self, root: str, file_name: str, fingerprint: str) -> str:
+        """Decide whether the bytes now on disk are ours, and retire every
+        armed record for the file.
+
+        T-917 / T-918. The rule is deliberately the only one here, because the
+        previous pair -- ``consume()`` plus the caller's ``event_count >
+        armed`` guard -- was unsound in both directions. It counted raw
+        filesystem NOTIFICATIONS (watcher.py increments one per OS event) and
+        compared them against self-write REGISTRATIONS, which are only equal
+        if the OS emits exactly one notification per write. Measured on win32
+        with the real WindowsApiObserver, a single os.replace -- the canonical
+        journal's write shape -- publishes two, so the guard was always true:
+        every app write was reclassified external and persisted as one (T-917).
+        In the other direction the surplus notifications arrived with nothing
+        left to consume, so registrations outlived their notification for the
+        whole TTL; since consume() matches on fingerprint equality, a leaked
+        record is a standing claim on specific bytes and absorbed a later
+        external write of those bytes, which was then reported as ours (T-918).
+
+        Registrations are appended in COMMIT ORDER, which is what makes the
+        sound rule available:
+
+        ``self``       the final bytes match the NEWEST armed record, so the
+                       last write was ours and is now spent.
+        ``external``   the final bytes match an OLDER armed record, or no
+                       record at all. Both are proofs, not guesses: our own
+                       newer write produced different bytes, so something
+                       that is not us wrote last; or nothing we did explains
+                       these bytes at all.
+
+        What this CANNOT decide is self A, external B, self C, where C is the
+        newest record: the final bytes are consistent with both "B never
+        happened" and "B happened and was overwritten". Distinguishing them
+        needs an intermediate observation the filesystem never guarantees, so
+        the honest answer is ``self`` -- and it is recorded as such here
+        rather than guessed at with a notification count.
+
+        Every armed record is retired on the call. A record whose bytes are no
+        longer current can never legitimately match again, and keeping it is
+        exactly the leak T-918 is about. The TTL remains the backstop for
+        files that are written and never notified.
+        """
+        key = (canonical_key(root), file_name)
+        with self._lock:
+            entries = self._entries.pop(key, None)
+            if not entries:
+                return "external"
+            newest = entries[-1][0]
+            return "self" if fingerprint == newest else "external"
+
     def count(self, root: str, file_name: str) -> int:
         """W2-002: number of live armed self-write generations for (root, file).
 

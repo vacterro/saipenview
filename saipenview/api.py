@@ -699,28 +699,18 @@ class Api:
             coord = get_coordinator()
             changed_path = Path(root) / ".saipen" / changed_file
             try:
-                # W2-002: the watcher counts raw events per file in the
-                # debounce window. Compare that against the number of armed
-                # self-write registrations: more raw events than self
-                # generations means an external write landed between app
-                # writes (self A -> external B -> self C), which the final
-                # fingerprint check alone cannot see.
-                event_count = int(data.get("event_count") or 0)
-                try:
-                    armed = int(coord.self_writes.count(root, changed_file) or 0)
-                except (TypeError, ValueError):
-                    armed = 0
-                if coord.self_writes.has_live(root, changed_file):
-                    fp = coord.fingerprint(changed_path)
-                    matched = coord.self_writes.consume(root, changed_file, fp)
-                    origin = "self" if matched else "external"
-                else:
-                    fp = coord.fingerprint(changed_path)
-                    origin = "external"
-                if origin == "self" and event_count > armed:
-                    # External write landed inside the debounce window even
-                    # though the final bytes match our own registration.
-                    origin = "external"
+                # T-917 / T-918: the decision is made in ONE place, from the
+                # bytes on disk and the commit order of our own writes, and it
+                # retires every armed record as it goes. `data["event_count"]`
+                # is deliberately NOT consulted: it counts raw filesystem
+                # notifications, which on win32 is two for the single
+                # os.replace the canonical journal commits with, so comparing
+                # it against one registration per changed file reported every
+                # app write as an external change. The sound rule, and the one
+                # case it deliberately cannot decide, are documented on
+                # SelfWriteRegistry.classify.
+                fp = coord.fingerprint(changed_path)
+                origin = coord.self_writes.classify(root, changed_file, fp)
                 if origin == "external":
                     get_registry().record(root, changed_file, fp)
             except OSError:

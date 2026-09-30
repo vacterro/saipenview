@@ -9,8 +9,8 @@ CORE-005  incremental LOG: a non-record partial (comment/heading) must NOT pop
 CORE-006  scan worker: a pre-cancelled worker contributes exactly one roots_done.
 W2-001    external-change registry: corrupt persistence must degrade fail-closed
           so collect refuses instead of treating it as an empty registry.
-W2-002    watcher causal attribution: event_count > registration count must mark
-          the batch external (self A -> external B -> self C survives debounce).
+W2-002    watcher causal attribution: the final bytes and our own commit order decide
+          the origin, and no armed record survives its notification.
 W2-003    config mutation: a failed persistence must leave the live config and
           runtime state on the previous value (no memory/disk divergence).
 PERF-002  terminal compaction releases the output deque after EOF + transcript
@@ -265,30 +265,67 @@ def test_w2_001_failed_ack_restores_entry(tmp_path, monkeypatch):
 
 
 # --- W2-002: causal attribution through debounce -----------------------------
+#
+# T-917/T-918 replaced the original rule, which compared the watcher's raw
+# event_count against the armed registration count. These tests now pin the
+# sound rule: the decision comes from the bytes on disk and the commit order
+# of our own registrations, and no registration survives its notification.
 
 
-def test_w2_002_excess_events_mark_external(monkeypatch):
-    """More raw events than self registrations => external write landed between."""
+def test_w2_002_newest_registration_is_self():
+    """Final bytes match the NEWEST registration => our own write, spent."""
     from saipenview.protocol_write import SelfWriteRegistry
 
     sw = SelfWriteRegistry(ttl=60)
     sw.register("C:\\p", "STATE.md", "fpA")
     sw.register("C:\\p", "STATE.md", "fpC")
-    # Final fingerprint matches a self registration, but 3 raw events > 2
-    # registrations -- B (external) landed in the window.
-    assert sw.count("C:\\p", "STATE.md") == 2
-    assert sw.consume("C:\\p", "STATE.md", "fpC") is True
-    assert sw.count("C:\\p", "STATE.md") == 1
+    assert sw.classify("C:\\p", "STATE.md", "fpC") == "self"
+    # every armed record is retired, not just the matched one (T-918)
+    assert sw.count("C:\\p", "STATE.md") == 0
 
 
-def test_w2_002_equal_events_self(monkeypatch):
-    """Two self writes produce two events => clean, no external flag."""
+def test_w2_002_older_registration_is_external():
+    """Final bytes match an OLDER registration => our newer write was undone
+    by something that is not us. A proof, not a guess."""
     from saipenview.protocol_write import SelfWriteRegistry
 
     sw = SelfWriteRegistry(ttl=60)
     sw.register("C:\\p", "STATE.md", "fpA")
     sw.register("C:\\p", "STATE.md", "fpC")
-    assert sw.count("C:\\p", "STATE.md") == 2
+    assert sw.classify("C:\\p", "STATE.md", "fpA") == "external"
+    assert sw.count("C:\\p", "STATE.md") == 0
+
+
+def test_w2_002_no_registration_is_external():
+    """Nothing of ours explains these bytes."""
+    from saipenview.protocol_write import SelfWriteRegistry
+
+    sw = SelfWriteRegistry(ttl=60)
+    assert sw.classify("C:\\p", "STATE.md", "fpX") == "external"
+
+
+def test_w2_002_leaked_record_absorbs_nothing():
+    """T-918: a record that outlived its notification is a standing claim on
+    its bytes, and a byte-identical external write must NOT be absorbed by
+    it. classify() retires every record, so there is nothing left to absorb."""
+    from saipenview.protocol_write import SelfWriteRegistry
+
+    sw = SelfWriteRegistry(ttl=60)
+    sw.register("C:\\p", "STATE.md", "fpA")
+    sw.register("C:\\p", "STATE.md", "fpC")
+    sw.classify("C:\\p", "STATE.md", "fpC")  # retires BOTH records
+    assert sw.classify("C:\\p", "STATE.md", "fpA") == "external"
+
+
+def test_w2_002_duplicate_notifications_do_not_flip_self_to_external():
+    """T-917: the OS notification count is not consulted, so however many
+    notifications one commit produces, our own write stays ours."""
+    from saipenview.protocol_write import SelfWriteRegistry
+
+    sw = SelfWriteRegistry(ttl=60)
+    sw.register("C:\\p", "STATE.md", "fpA")
+    assert sw.classify("C:\\p", "STATE.md", "fpA") == "self"
+    assert sw.classify("C:\\p", "STATE.md", "fpA") == "external"
 
 
 # --- W2-003: staged config persistence ---------------------------------------
