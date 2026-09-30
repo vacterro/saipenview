@@ -1,4 +1,14 @@
 {
-  "requirements": {},
+  "requirements": {
+    "SRC-007:R001": {
+      "actionable": true,
+      "class": "requirement",
+      "disposition": "VERIFIED",
+      "evidence": "E-2218",
+      "text": "An AUDAPACK archive reports authoritative_state=true with required_evidence_omitted=false, mandatory_missing=[] and omitted_required=[]; .saipen/MANIFEST.json exists on disk and in the artifact; manifest-declared mandatory paths are physically present and evidence counts reconcile; no unrelated ignored runtime state leaks into the archive; the stale-manifest, missing-manifest and ignored-manifest regressions stay green.",
+      "verification": "C:\\Users\\vac34\\AppData\\Local\\saipen\\scheduled-source\\tools\\test_t1452_manifest_authority.py:C:\\Users\\vac34\\AppData\\Local\\saipen\\scheduled-source\\tools\\test_audit_manifest.py:PASS",
+      "work": "T-850"
+    }
+  },
   "schema_version": 1
 }
