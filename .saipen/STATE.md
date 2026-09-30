@@ -1,18 +1,18 @@
 ---
 phase: DONE
 task: none
-next_action: "WAIT: safety valve reached (0 waves / 34 tickets) -- run 'cc' to continue"
+next_action: "saipen continue"
 blocker: none
 agent: buffy
-saipen_version: 7
+saipen_version: 8
 schema_version: 3
-last_event: 2326
+last_event: 2429
 style_contract: ded-4ae736e4
-saipen_home: C:/Users/vac34/.agents/skills/saipen
+saipen_home: "C:/Users/vac34/AppData/Local/saipen/scheduled-source"
 mode: full
-transition_from: SHIP
-updated: "2026-09-30T21:05:19Z"
+transition_from: DONE
+updated: "2026-09-30T21:57:35Z"
 execution_intent: goal
 goal_waves: 0
-goal_tickets: 34
+goal_tickets: 8
 ---

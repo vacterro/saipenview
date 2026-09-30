@@ -265,22 +265,47 @@ def _state_with_preview(
     h.update(status_raw.encode("utf-8", "replace"))
     staged_diff = ""
     unstaged_diff = ""
+    # T-908: a diff git could not produce is not an empty diff, and the
+    # hasher has already been fed whatever partial output arrived. Swallowing
+    # it here returned ok=True with a clean-looking preview over a digest
+    # computed from bytes the user never saw -- the exact shape of evidence
+    # this module exists to refuse. The preview is unavailable, so say so.
+    diff_failed: list[str] = []
     try:
         staged_diff = _stream_git_diff(root, ["diff", "--cached"], h, cap_bytes)
-    except (OSError, subprocess.SubprocessError, GitError):
+    except (OSError, subprocess.SubprocessError, GitError) as e:
         staged_diff = ""
+        diff_failed.append(f"--cached: {e}")
     try:
         unstaged_diff = _stream_git_diff(root, ["diff"], h, cap_bytes)
-    except (OSError, subprocess.SubprocessError, GitError):
+    except (OSError, subprocess.SubprocessError, GitError) as e:
         unstaged_diff = ""
+        diff_failed.append(f"worktree: {e}")
+    if diff_failed:
+        return {
+            "ok": False,
+            "error": (
+                "Cannot preview: git diff failed ("
+                + "; ".join(diff_failed)
+                + "); refusing to show a scope whose changes could not be "
+                "rendered"
+            ),
+        }
 
     unreadable: list[str] = []
     untracked_parts: list[str] = []
     total = 0
+    # T-905: the preview is capped, the fingerprint is not. _tree_fingerprint
+    # hashes EVERY untracked file, so a preview that stopped early yielded a
+    # digest no authorization could ever match -- commit, revert and delete
+    # were permanently locked out on any repository whose untracked set
+    # overflowed the preview budget. Past the cap the loop keeps hashing and
+    # only stops rendering.
+    preview_done = False
     for path in sorted(untracked):
-        if total >= cap_total:
+        if total >= cap_total and not preview_done:
             untracked_parts.append("... untracked preview truncated ...")
-            break
+            preview_done = True
         p = Path(root) / path
         h.update(path.encode("utf-8", "replace"))
         h.update(b"\x00")
@@ -288,6 +313,8 @@ def _state_with_preview(
             data, truncated = _read_untracked(p, h, cap_bytes)
         except OSError:
             unreadable.append(path)
+            continue
+        if preview_done:
             continue
         if b"\x00" in data[:8192]:
             untracked_parts.append(
@@ -310,12 +337,16 @@ def _state_with_preview(
             f"new file mode 100644\n"
             f"--- /dev/null\n"
             f"+++ b/{path}\n"
-            f"@@ -0,0 +1,{len(lines)} @@\n{body}"
+            # T-910: `lines` is what the preview could afford to parse, so
+            # the header used to advertise a truncated file as a complete
+            # hunk and `git apply` on the shown diff failed. line_count is
+            # the file's real length; the truncation is already stated below.
+            f"@@ -0,0 +1,{line_count} @@\n{body}"
         )
         total += len(shown)
-        if omitted or total >= cap_total:
+        if (omitted or total >= cap_total) and not preview_done:
             untracked_parts.append("... untracked preview truncated ...")
-            break
+            preview_done = True
 
     if unreadable:
         return {
@@ -1099,6 +1130,16 @@ def _snapshot_bound_commit(
                 "error": f"Git command failed: {(commit.stderr or '').strip()}",
             }
         return {"ok": True}
+    except (OSError, subprocess.SubprocessError, GitError) as e:
+        # T-906: T-892 made every RETURNED refusal restore the index, but a
+        # git call that never returns one -- _run_git's 10s timeout on a hung
+        # hook, signer or network filesystem -- unwound straight to the
+        # finally below, which unlinks index_backup with the index still
+        # rewritten. The user's staging is then unrecoverable and the caller
+        # saw a traceback instead of a verdict. Same restore, same shape as
+        # revert_agent_work.
+        _restore_index(index_path, staging.index_backup)
+        return {"ok": False, "error": str(e)}
     finally:
         staging.cleanup()
 
@@ -1202,6 +1243,12 @@ def revert_agent_work(root: str, fingerprint: str | None = None) -> dict:
     if not paths:
         return {"ok": True}
     git_dir = _git_dir(root)
+    if git_dir is None:
+        # T-907: the commit path has always refused a missing git dir here.
+        # Revert and delete did not, so _index_path's fallback built
+        # `None / "index"` and shutil.copy2 raised TypeError inside the try
+        # -- a raw traceback where the rest of the module returns a verdict.
+        return {"ok": False, "error": "Not a git repository"}
     staging = _Staging(root, git_dir)
     index_path = _index_path(root, git_dir)
     claims: dict[str, Path | None] = {}
@@ -1309,7 +1356,10 @@ def delete_untracked_files(root: str, fingerprint: str | None = None) -> dict:
     mismatch = _revalidate_authorized(root, snapshot, paths)
     if mismatch:
         return mismatch
-    staging = _Staging(root, _git_dir(root))
+    git_dir = _git_dir(root)
+    if git_dir is None:
+        return {"ok": False, "error": "Not a git repository"}  # T-907
+    staging = _Staging(root, git_dir)
     claims: dict[str, Path | None] = {}
     try:
         _mutation_seam("before-claim", tuple(paths))
@@ -1317,13 +1367,20 @@ def delete_untracked_files(root: str, fingerprint: str | None = None) -> dict:
         if conflict:
             return conflict
         _mutation_seam("claimed", tuple(paths))
-        for claim in claims.values():
+        discarded: set[str] = set()
+        for rel, claim in claims.items():
             if claim is not None:
                 _discard_claim(claim)
+                discarded.add(rel)
         _prune_empty_parents(root, paths)
         return {"ok": True}
     except (OSError, subprocess.SubprocessError, GitError) as e:
-        kept = _release_claims(root, claims)
+        # T-909: a claim that reached _discard_claim is already unlinked, so
+        # naming it as preserved bytes is a false recovery claim. Only the
+        # claims this failure never reached are still recoverable.
+        kept = _release_claims(
+            root, {rel: claim for rel, claim in claims.items() if rel not in discarded}
+        )
         return _kept_note({"ok": False, "error": str(e)}, kept)
     finally:
         staging.cleanup()

@@ -282,3 +282,158 @@ def test_large_untracked_preview_uses_bounded_read(repo):
     assert result["ok"]
     assert len(result["diff"]) < 3 * 1024 * 1024
     assert result["fingerprint"] == git_diff._current_state(str(repo))["fingerprint"]
+
+
+# --- T-905 / T-907 / T-909 / T-910: the 2026-09-30 core audit ---------------
+
+
+def test_preview_fingerprint_covers_untracked_files_past_the_preview_cap(repo):
+    """T-905: the digest must span the whole untracked set, not the part the
+    preview could afford to render. _tree_fingerprint always hashed every
+    untracked file, so a preview that stopped at the cap produced a digest no
+    commit/revert/delete could ever be authorized against -- a permanent
+    lockout, not a stale-preview warning."""
+    for index in range(6):
+        (repo / f"big{index}.txt").write_text(
+            "".join(f"line {n}\n" for n in range(3000)), encoding="utf-8"
+        )
+
+    result = get_working_diff(str(repo), untracked_cap_lines=10, untracked_cap_total=20)
+
+    assert result["ok"]
+    assert "untracked preview truncated" in result["diff"]
+    # Every untracked file is still named in the scope, so the hasher saw them.
+    assert len(_untracked_paths(result)) == 6
+    from saipenview import git_diff
+
+    assert result["fingerprint"] == git_diff._current_state(str(repo))["fingerprint"]
+
+
+def test_preview_fingerprint_covers_untracked_files_after_a_truncated_one(repo):
+    """T-905: the break used to fire on the FIRST omitted file, so everything
+    sorted after it was never hashed at all."""
+    (repo / "a_first.txt").write_text("x" * (3 * 1024 * 1024), encoding="utf-8")
+    for name in ("z_last.txt", "z_other.txt"):
+        (repo / name).write_text("small\n", encoding="utf-8")
+
+    result = get_working_diff(str(repo), untracked_cap_lines=10, untracked_cap_total=20)
+    from saipenview import git_diff
+
+    assert result["ok"]
+    assert result["fingerprint"] == git_diff._current_state(str(repo))["fingerprint"]
+
+
+def test_untracked_hunk_header_reports_the_real_line_count(repo):
+    """T-910: the header advertised the capped parse length, so a truncated
+    file was passed off as a complete hunk and `git apply` on the shown diff
+    failed."""
+    (repo / "many.txt").write_text(
+        "".join(f"line {n}\n" for n in range(500)), encoding="utf-8"
+    )
+
+    result = get_working_diff(str(repo), untracked_cap_lines=10, untracked_cap_total=20)
+
+    assert result["ok"]
+    assert "@@ -0,0 +1,500 @@" in result["diff"]
+    assert "@@ -0,0 +1,10 @@" not in result["diff"]
+
+
+def test_revert_and_delete_refuse_a_missing_git_dir_without_a_traceback(
+    repo, monkeypatch
+):
+    """T-907: neither path guarded `git_dir is None`, so `_index_path`'s
+    fallback computed `None / "index"` and raised TypeError before the try
+    block -- a raw traceback where the commit path returns a clean refusal.
+    The git dir can go away between authorization and mutation, so the guard
+    is pinned directly rather than through a contrived filesystem race."""
+    from saipenview import git_diff
+
+    (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    (repo / "loose.txt").write_text("bytes\n", encoding="utf-8")
+    preview = get_working_diff(str(repo))
+    assert preview["ok"]
+    monkeypatch.setattr(git_diff, "_git_dir", lambda root: None)
+
+    reverted = git_diff.revert_agent_work(str(repo), preview["fingerprint"])
+    deleted = git_diff.delete_untracked_files(str(repo), preview["fingerprint"])
+
+    assert reverted == {"ok": False, "error": "Not a git repository"}
+    assert deleted == {"ok": False, "error": "Not a git repository"}
+    # Nothing was touched on the way to the refusal.
+    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "changed\n"
+    assert (repo / "loose.txt").exists()
+
+
+def test_delete_does_not_claim_discarded_bytes_were_kept(repo, monkeypatch):
+    """T-909: after _discard_claim unlinks a claim, the refusal note still
+    named it as preserved user work -- a recovery pointer to a file that no
+    longer exists."""
+    from saipenview import git_diff
+
+    (repo / "gone.txt").write_text("bytes\n", encoding="utf-8")
+    preview = get_working_diff(str(repo))
+    assert preview["ok"]
+
+    def boom(*args, **kwargs):
+        raise OSError("prune failed")
+
+    monkeypatch.setattr(git_diff, "_prune_empty_parents", boom)
+    result = git_diff.delete_untracked_files(str(repo), preview["fingerprint"])
+
+    assert result["ok"] is False
+    assert "prune failed" in result["error"]
+    assert "Reviewed bytes kept at" not in result["error"]
+    assert not (repo / "gone.txt").exists()
+
+
+def test_commit_restores_the_index_when_git_never_returns(repo, monkeypatch):
+    """T-906: every RETURNED refusal restored the index (T-892), but _run_git's
+    10s timeout on a hung hook or signer raised straight through the finally
+    that unlinks index_backup -- the user's staging was rewritten with no way
+    back. The commit must come back as a verdict, not a traceback."""
+    import subprocess as _sp
+
+    from saipenview import git_diff
+
+    (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    preview = get_working_diff(str(repo))
+    assert preview["ok"]
+    staged_before = (repo / ".git" / "index").read_bytes()
+
+    real_run = git_diff._run_git
+
+    def timeout_on_commit(root, args):
+        if args and args[0] == "commit":
+            raise _sp.TimeoutExpired(cmd="git commit", timeout=10)
+        return real_run(root, args)
+
+    monkeypatch.setattr(git_diff, "_run_git", timeout_on_commit)
+    result = git_diff.commit_agent_work(str(repo), "should not land", preview["fingerprint"])
+
+    assert result["ok"] is False
+    assert "timed out" in result["error"] or "Timeout" in result["error"]
+    assert (repo / ".git" / "index").read_bytes() == staged_before
+    # Nothing was committed.
+    assert _git(repo, "log", "--oneline").stdout.count("\n") == 1
+
+
+def test_preview_refuses_when_git_diff_cannot_be_rendered(repo, monkeypatch):
+    """T-908: a diff git could not produce was reported as an empty diff over
+    ok=True, and the hasher had already consumed whatever partial output
+    arrived -- a clean-looking preview over unseen bytes."""
+    from saipenview import git_diff
+
+    (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    real = git_diff._stream_git_diff
+
+    def fail_worktree(root, args, hasher, cap_bytes):
+        if args == ["diff"]:
+            raise git_diff.GitError("diff exploded")
+        return real(root, args, hasher, cap_bytes)
+
+    monkeypatch.setattr(git_diff, "_stream_git_diff", fail_worktree)
+    result = get_working_diff(str(repo))
+
+    assert result["ok"] is False
+    assert "Cannot preview" in result["error"]
+    assert "diff exploded" in result["error"]

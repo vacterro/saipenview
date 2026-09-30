@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -397,6 +398,50 @@ def canonical_home() -> Path | None:
     return None
 
 
+def conformance_home() -> Path:
+    """The SAIPEN home this repository's own memory is written against.
+
+    T-911: the project's ``.saipen/STATE.md`` is a DECLARATION of the protocol
+    generation its memory conforms to, and the conformance gate reads the
+    validator from exactly that path. Synthetic fixtures have to declare the
+    same home the gate will check, or they are built against a voice contract
+    the gate will refuse for a reason unrelated to what they are testing.
+    Falls back to ``canonical_home()`` for a checkout with no local memory.
+    """
+    state = Path(__file__).resolve().parent.parent / ".saipen" / "STATE.md"
+    if state.is_file():
+        for line in state.read_text(encoding="utf-8").splitlines():
+            if line.startswith("saipen_home:"):
+                home = Path(line.split(":", 1)[1].strip().strip("'\""))
+                if (home / "tools" / "validate.py").is_file():
+                    return home
+                break
+    return canonical_home() or Path(os.environ.get("SAIPEN_HOME", "."))
+
+
+def style_marker(home: Path | None) -> str:
+    """The voice-contract marker the given SAIPEN home actually publishes.
+
+    T-911: a fixture that hardcodes one generation's marker builds every
+    synthetic project against a contract the running validator will not
+    accept, so the baseline test fails for a reason that has nothing to do
+    with the baseline. The marker moved between installed generations; read
+    it from the home the fixture is about to declare, and fall back to the
+    literal only when that home has no readable STYLE.md.
+    """
+    # Two install layouts are in the wild: the repo layout keeps the doc at
+    # saipen/STYLE.md (scheduled-source, _SAIPEN), the flattened skill layout
+    # keeps it at the root (C:/Users/vac34/.agents/skills/saipen). Probe both, or
+    # a repo-layout home silently falls through to the literal below.
+    if home is not None:
+        for style in (Path(home) / "saipen" / "STYLE.md", Path(home) / "STYLE.md"):
+            if style.is_file():
+                found = re.search(r"ded-[0-9a-f]+", style.read_text(encoding="utf-8", errors="replace"))
+                if found:
+                    return found.group(0)
+    return "ded-4ae736e4"
+
+
 def make_conformant_project(
     tmp_path: Path,
     phase: str = "DONE",
@@ -437,7 +482,7 @@ def make_conformant_project(
         "mode: full\nexecution_intent: normal\n"
         f"updated: {state_updated(now)}\n"
         f"last_event: {tail}\n"
-        "style_contract: ded-4ae736e4\n---\n",
+        f"style_contract: {style_marker(home)}\n---\n",
         encoding="utf-8",
     )
     (saipen / "BOARD.md").write_text(board, encoding="utf-8")

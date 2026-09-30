@@ -23,7 +23,15 @@ def _validator() -> Path | None:
     """Locate the canonical tools/validate.py.
 
     Resolution order: the SAIPEN_HOME env var (set by CI, which clones the
-    protocol repo), then this project's STATE.md saipen_home."""
+    protocol repo), then this project's STATE.md saipen_home.
+
+    T-911: the env var must come first, not because it is more authoritative
+    but because it is the SAME home the rest of the suite loads the canonical
+    engine from, and saio.py's multi-home guard (T-893) refuses a process that
+    mixes two. A validator from a different home than the engine under test
+    checks this project's memory against a contract the project never
+    declared.
+    """
     env = Path(os.environ["SAIPEN_HOME"]) if os.environ.get("SAIPEN_HOME") else None
     if env:
         v = env / "tools" / "validate.py"
@@ -54,9 +62,12 @@ def _run_validator(target: Path) -> str:
 
 
 def _minimal_project(tmp_path) -> Path:
+    from conftest import style_marker
+
     root = tmp_path / "proj"
     saipen = root / ".saipen"
     saipen.mkdir(parents=True)
+    validator = _validator()
     (saipen / "STATE.md").write_text(
         "---\nschema_version: 3\nphase: DONE\n"
         "transition_from: SHIP\ntask: none\n"
@@ -64,7 +75,10 @@ def _minimal_project(tmp_path) -> Path:
         "agent: t\nsaipen_version: 7\nmode: full\n"
         "execution_intent: normal\n"
         "updated: 2026-08-07T00:00:00Z\nlast_event: 2\n"
-        "style_contract: ded-4ae736e4\n---\n",
+        # T-911: the marker belongs to the generation the gate runs against.
+        # Hardcoding one generation's value makes the baseline fail on a
+        # voice-contract mismatch that has nothing to do with the baseline.
+        f"style_contract: {style_marker(validator.parent.parent)}\n---\n",
         encoding="utf-8",
     )
     (saipen / "BOARD.md").write_text(
