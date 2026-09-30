@@ -109,7 +109,7 @@ saipenview/
 ├── service.py      — Headless SAIPENVIEW service mode (SAIWORK embedding)
 ├── tailio.py       — Bounded backward tail readers for large append-only logs
 ├── external_changes.py — Backend-persistent external-change tracking
-├── api.py          — JS-facing pywebview bridge (90 public methods)
+├── api.py          — JS-facing pywebview bridge (93 public methods)
 ├── config.py       — Settings load/save (atomic writes)
 ├── tray.py         — pystray system-tray icon + context menu
 ├── hotkey.py       — Global hotkey registration (keyboard lib)
@@ -144,7 +144,7 @@ saipenview/
 - **Atomic writes** — config and cache use `temp-file + os.replace` so a crash can never truncate them.
 - **Stale-read safe** — the 5s UI poll calls `refresh_known()` (re-reads only `.saipen/` files, no directory walk), so edits to `STATE.md` appear within seconds without a full drive scan.
 - **No CSS transitions** — all visual effects (flash, heat, hover) are JavaScript-driven `hexBlend` recomputations, strictly following the vintage no-animation constraint.
-- **Agent Engine layer** — `runtime.py`, `engines/`, `events.py`, `guard.py`, `git_diff.py`, `watcher.py` follow the same conventions as the rest of the package; `api.py` exposes its 90 public methods to the frontend.
+- **Agent Engine layer** — `runtime.py`, `engines/`, `events.py`, `guard.py`, `git_diff.py`, `watcher.py` follow the same conventions as the rest of the package; `api.py` exposes its 93 public methods to the frontend.
 
 ---
 
